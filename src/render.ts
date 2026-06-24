@@ -179,9 +179,13 @@ function formatOne(
   const bar = splitBar(usedPct, mode, width);
   const resetSuffix = formatResetSuffix(w.resetAt, nowMs);
 
-  // Layout: "<windowLabel> <leftPlain><rightColored> <coloredDisplayedPct>%<RESET>(reset)"
-  // The mode label (Usage:/Remain:) is prepended by formatLine, not here.
-  return `${windowLabel} ${bar.leftPlain}${bar.rightColored} ${bar.color}${displayedPct}%${RESET}${resetSuffix}`;
+  // Layout: "<bar> <coloredDisplayedPct>%<RESET> (<reset>↻ / <windowLabel>)"
+  // Window label sits at the END of the segment, after the reset countdown,
+  // separated by ' / '. When reset info is missing we still emit the label
+  // so the segment isn't orphaned. The mode label (Usage:/Remain:) is
+  // prepended once by formatLine.
+  const tail = resetSuffix ? ` ${resetSuffix} / ${windowLabel}` : ` / ${windowLabel}`;
+  return `${bar.leftPlain}${bar.rightColored} ${bar.color}${displayedPct}%${RESET}${tail}`;
 }
 
 // Compact "remaining time until reset" formatter. Returns e.g. "(2h3m↻)"
