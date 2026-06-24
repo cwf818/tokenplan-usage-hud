@@ -140,9 +140,9 @@ describe("resolveDisplayMode", () => {
 });
 
 describe("formatLine — mode='remaining' (default)", () => {
-  it("prefixes with 'Remain' label", () => {
+  it("prefixes with 'Remain:' label", () => {
     const line = formatLine({ pct: 38 }, { pct: 60 }, "remaining");
-    assert.ok(line.startsWith("Remain "), `got: ${line}`);
+    assert.ok(line.startsWith("Remain: "), `got: ${line}`);
     assert.ok(line.includes(" · "));
   });
 
@@ -162,9 +162,9 @@ describe("formatLine — mode='remaining' (default)", () => {
 });
 
 describe("formatLine — mode='used'", () => {
-  it("prefixes with 'Usage' label", () => {
+  it("prefixes with 'Usage:' label", () => {
     const line = formatLine({ pct: 70 }, { pct: 90 }, "used");
-    assert.ok(line.startsWith("Usage "), `got: ${line}`);
+    assert.ok(line.startsWith("Usage: "), `got: ${line}`);
   });
 
   it("displayed value = used", () => {
@@ -179,6 +179,23 @@ describe("formatLine — mode='used'", () => {
     const line = formatLine({ pct: 75 }, { pct: 0 }, "used");
     assert.ok(line.includes(`░░${ORANGE}▓▓▓▓▓▓${RESET} ${ORANGE}75%${RESET}`),
       `got: ${line}`);
+  });
+
+  it("full layout matches spec: 'Usage: 5h <bar> <pct>%(<reset>↻) · wk ...'", () => {
+    const line = formatLine({ pct: 62 }, { pct: 42 }, "used");
+    // 5h: used=62 → 3 plain + 5 colored
+    assert.ok(
+      line.includes(`5h ░░░${ORANGE}▓▓▓▓▓${RESET} ${ORANGE}62%${RESET}`),
+      `got: ${line}`
+    );
+    // wk: used=42 → 5 plain + 3 colored
+    assert.ok(
+      line.includes(`wk ░░░░░${YELLOW}▓▓▓${RESET} ${YELLOW}42%${RESET}`),
+      `got: ${line}`
+    );
+    // Mode label once at the front, ' · ' between windows.
+    assert.ok(line.startsWith("Usage: "), `got: ${line}`);
+    assert.ok(line.includes(" · "));
   });
 });
 

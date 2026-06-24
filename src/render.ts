@@ -161,12 +161,12 @@ export function pctBar(usedPctValue: number, width = 8): { filled: string; empty
 }
 
 const MODE_LABELS: Record<DisplayMode, string> = {
-  remaining: "Remain",
-  used: "Usage",
+  remaining: "Remain:",
+  used: "Usage:",
 };
 
 function formatOne(
-  _label: string,
+  windowLabel: string,
   w: Window,
   mode: DisplayMode,
   width = 8,
@@ -178,12 +178,10 @@ function formatOne(
 
   const bar = splitBar(usedPct, mode, width);
   const resetSuffix = formatResetSuffix(w.resetAt, nowMs);
-  const modeLabel = MODE_LABELS[mode];
 
-  // Layout: "<ModeLabel> <leftPlain><rightColored> <coloredDisplayedPct>%<RESET>(reset)"
-  // We keep the colored-chunk coloring consistent with the percentage number,
-  // so the user's eye can match the colored bar segment to the colored number.
-  return `${modeLabel} ${bar.leftPlain}${bar.rightColored} ${bar.color}${displayedPct}%${RESET}${resetSuffix}`;
+  // Layout: "<windowLabel> <leftPlain><rightColored> <coloredDisplayedPct>%<RESET>(reset)"
+  // The mode label (Usage:/Remain:) is prepended by formatLine, not here.
+  return `${windowLabel} ${bar.leftPlain}${bar.rightColored} ${bar.color}${displayedPct}%${RESET}${resetSuffix}`;
 }
 
 // Compact "remaining time until reset" formatter. Returns e.g. "(2h3m↻)"
@@ -228,5 +226,6 @@ export function formatLine(
   mode: DisplayMode = "remaining",
   nowMs: number = Date.now()
 ): string {
-  return `${formatOne("5h", fiveHour, mode, 8, nowMs)} · ${formatOne("wk", weekly, mode, 8, nowMs)}`;
+  const modeLabel = MODE_LABELS[mode];
+  return `${modeLabel} ${formatOne("5h", fiveHour, mode, 8, nowMs)} · ${formatOne("wk", weekly, mode, 8, nowMs)}`;
 }
