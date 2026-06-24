@@ -14,7 +14,7 @@ ANSI colors: green ≥ 50 % used, yellow 20–50 %, red < 20 %. Applied to the f
 ### From the marketplace (recommended, once the repo is published)
 
 ```bash
-/plugin marketplace add chen20220011/tokenplan-usage-hud
+/plugin marketplace add cwf818/tokenplan-usage-hud
 /plugin install tokenplan-usage-hud@tokenplan-usage-hud
 ```
 
@@ -45,7 +45,7 @@ The wrapper at `scripts/wrapper.sh` is inlined into `statusLine.command`:
   },
   "extraKnownMarketplaces": {
     "tokenplan-usage-hud": {
-      "source": { "source": "github", "repo": "chen20220011/tokenplan-usage-hud" }
+      "source": { "source": "github", "repo": "cwf818/tokenplan-usage-hud" }
     }
   }
 }

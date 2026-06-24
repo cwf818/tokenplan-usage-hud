@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A Claude Code statusline plugin (`tokenplan-usage-hud`) that appends **MiniMax token-plan usage** (5-hour and weekly windows) to the existing `claude-hud` output. When `ANTHROPIC_BASE_URL` does not point at MiniMax, the plugin hides itself and passes upstream output through unchanged.
 
-The plugin is shipped as a **single-plugin marketplace**: the repo root IS the marketplace, and `.claude-plugin/plugin.json` declares the plugin. Install with `/plugin marketplace add chen20220011/tokenplan-usage-hud` then `/plugin install tokenplan-usage-hud@tokenplan-usage-hud`.
+The plugin is shipped as a **single-plugin marketplace**: the repo root IS the marketplace, and `.claude-plugin/plugin.json` declares the plugin. Install with `/plugin marketplace add cwf818/tokenplan-usage-hud` then `/plugin install tokenplan-usage-hud@tokenplan-usage-hud`.
 
 ## Commands
 
@@ -80,4 +80,4 @@ The plugin is delivered as files at a fixed cache path: `${CLAUDE_CONFIG_DIR:-$H
 
 - `npm run build` produces `dist/index.js` (~9kb). This is the only artifact the runtime needs.
 - Tag releases as `vX.Y.Z`; marketplace install picks up the highest version directory under `~/.claude/plugins/cache/<plugin>/<plugin>/`.
-- Push to GitHub via `gh repo create chen20220011/tokenplan-usage-hud --public --source=. --remote=origin --push` then `git push --tags`. (This requires `gh` CLI auth — see README "Push to GitHub" if `gh` is not available.)
+- Push to GitHub via `gh repo create cwf818/tokenplan-usage-hud --public --source=. --remote=origin --push` then `git push --tags`. (This requires `gh` CLI auth — see README "Push to GitHub" if `gh` is not available.)
