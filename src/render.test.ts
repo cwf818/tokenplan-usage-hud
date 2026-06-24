@@ -164,6 +164,8 @@ describe("formatLine — mode='used' (default)", () => {
     const line = formatLine({ pct: 75 }, { pct: 0 }, "remaining");
     assert.ok(line.includes(`▓▓▓▓▓▓${ORANGE}░░${RESET} ${ORANGE}25%${RESET}`),
       `got: ${line}`);
+    // Window label sits at the END after the reset countdown.
+    assert.ok(line.includes(` / 5h`), `got: ${line}`);
   });
 });
 
@@ -185,18 +187,26 @@ describe("formatLine — mode='used'", () => {
     const line = formatLine({ pct: 75 }, { pct: 0 }, "used");
     assert.ok(line.includes(`░░${ORANGE}▓▓▓▓▓▓${RESET} ${ORANGE}75%${RESET}`),
       `got: ${line}`);
+    // Window label at the END after the reset countdown.
+    assert.ok(line.includes(` / 5h`), `got: ${line}`);
   });
 
-  it("full layout matches spec: 'Usage: 5h <bar> <pct>%(<reset>↻) · wk ...'", () => {
-    const line = formatLine({ pct: 62 }, { pct: 42 }, "used");
+  it("full layout matches spec: 'Usage: <bar> <pct>% (<reset>↻ / 5h) · ...'", () => {
+    const now = Date.parse("2026-06-24T12:00:00Z");
+    const line = formatLine(
+      { pct: 62, resetAt: "2026-06-24T12:38:00Z" },
+      { pct: 42, resetAt: "2026-06-29T04:38:00Z" },
+      "used",
+      now
+    );
     // 5h: used=62 → 3 plain + 5 colored
     assert.ok(
-      line.includes(`5h ░░░${ORANGE}▓▓▓▓▓${RESET} ${ORANGE}62%${RESET}`),
+      line.includes(`░░░${ORANGE}▓▓▓▓▓${RESET} ${ORANGE}62%${RESET} (38m↻) / 5h`),
       `got: ${line}`
     );
     // wk: used=42 → 5 plain + 3 colored
     assert.ok(
-      line.includes(`wk ░░░░░${YELLOW}▓▓▓${RESET} ${YELLOW}42%${RESET}`),
+      line.includes(`░░░░░${YELLOW}▓▓▓${RESET} ${YELLOW}42%${RESET} (4d16h↻) / wk`),
       `got: ${line}`
     );
     // Mode label once at the front, ' · ' between windows.
