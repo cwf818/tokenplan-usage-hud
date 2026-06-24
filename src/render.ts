@@ -60,15 +60,17 @@ export function colorFor(displayedPct: number, mode: DisplayMode): string {
   return PALETTE_BY_USED[idx];
 }
 
-// Split-bar: width characters total, where the LAST `right` chars are
-// colored and the first `width - right` chars are not. `right` is derived
-// from the mode: in "remaining" mode the colored portion is the USED bar
-// (the consumed part = danger); in "used" mode it's symmetrically the
-// REMAINING bar (the remaining part = the danger of being close to the
-// limit when interpreted as "what's left").
+// Split-bar with a fixed positional layout:
+//   [<USED cells>][<REMAINING cells>]
+// USED cells use '▓', REMAINING cells use '░'. The side that gets COLORED
+// depends on the mode:
+//   used mode      → color the LEFT (used cells)     — colored by used%
+//   remaining mode → color the RIGHT (remaining cells) — colored by remaining%
+// This is the unified rule "left = used, right = remaining; the metric the
+// user is thinking about as 'danger' is the one that gets the color".
 export type SplitBar = {
-  leftPlain: string; // uncolored
-  rightColored: string; // wrapped in color + RESET
+  leftChunk: string; // LEFT half of bar — colored if mode==='used', plain otherwise
+  rightChunk: string; // RIGHT half of bar — colored if mode==='remaining', plain otherwise
   color: string;
 };
 
@@ -80,70 +82,32 @@ export function splitBar(
   const used = Math.max(0, Math.min(100, usedPct));
   const remaining = 100 - used;
 
-  // The "displayed value" follows mode: shown to the user as a number.
-  // Color is keyed off that displayed value, NOT off what portion is colored.
+  // Color follows the DISPLAYED value (the number shown next to the bar).
   const displayed = mode === "remaining" ? remaining : used;
   const color = colorFor(displayed, mode);
 
-  // In "remaining" mode, color the USED portion (right side of bar: filled
-  // cells mark consumed). In "used" mode, color the REMAINING portion (left
-  // side of bar — the unconsumed cells, marking what's left). This makes
-  // the colored chunk ALWAYS represent the metric the user is thinking
-  // about as "danger".
-  //
-  // Wait — re-read the requirement: "颜色标在右侧" (color on the right) and
-  // "余量20%时，左边80%无颜色，右边20%红色". So the rule is simpler:
-  // the colored chunk is on the RIGHT of the bar, sized by the displayed
-  // value in remaining mode (i.e. by REMAINING). The displayed number is
-  // the colored chunk's size, in remaining-mode.
-  //
-  // In "used" mode, by symmetry the displayed value = used, and the colored
-  // chunk is still on the right — sized by USED.
-  const rightSize = Math.round((displayed / 100) * width);
-  const leftSize = Math.max(0, width - rightSize);
+  const coloredSize = Math.round((displayed / 100) * width);
+  const plainSize = Math.max(0, width - coloredSize);
 
-  // In remaining mode, bar is "remaining on left, used on right". The
-  // colored chunk represents the danger metric (used). Wait — the spec
-  // says color is on the right, AND when remaining=20% the right 20% is red.
-  // remaining=20% means the bar is 20% remaining + 80% used. So the right
-  // 20% is the REMAINING portion. The bar visually goes: [used | remaining].
-  //
-  // Reinterpretation: in remaining mode the bar draws used on the LEFT and
-  // remaining on the RIGHT. The colored chunk is the REMAINING portion (on
-  // the right), and its color reflects the remaining % (red when low).
-  // This way the user sees "this is how much is left, in the danger color".
-  //
-  // In used mode the bar draws remaining on the LEFT and used on the RIGHT.
-  // The colored chunk is the USED portion (on the right), colored by used %.
-  // "this is how much I've consumed, in the danger color".
-  //
-  // So:
-  //   remaining mode:  bar = [used▓▓▓][remaining░░] with right ░░ in color
-  //                   → ▓▓▓ for consumed, colored ░░ for what's left
-  //                   → if remaining=20%, right 2 chars are colored red
-  //   used mode:       bar = [remaining░░][used▓▓▓] with right ▓▓▓ in color
-  //                   → colored chunk = consumed, colored by used %
-  //
-  // Net effect: colored chunk on the right, sized by displayed value, color
-  // = colorFor(displayed).
-
-  if (mode === "remaining") {
-    // left = used (▓), right = remaining (░), colored portion = remaining
-    const left = "▓".repeat(leftSize);
-    const right = "░".repeat(rightSize);
+  // Fixed layout: left = used cells (▓), right = remaining cells (░).
+  // Which side gets the color is decided by mode.
+  if (mode === "used") {
+    // Color the LEFT (the used ▓ cells).
+    const left = "▓".repeat(coloredSize);
+    const right = "░".repeat(plainSize);
     return {
-      leftPlain: left,
-      rightColored: rightSize > 0 ? `${color}${right}${RESET}` : "",
+      leftChunk: coloredSize > 0 ? `${color}${left}${RESET}` : "",
+      rightChunk: right,
       color,
     };
   }
-  // mode === "used"
-  // left = remaining (░), right = used (▓), colored portion = used
-  const left = "░".repeat(leftSize);
-  const right = "▓".repeat(rightSize);
+  // mode === "remaining"
+  // Color the RIGHT (the remaining ░ cells).
+  const left = "▓".repeat(plainSize);
+  const right = "░".repeat(coloredSize);
   return {
-    leftPlain: left,
-    rightColored: rightSize > 0 ? `${color}${right}${RESET}` : "",
+    leftChunk: left,
+    rightChunk: coloredSize > 0 ? `${color}${right}${RESET}` : "",
     color,
   };
 }
@@ -180,17 +144,18 @@ function formatOne(
   const resetSuffix = formatResetSuffix(w.resetAt, nowMs);
 
   // Layout: "<bar> <coloredDisplayedPct>%<RESET> (<reset>↻ / <windowLabel>)"
-  // Window label sits at the END of the segment, after the reset countdown,
+  // Window label sits at the END of each segment, after the reset countdown,
   // separated by ' / '. When reset info is missing we still emit the label
-  // so the segment isn't orphaned. The mode label (Usage:/Remain:) is
-  // prepended once by formatLine.
-  const tail = resetSuffix ? ` ${resetSuffix} / ${windowLabel}` : ` / ${windowLabel}`;
-  return `${bar.leftPlain}${bar.rightColored} ${bar.color}${displayedPct}%${RESET}${tail}`;
+  // (without the parentheses) so the segment isn't orphaned. The mode label
+  // (Usage:/Remain:) is prepended once by formatLine.
+  const tail = resetSuffix ? ` (${resetSuffix} / ${windowLabel})` : ` / ${windowLabel}`;
+  return `${bar.leftChunk}${bar.rightChunk} ${bar.color}${displayedPct}%${RESET}${tail}`;
 }
 
-// Compact "remaining time until reset" formatter. Returns e.g. "(2h3m↻)"
-// or "" when reset info is missing or already past. Drops the leading unit
-// when it is zero; minimum unit is minutes.
+// Compact "remaining time until reset" formatter. Returns e.g. "2h3m↻"
+// (no surrounding parens — the caller wraps the broader context) or "" when
+// reset info is missing or already past. Drops the leading unit when it is
+// zero; minimum unit is minutes.
 export function formatResetSuffix(resetAt: string | null | undefined, nowMs: number = Date.now()): string {
   if (!resetAt) return "";
   const t = Date.parse(resetAt);
@@ -213,8 +178,7 @@ export function formatResetSuffix(resetAt: string | null | undefined, nowMs: num
   const nonZero = units.filter(([v]) => v > 0);
   if (nonZero.length === 0) return "";
   const shown = nonZero.slice(0, 2);
-  const text = shown.map(([v, u]) => `${v}${u}`).join("");
-  return `(${text}↻)`;
+  return shown.map(([v, u]) => `${v}${u}`).join("") + "↻";
 }
 
 // Parse the TOKENPLAN_DISPLAY env var (or any caller-provided string) into a

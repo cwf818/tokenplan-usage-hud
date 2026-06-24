@@ -16,32 +16,79 @@ const YELLOW = "\x1b[38;5;220m";
 const ORANGE = "\x1b[38;5;208m";
 const RED = "\x1b[38;5;196m";
 
-describe("splitBar", () => {
-  it("remaining mode: left = used (▓), right = remaining (░, colored)", () => {
-    // used=85 → remaining=15 (band 0 = red) → right 2/10 chars are red
-    const bar = splitBar(85, "remaining", 10);
-    // rightSize = round(15/100 * 10) = round(1.5) = 2 → 8 plain ▓, 2 colored ░
-    assert.equal(bar.leftPlain, "▓▓▓▓▓▓▓▓");
-    assert.equal(bar.rightColored, `${RED}${"░░"}${RESET}`);
-  });
+// Strip ANSI escape codes so we can inspect content cleanly.
+const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
 
-  it("used mode: left = remaining (░), right = used (▓, colored)", () => {
-    // used=80 → right 8 chars (80%) colored, representing used
+describe("splitBar — unified layout (LEFT = used ▓, RIGHT = remaining ░)", () => {
+  it("used mode: left = used ▓ (colored), right = remaining ░ (plain)", () => {
+    // used=80 → displayed=80 → 8/10 colored → RED (band 4)
     const bar = splitBar(80, "used", 10);
-    assert.equal(bar.leftPlain, "░░"); // 20% remaining
-    assert.equal(bar.rightColored, `${RED}${"▓▓▓▓▓▓▓▓"}${RESET}`); // 80% used, red
+    // LEFT chunk: 8 ▓ wrapped in RED/RESET
+    assert.equal(strip(bar.leftChunk), "▓▓▓▓▓▓▓▓");
+    assert.ok(bar.leftChunk.startsWith(RED), `left should start with RED: ${JSON.stringify(bar.leftChunk)}`);
+    assert.ok(bar.leftChunk.endsWith(RESET), `left should end with RESET: ${JSON.stringify(bar.leftChunk)}`);
+    // RIGHT chunk: 2 ░ plain
+    assert.equal(bar.rightChunk, "░░");
+    // Color field carries the band's RED
+    assert.equal(bar.color, RED);
   });
 
-  it("colored chunk size = displayed value (rounded to width)", () => {
-    // used=50, remaining mode: displayed=50 → 4 of 8 colored
-    const bar = splitBar(50, "remaining", 8);
-    assert.equal(bar.leftPlain.length + (bar.rightColored.length - (RED.length + RESET.length)), 8);
+  it("remaining mode: left = used ▓ (plain), right = remaining ░ (colored)", () => {
+    // used=80 → remaining=20 → displayed=20 → 2/10 colored → ORANGE (band 1)
+    const bar = splitBar(80, "remaining", 10);
+    // LEFT chunk: 8 ▓ plain (no color wrapping)
+    assert.equal(bar.leftChunk, "▓▓▓▓▓▓▓▓");
+    assert.ok(!bar.leftChunk.includes("\x1b["), "left must be plain in remaining mode");
+    // RIGHT chunk: 2 ░ colored ORANGE
+    assert.equal(strip(bar.rightChunk), "░░");
+    assert.ok(bar.rightChunk.startsWith(ORANGE), `right should start with ORANGE: ${JSON.stringify(bar.rightChunk)}`);
+    assert.ok(bar.rightChunk.endsWith(RESET), `right should end with RESET: ${JSON.stringify(bar.rightChunk)}`);
+    assert.equal(bar.color, ORANGE);
   });
 
-  it("zero used → no colored chunk in used mode", () => {
+  it("used mode at low usage (15%) — colored chunk is on LEFT, small", () => {
+    // used=15 → displayed=15 → 1/8 colored (band 0 = BRIGHT_GREEN)
+    const bar = splitBar(15, "used", 8);
+    assert.equal(strip(bar.leftChunk), "▓");
+    assert.equal(bar.leftChunk, `${BRIGHT_GREEN}▓${RESET}`);
+    assert.equal(bar.rightChunk, "░░░░░░░");
+    assert.equal(bar.color, BRIGHT_GREEN);
+  });
+
+  it("remaining mode at high remaining (75%) — colored chunk is on RIGHT, big", () => {
+    // used=25 → remaining=75 → displayed=75 → 6/8 colored (band 3 = DARK_GREEN)
+    const bar = splitBar(25, "remaining", 8);
+    assert.equal(bar.leftChunk, "▓▓"); // plain ▓ = used 25%
+    assert.equal(strip(bar.rightChunk), "░░░░░░"); // 6 colored ░ = remaining 75%
+    assert.ok(bar.rightChunk.startsWith(DARK_GREEN));
+    assert.equal(bar.color, DARK_GREEN);
+  });
+
+  it("zero usage: used mode emits no colored chunk; both sides stay plain", () => {
     const bar = splitBar(0, "used", 8);
-    assert.equal(bar.leftPlain, "░░░░░░░░");
-    assert.equal(bar.rightColored, "");
+    assert.equal(bar.leftChunk, ""); // nothing to color
+    assert.equal(bar.rightChunk, "░░░░░░░░");
+    // Even with no colored cells, the color field still reflects the band (bright green).
+    assert.equal(bar.color, BRIGHT_GREEN);
+  });
+
+  it("full usage: remaining mode emits no colored chunk", () => {
+    // used=100 → remaining=0 → displayed=0 → 0 colored ░ → bar.color is RED
+    const bar = splitBar(100, "remaining", 8);
+    assert.equal(bar.leftChunk, "▓▓▓▓▓▓▓▓");
+    assert.equal(bar.rightChunk, "");
+    assert.equal(bar.color, RED);
+  });
+
+  it("split sizes sum to width regardless of mode", () => {
+    for (const u of [0, 10, 25, 50, 75, 90, 100]) {
+      for (const m of ["used", "remaining"] as const) {
+        const bar = splitBar(u, m, 8);
+        const leftPlainLen = strip(bar.leftChunk).length;
+        const rightPlainLen = strip(bar.rightChunk).length;
+        assert.equal(leftPlainLen + rightPlainLen, 8, `u=${u} mode=${m}`);
+      }
+    }
   });
 });
 
@@ -152,16 +199,17 @@ describe("formatLine — mode='used' (default)", () => {
     assert.ok(line.includes(`60%`));
   });
 
-  it("displayed value = 100 - used", () => {
+  it("displayed value = 100 - used when mode='remaining'", () => {
     // used=38 → display remaining=62 → dark green
     const line = formatLine({ pct: 38 }, { pct: 60 }, "remaining");
     assert.ok(line.includes(`${DARK_GREEN}62%${RESET}`));
     assert.ok(line.includes(`${YELLOW}40%${RESET}`));
   });
 
-  it("colored chunk is on the RIGHT and represents remaining", () => {
-    // used=75 → remaining=25 → right 2/8 chars are orange, representing remaining
+  it("remaining mode: colored ░ on RIGHT represents remaining", () => {
+    // used=75 → remaining=25 → displayed=25 (band 1 = ORANGE) → 2/8 right cells colored
     const line = formatLine({ pct: 75 }, { pct: 0 }, "remaining");
+    // Bar: 6 plain ▓ + 2 colored ░
     assert.ok(line.includes(`▓▓▓▓▓▓${ORANGE}░░${RESET} ${ORANGE}25%${RESET}`),
       `got: ${line}`);
     // Window label sits at the END after the reset countdown.
@@ -182,16 +230,17 @@ describe("formatLine — mode='used'", () => {
     assert.ok(line.includes(`${RED}90%${RESET}`));
   });
 
-  it("colored chunk is on the RIGHT and represents used", () => {
-    // used=75 → right 6/8 chars are orange, representing used
+  it("used mode: colored ▓ on LEFT represents used", () => {
+    // used=75 → displayed=75 (band 3 = ORANGE) → 6/8 LEFT cells colored
     const line = formatLine({ pct: 75 }, { pct: 0 }, "used");
-    assert.ok(line.includes(`░░${ORANGE}▓▓▓▓▓▓${RESET} ${ORANGE}75%${RESET}`),
+    // Bar: 6 colored ▓ (LEFT) + 2 plain ░ (RIGHT)
+    assert.ok(line.includes(`${ORANGE}▓▓▓▓▓▓${RESET}░░ ${ORANGE}75%${RESET}`),
       `got: ${line}`);
     // Window label at the END after the reset countdown.
     assert.ok(line.includes(` / 5h`), `got: ${line}`);
   });
 
-  it("full layout matches spec: 'Usage: <bar> <pct>% (<reset>↻ / 5h) · ...'", () => {
+  it("full layout matches spec: 'Usage: <bar> <pct>% (reset / 5h) · ...'", () => {
     const now = Date.parse("2026-06-24T12:00:00Z");
     const line = formatLine(
       { pct: 62, resetAt: "2026-06-24T12:38:00Z" },
@@ -199,24 +248,26 @@ describe("formatLine — mode='used'", () => {
       "used",
       now
     );
-    // 5h: used=62 → 3 plain + 5 colored
+    // 5h: used=62 → 5 colored ▓ (LEFT) + 3 plain ░ (RIGHT), ORANGE
     assert.ok(
-      line.includes(`░░░${ORANGE}▓▓▓▓▓${RESET} ${ORANGE}62%${RESET} (38m↻) / 5h`),
+      line.includes(`${ORANGE}▓▓▓▓▓${RESET}░░░ ${ORANGE}62%${RESET} (38m↻ / 5h)`),
       `got: ${line}`
     );
-    // wk: used=42 → 5 plain + 3 colored
+    // wk: used=42 → 3 colored ▓ (LEFT) + 5 plain ░ (RIGHT), YELLOW
     assert.ok(
-      line.includes(`░░░░░${YELLOW}▓▓▓${RESET} ${YELLOW}42%${RESET} (4d16h↻) / wk`),
+      line.includes(`${YELLOW}▓▓▓${RESET}░░░░░ ${YELLOW}42%${RESET} (4d16h↻ / wk)`),
       `got: ${line}`
     );
     // Mode label once at the front, ' · ' between windows.
     assert.ok(line.startsWith("Usage: "), `got: ${line}`);
     assert.ok(line.includes(" · "));
+    // No double parens: "(38m↻ / 5h)" not "(38m↻) / 5h".
+    assert.ok(!line.includes("↻)"), `got: ${line}`);
   });
 });
 
 describe("formatLine — reset suffix integration", () => {
-  it("appends (↻) suffix when resetAt is set", () => {
+  it("appends reset countdown inside parens, label after slash", () => {
     const now = Date.parse("2026-06-24T12:00:00Z");
     const line = formatLine(
       { pct: 30, resetAt: "2026-06-24T14:03:00Z" },
@@ -224,13 +275,15 @@ describe("formatLine — reset suffix integration", () => {
       "remaining",
       now
     );
-    assert.ok(line.includes("(2h3m↻)"));
-    assert.ok(line.includes("(3d5h↻)"));
+    assert.ok(line.includes("(2h3m↻ / 5h)"));
+    assert.ok(line.includes("(3d5h↻ / wk)"));
   });
 
-  it("omits suffix when resetAt is missing", () => {
+  it("omits suffix and inner parens when resetAt is missing, label still appears", () => {
     const line = formatLine({ pct: 30 }, { pct: 40 });
     assert.ok(!line.includes("↻"));
+    assert.ok(line.includes(" / 5h"));
+    assert.ok(line.includes(" / wk"));
   });
 });
 
@@ -249,35 +302,35 @@ describe("formatResetSuffix", () => {
     assert.equal(formatResetSuffix(at(-60_000), NOW), "");
   });
 
-  it("formats hours and minutes (drops zero days)", () => {
-    assert.equal(formatResetSuffix(at(2 * 3_600_000 + 3 * 60_000), NOW), "(2h3m↻)");
+  it("formats hours and minutes (drops zero days), no surrounding parens", () => {
+    assert.equal(formatResetSuffix(at(2 * 3_600_000 + 3 * 60_000), NOW), "2h3m↻");
   });
 
   it("formats minutes only when hours and days are zero", () => {
-    assert.equal(formatResetSuffix(at(5 * 60_000), NOW), "(5m↻)");
+    assert.equal(formatResetSuffix(at(5 * 60_000), NOW), "5m↻");
   });
 
   it("keeps two units when all three are non-zero", () => {
     assert.equal(
       formatResetSuffix(at((24 + 2) * 3_600_000 + 3 * 60_000), NOW),
-      "(1d2h↻)"
+      "1d2h↻"
     );
   });
 
   it("formats days + hours when minutes are zero", () => {
     assert.equal(
       formatResetSuffix(at((3 * 24 + 5) * 3_600_000), NOW),
-      "(3d5h↻)"
+      "3d5h↻"
     );
   });
 
   it("formats a single unit when only one is non-zero", () => {
-    assert.equal(formatResetSuffix(at(1 * 60_000), NOW), "(1m↻)");
-    assert.equal(formatResetSuffix(at(2 * 3_600_000), NOW), "(2h↻)");
-    assert.equal(formatResetSuffix(at(2 * 24 * 3_600_000), NOW), "(2d↻)");
+    assert.equal(formatResetSuffix(at(1 * 60_000), NOW), "1m↻");
+    assert.equal(formatResetSuffix(at(2 * 3_600_000), NOW), "2h↻");
+    assert.equal(formatResetSuffix(at(2 * 24 * 3_600_000), NOW), "2d↻");
   });
 
   it("does not show seconds — sub-minute remainder rounds down", () => {
-    assert.equal(formatResetSuffix(at(3_600_000 + 30_000), NOW), "(1h↻)");
+    assert.equal(formatResetSuffix(at(3_600_000 + 30_000), NOW), "1h↻");
   });
 });
