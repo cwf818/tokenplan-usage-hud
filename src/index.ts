@@ -14,6 +14,10 @@ import { compose } from "./composition.ts";
 const CACHE_KEY = "remains";
 const TTL_MS = 60_000;
 
+// Read the upstream statusline output once at startup so the main flow and the
+// crash handler can't drift apart on env-var reads.
+const UPSTREAM = process.env.TOKENPLAN_UPSTREAM;
+
 async function readStdin(): Promise<string> {
   return new Promise((resolve, reject) => {
     let buf = "";
@@ -61,7 +65,7 @@ async function main(): Promise<void> {
   await readStdin().catch(() => "");
 
   const baseUrl = process.env.ANTHROPIC_BASE_URL;
-  const upstream = process.env.TOKENPLAN_UPSTREAM;
+  const upstream = UPSTREAM;
 
   if (!isMiniMaxBaseUrl(baseUrl)) {
     process.stdout.write(compose(upstream, null));
@@ -83,7 +87,7 @@ async function main(): Promise<void> {
 // never blanked by our crash). Token is never logged.
 process.on("uncaughtException", (err) => {
   process.stderr.write(`tokenplan-usage-hud: ${(err as Error).message}\n`);
-  process.stdout.write(process.env.TOKENPLAN_UPSTREAM ?? "");
+  process.stdout.write(UPSTREAM ?? "");
   process.exit(0);
 });
 
