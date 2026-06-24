@@ -214,16 +214,17 @@ export function formatResetSuffix(resetAt: string | null | undefined, nowMs: num
 }
 
 // Parse the TOKENPLAN_DISPLAY env var (or any caller-provided string) into a
-// DisplayMode. Defaults to "remaining" on anything unrecognized.
+// DisplayMode. Defaults to "used" on anything unrecognized. Pass
+// TOKENPLAN_DISPLAY=remaining to opt into remaining-mode.
 export function resolveDisplayMode(value: string | undefined | null): DisplayMode {
-  if (value && value.toLowerCase() === "used") return "used";
-  return "remaining";
+  if (value && value.toLowerCase() === "remaining") return "remaining";
+  return "used";
 }
 
 export function formatLine(
   fiveHour: Window,
   weekly: Window,
-  mode: DisplayMode = "remaining",
+  mode: DisplayMode = "used",
   nowMs: number = Date.now()
 ): string {
   const modeLabel = MODE_LABELS[mode];

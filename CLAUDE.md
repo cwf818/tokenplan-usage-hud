@@ -51,7 +51,7 @@ Claude Code's `statusLine.command` spawns a child process that reads a session J
    - **Real shape** (verified against `https://www.minimaxi.com/v1/token_plan/remains` on 2026-06-24): `{ model_remains: [{ model_name, current_interval_remaining_percent, current_weekly_remaining_percent, end_time, weekly_end_time, … }, …], base_resp: { status_code } }`. We pick the entry with the **lowest interval remaining %** as the source of truth (the most-active model).
    - **Legacy/fallback shape**: `{ data: { five_hour: { remaining, limit }, weekly: { remaining, limit } } }` — for any provider that returns the simpler schema.
 4. Cache: `src/cache.ts` holds a single 60-second TTL entry. On fetch failure it returns the stale value so the statusline doesn't blank.
-5. Render: `src/render.ts` emits a single compact line `5h ▓▓▓░░░░░ 38% · wk ▓▓▓░░░░░ 39%`. ANSI colors: green < 20% used, yellow 20–50%, red ≥ 50% — applied to the filled bar and percentage only; the empty bar stays uncolored.
+5. Render: `src/render.ts` emits a single compact line `Usage: 5h ░░░▓▓▓▓▓ 38%(47m↻) · wk ░░░░░▓▓▓ 39%(4d47m↻)`. Layout: a single mode label prefix (`Usage:` or `Remain:`), then per-window `<label> <leftPlain><rightColored> <coloredN%><RESET>(<reset>↻)` segments joined with ` · `. Default mode is **`used`** (line begins with `Usage:`); set `TOKENPLAN_DISPLAY=remaining` to switch. 5-band colors (256-color SGR): bright green / dark green / yellow / orange / red, applied to the displayed value at 0/20/40/60/80 boundaries. The colored chunk is always on the right side of the bar, sized by the displayed value.
 6. Compose: `src/composition.ts` emits upstream (claude-hud output) on line 1 and our line on line 2.
 
 ### Installation into Claude Code

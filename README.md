@@ -57,6 +57,21 @@ Replace `/c/Program Files/nodejs/node` with your platform's `node` path on non-W
 
 The plugin only renders the token-plan line when `ANTHROPIC_BASE_URL` contains `minimaxi.com` (case-insensitive). On vanilla Anthropic, OpenRouter, or any other provider, the line is hidden and upstream `claude-hud` output passes through unchanged.
 
+## Display mode
+
+Default mode is **`used`** — the line begins with `Usage:` and the percentage shown is the percentage of the window you've consumed. The colored bar segment represents the consumed portion.
+
+Switch to `remaining` mode by setting `TOKENPLAN_DISPLAY=remaining` in the shell environment that runs Claude Code:
+
+```bash
+export TOKENPLAN_DISPLAY=remaining
+claude
+```
+
+In remaining mode the line begins with `Remain:` and the percentage is what's left; the colored bar segment represents the remaining portion.
+
+5-band color thresholds (applied to the displayed value): bright green / dark green / yellow / orange / red at 0 / 20 / 40 / 60 / 80 boundaries.
+
 ## Auth
 
 The plugin reuses `process.env.ANTHROPIC_AUTH_TOKEN` to call the MiniMax `GET https://www.minimaxi.com/v1/token_plan/remains` endpoint. **No new env vars.** See [SECURITY.md](./SECURITY.md) for how the token is handled.
