@@ -4,5 +4,5 @@
   "description": "Appends MiniMax token-plan usage (5h + weekly) to the Claude Code statusline. Stays silent on other providers.",
   "license": "MIT",
   "keywords": ["statusline", "hud", "minimax", "minimaxi", "token-plan", "claude-code"],
-  "homepage": "https://github.com/chen20220011/tokenplan-usage-hud"
+  "homepage": "https://github.com/cwf818/tokenplan-usage-hud"
 }
