@@ -127,23 +127,29 @@ describe("colorFor — 5-band thresholds on DISPLAYED value", () => {
 });
 
 describe("resolveDisplayMode", () => {
-  it("defaults to 'remaining'", () => {
-    assert.equal(resolveDisplayMode(undefined), "remaining");
-    assert.equal(resolveDisplayMode(""), "remaining");
-    assert.equal(resolveDisplayMode("bogus"), "remaining");
+  it("defaults to 'used'", () => {
+    assert.equal(resolveDisplayMode(undefined), "used");
+    assert.equal(resolveDisplayMode(""), "used");
+    assert.equal(resolveDisplayMode("bogus"), "used");
   });
-  it("recognises 'used' (case-insensitive)", () => {
-    assert.equal(resolveDisplayMode("used"), "used");
-    assert.equal(resolveDisplayMode("USED"), "used");
-    assert.equal(resolveDisplayMode("Used"), "used");
+  it("recognises 'remaining' (case-insensitive)", () => {
+    assert.equal(resolveDisplayMode("remaining"), "remaining");
+    assert.equal(resolveDisplayMode("REMAINING"), "remaining");
+    assert.equal(resolveDisplayMode("Remaining"), "remaining");
   });
 });
 
-describe("formatLine — mode='remaining' (default)", () => {
-  it("prefixes with 'Remain:' label", () => {
-    const line = formatLine({ pct: 38 }, { pct: 60 }, "remaining");
-    assert.ok(line.startsWith("Remain: "), `got: ${line}`);
+describe("formatLine — mode='used' (default)", () => {
+  it("prefixes with 'Usage:' label by default", () => {
+    const line = formatLine({ pct: 38 }, { pct: 60 });
+    assert.ok(line.startsWith("Usage: "), `got: ${line}`);
     assert.ok(line.includes(" · "));
+  });
+
+  it("default mode displays used percentages (38% / 60%)", () => {
+    const line = formatLine({ pct: 38 }, { pct: 60 });
+    assert.ok(line.includes(`38%`));
+    assert.ok(line.includes(`60%`));
   });
 
   it("displayed value = 100 - used", () => {
