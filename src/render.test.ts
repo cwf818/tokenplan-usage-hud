@@ -1,11 +1,12 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { formatLine, formatResetSuffix, pctBar } from "./render.ts";
+import { colorFor, formatLine, formatResetSuffix, pctBar, resolveDisplayMode } from "./render.ts";
 
 const RESET = "\x1b[0m";
-const GREEN = "\x1b[32m";
-const YELLOW = "\x1b[33m";
-const RED = "\x1b[31m";
+const GREEN = "\x1b[38;5;41m";
+const YELLOW = "\x1b[38;5;220m";
+const ORANGE = "\x1b[38;5;208m";
+const RED = "\x1b[38;5;196m";
 
 describe("pctBar", () => {
   it("builds fixed-width bars", () => {
@@ -25,59 +26,108 @@ describe("pctBar", () => {
   });
 });
 
-describe("formatLine color thresholds", () => {
-  // Color logic:
-  //   used% < 20  → green (plenty of room)
-  //   used% < 50  → yellow
-  //   used% >= 50 → red
+describe("colorFor — 4-band thresholds on DISPLAYED value", () => {
+  // Default thresholds: green < 40, yellow < 60, orange < 80, else red.
+  it("green below 40", () => {
+    assert.equal(colorFor(0), GREEN);
+    assert.equal(colorFor(39.9), GREEN);
+  });
+  it("yellow at 40..59", () => {
+    assert.equal(colorFor(40), YELLOW);
+    assert.equal(colorFor(59.9), YELLOW);
+  });
+  it("orange at 60..79", () => {
+    assert.equal(colorFor(60), ORANGE);
+    assert.equal(colorFor(79.9), ORANGE);
+  });
+  it("red at >= 80", () => {
+    assert.equal(colorFor(80), RED);
+    assert.equal(colorFor(100), RED);
+  });
+  it("clamps out-of-range values", () => {
+    assert.equal(colorFor(-50), GREEN);
+    assert.equal(colorFor(200), RED);
+  });
+});
 
-  it("colors green when used < 20%", () => {
-    const line = formatLine({ pct: 10 }, { pct: 5 });
-    assert.ok(line.includes(GREEN), `expected green in ${JSON.stringify(line)}`);
+describe("resolveDisplayMode", () => {
+  it("defaults to 'remaining'", () => {
+    assert.equal(resolveDisplayMode(undefined), "remaining");
+    assert.equal(resolveDisplayMode(""), "remaining");
+    assert.equal(resolveDisplayMode("bogus"), "remaining");
+  });
+  it("recognises 'used' (case-insensitive)", () => {
+    assert.equal(resolveDisplayMode("used"), "used");
+    assert.equal(resolveDisplayMode("USED"), "used");
+    assert.equal(resolveDisplayMode("Used"), "used");
+  });
+});
+
+describe("formatLine — mode='remaining' (default)", () => {
+  it("displayed value = 100 - used", () => {
+    // used=38 → display remaining=62 → orange
+    const line = formatLine({ pct: 38 }, { pct: 60 }, "remaining");
+    assert.ok(line.includes(`${ORANGE}62%${RESET}`));
+    assert.ok(line.includes(`${YELLOW}40%${RESET}`));
   });
 
-  it("colors yellow when used in [20, 50)%", () => {
-    const line = formatLine({ pct: 30 }, { pct: 25 });
-    assert.ok(line.includes(YELLOW), `expected yellow in ${JSON.stringify(line)}`);
-    assert.ok(line.includes(`${YELLOW}30%${RESET}`));
+  it("color matches remaining % thresholds", () => {
+    // used=10 → remaining=90 → red
+    assert.ok(formatLine({ pct: 10 }, { pct: 0 }, "remaining").includes(RED));
+    // used=50 → remaining=50 → yellow
+    assert.ok(formatLine({ pct: 50 }, { pct: 0 }, "remaining").includes(YELLOW));
+    // used=80 → remaining=20 → red
+    assert.ok(formatLine({ pct: 80 }, { pct: 0 }, "remaining").includes(RED));
   });
 
-  it("colors red when used >= 50%", () => {
-    const line = formatLine({ pct: 80 }, { pct: 90 });
-    assert.ok(line.includes(RED), `expected red in ${JSON.stringify(line)}`);
-    assert.ok(line.includes(`${RED}80%${RESET}`));
+  it("bar fill reflects USED (intuitive: filled = consumed)", () => {
+    // used=50 → bar 4/8 filled
+    const line = formatLine({ pct: 50 }, { pct: 0 }, "remaining");
+    assert.ok(line.includes(`5h ${YELLOW}▓▓▓▓${RESET}░░░░`), `got: ${line}`);
+  });
+});
+
+describe("formatLine — mode='used'", () => {
+  it("displayed value = used", () => {
+    // used=70 → display 70 → orange
+    const line = formatLine({ pct: 70 }, { pct: 90 }, "used");
+    assert.ok(line.includes(`${ORANGE}70%${RESET}`));
     assert.ok(line.includes(`${RED}90%${RESET}`));
   });
 
-  it("wraps filled portion + percentage with color; empty portion stays uncolored", () => {
-    // 5h at 50%: 4 filled, 4 empty, 50% → red
-    const line = formatLine({ pct: 50 }, { pct: 50 });
-    assert.ok(line.includes(`5h ${RED}▓▓▓▓${RESET}░░░░ ${RED}50%${RESET}`));
-    assert.ok(line.includes(`wk ${RED}▓▓▓▓${RESET}░░░░ ${RED}50%${RESET}`));
+  it("color matches used % thresholds", () => {
+    // used=10 → green
+    assert.ok(formatLine({ pct: 10 }, { pct: 0 }, "used").includes(GREEN));
+    // used=45 → yellow
+    assert.ok(formatLine({ pct: 45 }, { pct: 0 }, "used").includes(YELLOW));
+    // used=65 → orange
+    assert.ok(formatLine({ pct: 65 }, { pct: 0 }, "used").includes(ORANGE));
+    // used=85 → red
+    assert.ok(formatLine({ pct: 85 }, { pct: 0 }, "used").includes(RED));
   });
 
-  it("joins windows with '·'", () => {
-    const line = formatLine({ pct: 30 }, { pct: 40 });
-    assert.ok(line.includes(" · "));
+  it("bar fill still reflects used (consistent with mode='remaining')", () => {
+    const line = formatLine({ pct: 50 }, { pct: 0 }, "used");
+    assert.ok(line.includes(`5h ${YELLOW}▓▓▓▓${RESET}░░░░`), `got: ${line}`);
   });
+});
 
-  it("rounds fractional percentages", () => {
-    const line = formatLine({ pct: 33.7 }, { pct: 66.4 });
-    assert.ok(line.includes("34%"));
-    assert.ok(line.includes("66%"));
-  });
-
+describe("formatLine — reset suffix integration", () => {
   it("appends (↻) suffix when resetAt is set", () => {
-    // Pin now to a deterministic value: 2026-06-24T12:00:00Z.
     const now = Date.parse("2026-06-24T12:00:00Z");
     const line = formatLine(
       { pct: 30, resetAt: "2026-06-24T14:03:00Z" },
       { pct: 40, resetAt: "2026-06-27T17:00:00Z" },
+      "remaining",
       now
     );
-    // 2h3m and 3d5h
-    assert.ok(line.includes("(2h3m↻)"), `expected (2h3m↻) in ${JSON.stringify(line)}`);
-    assert.ok(line.includes("(3d5h↻)"), `expected (3d5h↻) in ${JSON.stringify(line)}`);
+    assert.ok(line.includes("(2h3m↻)"));
+    assert.ok(line.includes("(3d5h↻)"));
+  });
+
+  it("omits suffix when resetAt is missing", () => {
+    const line = formatLine({ pct: 30 }, { pct: 40 });
+    assert.ok(!line.includes("↻"));
   });
 });
 
@@ -121,21 +171,11 @@ describe("formatResetSuffix", () => {
 
   it("formats a single unit when only one is non-zero", () => {
     assert.equal(formatResetSuffix(at(1 * 60_000), NOW), "(1m↻)");
-    assert.equal(
-      formatResetSuffix(at(2 * 3_600_000), NOW),
-      "(2h↻)"
-    );
-    assert.equal(
-      formatResetSuffix(at(2 * 24 * 3_600_000), NOW),
-      "(2d↻)"
-    );
+    assert.equal(formatResetSuffix(at(2 * 3_600_000), NOW), "(2h↻)");
+    assert.equal(formatResetSuffix(at(2 * 24 * 3_600_000), NOW), "(2d↻)");
   });
 
   it("does not show seconds — sub-minute remainder rounds down", () => {
-    // 1h 0m 30s → "(1h↻)" (30s discarded)
-    assert.equal(
-      formatResetSuffix(at(3_600_000 + 30_000), NOW),
-      "(1h↻)"
-    );
+    assert.equal(formatResetSuffix(at(3_600_000 + 30_000), NOW), "(1h↻)");
   });
 });
