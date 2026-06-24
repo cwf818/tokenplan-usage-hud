@@ -7,16 +7,34 @@ export type Window = {
   resetAt?: string | null;
 };
 
+export type DisplayMode = "remaining" | "used";
+
 const RESET = "\x1b[0m";
 
-function colorFor(pct: number): string {
-  // pct = percentage USED (0..100). More used → more concerning.
-  // < 20% used = green (plenty of room)
-  // 20..50% = yellow
-  // > 50% = red
-  if (pct < 20) return "\x1b[32m"; // green
-  if (pct < 50) return "\x1b[33m"; // yellow
-  return "\x1b[31m"; // red
+// 256-color SGR sequences — chosen for legibility on both light and dark
+// terminals (the default 16-color green is muddy on dark backgrounds, and
+// the 16-color set has no orange at all).
+const GREEN = "\x1b[38;5;41m"; // #00d787 — bright green
+const YELLOW = "\x1b[38;5;220m"; // #ffd75f — warm yellow
+const ORANGE = "\x1b[38;5;208m"; // #ff8700 — true orange
+const RED = "\x1b[38;5;196m"; // #ff5f5f — clear red
+
+// 4-band color thresholds applied to the **displayed** value.
+// Displayed value = remaining% (mode="remaining") or used% (mode="used").
+// Thresholds therefore have the SAME numeric meaning in both modes — only
+// the sign of the metric is flipped.
+const COLOR_THRESHOLDS = {
+  green: 40, // displayed value below this → green
+  yellow: 60, // below this → yellow
+  orange: 80, // below this → orange; otherwise red
+} as const;
+
+export function colorFor(displayedPct: number): string {
+  const v = Math.max(0, Math.min(100, displayedPct));
+  if (v < COLOR_THRESHOLDS.green) return GREEN;
+  if (v < COLOR_THRESHOLDS.yellow) return YELLOW;
+  if (v < COLOR_THRESHOLDS.orange) return ORANGE;
+  return RED;
 }
 
 export function pctBar(usedPctValue: number, width = 8): { filled: string; empty: string } {
@@ -29,14 +47,26 @@ export function pctBar(usedPctValue: number, width = 8): { filled: string; empty
   };
 }
 
-function formatOne(label: string, w: Window, width = 8, nowMs: number = Date.now()): string {
-  const pct = Math.max(0, Math.min(100, Math.round(w.pct)));
-  const { filled, empty } = pctBar(pct, width);
-  const color = colorFor(pct);
-  // Color wraps just the filled portion + the percentage number, so the
-  // empty bar stays readable in any terminal.
+function formatOne(
+  label: string,
+  w: Window,
+  mode: DisplayMode,
+  width = 8,
+  nowMs: number = Date.now()
+): string {
+  // Compute the value to display based on mode. "remaining" shows what's
+  // left (more = healthier); "used" shows what's consumed (less = healthier).
+  // The bar is always drawn against the USED percentage (filled blocks
+  // intuitively mean "consumed").
+  const usedPct = Math.max(0, Math.min(100, Math.round(w.pct)));
+  const displayedPct = mode === "remaining" ? 100 - usedPct : usedPct;
+
+  const { filled, empty } = pctBar(usedPct, width);
+  const color = colorFor(displayedPct);
+  // Color wraps just the filled portion + the displayed percentage number,
+  // so the empty bar stays readable in any terminal.
   const resetSuffix = formatResetSuffix(w.resetAt, nowMs);
-  return `${label} ${color}${filled}${RESET}${empty} ${color}${pct}%${RESET}${resetSuffix}`;
+  return `${label} ${color}${filled}${RESET}${empty} ${color}${displayedPct}%${RESET}${resetSuffix}`;
 }
 
 // Compact "remaining time until reset" formatter. Returns e.g. "(2h3m↻)"
@@ -68,6 +98,18 @@ export function formatResetSuffix(resetAt: string | null | undefined, nowMs: num
   return `(${text}↻)`;
 }
 
-export function formatLine(fiveHour: Window, weekly: Window, nowMs: number = Date.now()): string {
-  return `${formatOne("5h", fiveHour, 8, nowMs)} · ${formatOne("wk", weekly, 8, nowMs)}`;
+// Parse the TOKENPLAN_DISPLAY env var (or any caller-provided string) into a
+// DisplayMode. Defaults to "remaining" on anything unrecognized.
+export function resolveDisplayMode(value: string | undefined | null): DisplayMode {
+  if (value && value.toLowerCase() === "used") return "used";
+  return "remaining";
+}
+
+export function formatLine(
+  fiveHour: Window,
+  weekly: Window,
+  mode: DisplayMode = "remaining",
+  nowMs: number = Date.now()
+): string {
+  return `${formatOne("5h", fiveHour, mode, 8, nowMs)} · ${formatOne("wk", weekly, mode, 8, nowMs)}`;
 }

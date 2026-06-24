@@ -8,7 +8,7 @@
 
 import * as cache from "./cache.ts";
 import { fetchRemains, isMiniMaxBaseUrl, type Remains } from "./api.ts";
-import { formatLine } from "./render.ts";
+import { formatLine, resolveDisplayMode } from "./render.ts";
 import { compose } from "./composition.ts";
 
 const CACHE_KEY = "remains";
@@ -44,13 +44,14 @@ async function getPlanData(token: string): Promise<Remains | null> {
 }
 
 function renderPlanLine(data: Remains): string | null {
+  const mode = resolveDisplayMode(process.env.TOKENPLAN_DISPLAY);
   if (data.fiveHour && data.weekly) {
-    return formatLine(data.fiveHour, data.weekly);
+    return formatLine(data.fiveHour, data.weekly, mode);
   }
   // If only one window is present, render what's available rather than nothing.
   const zero = { pct: 0 } as const;
-  if (data.fiveHour) return formatLine(data.fiveHour, zero);
-  if (data.weekly) return formatLine(zero, data.weekly);
+  if (data.fiveHour) return formatLine(data.fiveHour, zero, mode);
+  if (data.weekly) return formatLine(zero, data.weekly, mode);
   return null;
 }
 
