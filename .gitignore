@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+.DS_Store
+Thumbs.db
+*.log
+npm-debug.log*
+.vscode/
+.idea/
+
+# Claude Code settings — contains live ANTHROPIC_AUTH_TOKEN. Never commit.
+.claude/settings.json
+.claude/settings.local.json

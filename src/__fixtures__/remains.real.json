@@ -1,0 +1,43 @@
+{
+  "_comment": "Real response captured from https://www.minimaxi.com/v1/token_plan/remains on 2026-06-24. Array shape under 'model_remains', with each entry exposing interval and weekly percentages directly.",
+  "model_remains": [
+    {
+      "start_time": 1782302400000,
+      "end_time": 1782316800000,
+      "remains_time": 7073105,
+      "current_interval_total_count": 0,
+      "current_interval_usage_count": 0,
+      "model_name": "general",
+      "current_weekly_total_count": 0,
+      "current_weekly_usage_count": 0,
+      "weekly_start_time": 1782057600000,
+      "weekly_end_time": 1782662400000,
+      "weekly_remains_time": 352673105,
+      "current_interval_status": 1,
+      "current_interval_remaining_percent": 66,
+      "current_weekly_status": 1,
+      "current_weekly_remaining_percent": 61
+    },
+    {
+      "start_time": 1782230400000,
+      "end_time": 1782316800000,
+      "remains_time": 7073105,
+      "current_interval_total_count": 0,
+      "current_interval_usage_count": 0,
+      "model_name": "video",
+      "current_weekly_total_count": 0,
+      "current_weekly_usage_count": 0,
+      "weekly_start_time": 1782057600000,
+      "weekly_end_time": 1782662400000,
+      "weekly_remains_time": 352673105,
+      "current_interval_status": 3,
+      "current_interval_remaining_percent": 100,
+      "current_weekly_status": 3,
+      "current_weekly_remaining_percent": 100
+    }
+  ],
+  "base_resp": {
+    "status_code": 0,
+    "status_msg": "success"
+  }
+}

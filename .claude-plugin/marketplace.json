@@ -1,0 +1,12 @@
+{
+  "name": "tokenplan-usage-hud",
+  "owner": { "name": "chen20220011" },
+  "plugins": [
+    {
+      "name": "tokenplan-usage-hud",
+      "source": "./",
+      "description": "Claude Code statusline plugin that appends MiniMax token-plan usage (5h + weekly) to the existing claude-hud output. Hides itself on non-MiniMax providers.",
+      "version": "0.1.0"
+    }
+  ]
+}
