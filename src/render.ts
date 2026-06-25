@@ -234,13 +234,26 @@ function formatBalanceValue(v: number): string {
 // One rendered chunk: `$/￥<value>`. The currency label is fixed by the
 // user's spec — even though DeepSeek reports per-entry currencies, the
 // display prefix is shared.
-function formatBalanceChunk(v: number): string {
-  return `$/￥${formatBalanceValue(v)}`;
+// Per-currency display prefix. The DeepSeek API may return any string in
+// `currency`; we recognize the two common ones and fall back to the raw
+// currency code for anything else (e.g. EUR → "EUR10.50"). Unknown
+// currencies are still rendered (the user can see the code) rather than
+// blanked, so a new provider currency never silently disappears.
+function prefixForCurrency(currency: string): string {
+  const upper = currency.toUpperCase();
+  if (upper === "USD") return "$";
+  if (upper === "CNY" || upper === "RMB") return "￥";
+  // Default: show the currency code itself, uppercased.
+  return upper || "￥";
+}
+
+function formatBalanceChunk(currency: string, v: number): string {
+  return `${prefixForCurrency(currency)}${formatBalanceValue(v)}`;
 }
 
 export type BalanceLike = {
   isAvailable: boolean;
-  entries: ReadonlyArray<{ totalBalance: number }>;
+  entries: ReadonlyArray<{ currency: string; totalBalance: number }>;
   minValue: number | null;
 };
 
@@ -248,7 +261,7 @@ export function formatBalanceLine(b: BalanceLike): string {
   if (!b.isAvailable || b.entries.length === 0 || b.minValue == null) {
     return `Balance: ${RED}not available!${RESET}`;
   }
-  const chunks = b.entries.map((e) => formatBalanceChunk(e.totalBalance));
+  const chunks = b.entries.map((e) => formatBalanceChunk(e.currency, e.totalBalance));
   // Color follows the LOWEST entry — most urgent currency drives the hue.
   const color = colorForBalance(b.minValue);
   return `Balance: ${color}${chunks.join(" · ")}${RESET}`;

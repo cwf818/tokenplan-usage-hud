@@ -369,58 +369,91 @@ describe("colorForBalance — 5-band thresholds (5/10/20/50)", () => {
 });
 
 describe("formatBalanceLine — single-currency", () => {
-  it("integer value, no decimals, bright-green band", () => {
+  it("CNY uses ￥ prefix, integer value, bright-green band", () => {
     const line = formatBalanceLine({
       isAvailable: true,
-      entries: [{ totalBalance: 110 }],
+      entries: [{ currency: "CNY", totalBalance: 110 }],
       minValue: 110,
     });
-    assert.equal(strip(line), "Balance: $/￥110");
+    assert.equal(strip(line), "Balance: ￥110");
     assert.ok(line.startsWith(`Balance: ${BRIGHT_GREEN}`));
     assert.ok(line.endsWith(RESET));
   });
 
+  it("USD uses $ prefix", () => {
+    const line = formatBalanceLine({
+      isAvailable: true,
+      entries: [{ currency: "USD", totalBalance: 25 }],
+      minValue: 25,
+    });
+    assert.equal(strip(line), "Balance: $25");
+  });
+
+  it("unknown currency falls back to uppercased code as prefix", () => {
+    const line = formatBalanceLine({
+      isAvailable: true,
+      entries: [{ currency: "EUR", totalBalance: 42 }],
+      minValue: 42,
+    });
+    assert.equal(strip(line), "Balance: EUR42");
+  });
+
+  it("lowercase currency is uppercased", () => {
+    const line = formatBalanceLine({
+      isAvailable: true,
+      entries: [{ currency: "usd", totalBalance: 5 }],
+      minValue: 5,
+    });
+    assert.equal(strip(line), "Balance: $5");
+  });
+
   it("decimal value preserved up to 2 dp, trailing zeros stripped", () => {
     // 110.10 → "110.1"; 110.00 → "110"; 110.05 → "110.05".
-    const a = formatBalanceLine({ isAvailable: true, entries: [{ totalBalance: 110.1 }], minValue: 110.1 });
-    assert.equal(strip(a), "Balance: $/￥110.1");
-    const b = formatBalanceLine({ isAvailable: true, entries: [{ totalBalance: 110.05 }], minValue: 110.05 });
-    assert.equal(strip(b), "Balance: $/￥110.05");
+    const a = formatBalanceLine({ isAvailable: true, entries: [{ currency: "USD", totalBalance: 110.1 }], minValue: 110.1 });
+    assert.equal(strip(a), "Balance: $110.1");
+    const b = formatBalanceLine({ isAvailable: true, entries: [{ currency: "USD", totalBalance: 110.05 }], minValue: 110.05 });
+    assert.equal(strip(b), "Balance: $110.05");
   });
 
   it("color band reflects the lowest entry (single entry = that entry)", () => {
     // 3.5 → ORANGE band (5<=3.5<10? no, 3.5<5 → RED)
-    const red = formatBalanceLine({ isAvailable: true, entries: [{ totalBalance: 3.5 }], minValue: 3.5 });
+    const red = formatBalanceLine({ isAvailable: true, entries: [{ currency: "CNY", totalBalance: 3.5 }], minValue: 3.5 });
     assert.ok(red.startsWith(`Balance: ${RED}`));
     // 25 → DARK_GREEN band (20<=25<50)
-    const dg = formatBalanceLine({ isAvailable: true, entries: [{ totalBalance: 25 }], minValue: 25 });
+    const dg = formatBalanceLine({ isAvailable: true, entries: [{ currency: "USD", totalBalance: 25 }], minValue: 25 });
     assert.ok(dg.startsWith(`Balance: ${DARK_GREEN}`));
   });
 });
 
 describe("formatBalanceLine — multi-currency joined by ·", () => {
   it("renders all entries, joined by ' · ', single color from lowest", () => {
-    // 110 (BRIGHT_GREEN) + 3.5 (RED). minValue=3.5 → RED band.
+    // CNY 110 (BRIGHT_GREEN) + USD 3.5 (RED). minValue=3.5 → RED band.
     const line = formatBalanceLine({
       isAvailable: true,
-      entries: [{ totalBalance: 110 }, { totalBalance: 3.5 }],
+      entries: [
+        { currency: "CNY", totalBalance: 110 },
+        { currency: "USD", totalBalance: 3.5 },
+      ],
       minValue: 3.5,
     });
-    assert.equal(strip(line), "Balance: $/￥110 · $/￥3.5");
+    assert.equal(strip(line), "Balance: ￥110 · $3.5");
     assert.ok(line.startsWith(`Balance: ${RED}`));
     assert.ok(line.endsWith(RESET));
     // The colored chunk wraps both chunks together (single SGR block).
     const colored = line.slice("Balance: ".length, -RESET.length);
-    assert.equal(colored, `${RED}$/￥110 · $/￥3.5`);
+    assert.equal(colored, `${RED}￥110 · $3.5`);
   });
 
   it("integer formatting per-chunk", () => {
     const line = formatBalanceLine({
       isAvailable: true,
-      entries: [{ totalBalance: 100 }, { totalBalance: 200.5 }],
+      entries: [
+        { currency: "CNY", totalBalance: 100 },
+        { currency: "USD", totalBalance: 200.5 },
+      ],
       minValue: 100,
     });
-    assert.equal(strip(line), "Balance: $/￥100 · $/￥200.5");
+    assert.equal(strip(line), "Balance: ￥100 · $200.5");
   });
 });
 
@@ -435,7 +468,7 @@ describe("formatBalanceLine — unavailable", () => {
     assert.equal(strip(line), "Balance: not available!");
   });
   it("renders 'not available!' when minValue is null", () => {
-    const line = formatBalanceLine({ isAvailable: true, entries: [{ totalBalance: 0 }], minValue: null });
+    const line = formatBalanceLine({ isAvailable: true, entries: [{ currency: "USD", totalBalance: 0 }], minValue: null });
     assert.equal(strip(line), "Balance: not available!");
   });
 });
