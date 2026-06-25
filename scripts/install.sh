@@ -103,6 +103,27 @@ if [ ! -f "$DIST_JS" ]; then
   fi
 fi
 
+# --- Uninstall path: delegate to scripts/uninstall.sh ----------------------
+# Self-contained uninstaller is the source of truth; install.sh just
+# forwards for backwards compatibility. Strip the --uninstall flag
+# (and any --project the user passed, which uninstall.sh understands).
+# This branch must run BEFORE the project-level settings.json auto-create.
+if [ "$UNINSTALL" = 1 ]; then
+  UNINSTALL_SH="${SCRIPT_DIR}/uninstall.sh"
+  if [ ! -f "$UNINSTALL_SH" ]; then
+    echo "install.sh: missing ${UNINSTALL_SH}" >&2
+    exit 1
+  fi
+  FORWARDED=""
+  for arg in "$@"; do
+    case "$arg" in
+      --uninstall) ;;  # consumed by install.sh
+      *) FORWARDED="$FORWARDED $arg" ;;
+    esac
+  done
+  exec bash "$UNINSTALL_SH" $FORWARDED
+fi
+
 # Resolve target settings file.
 if [ "$PROJECT_LEVEL" = 1 ]; then
   TARGET=".claude/settings.json"
@@ -141,26 +162,6 @@ if [ "$RESTORE" = 1 ]; then
   fi
   cp "$BAK" "$TARGET"
   echo "install.sh: restored ${TARGET} from ${BAK}"
-  exit 0
-fi
-
-# --- Uninstall path: strip our wrapper from settings.json --------------------
-if [ "$UNINSTALL" = 1 ]; then
-  if [ ! -f "$UPSTREAM_CMD_ONLY" ]; then
-    if [ "$DRY_RUN" = 1 ]; then
-      echo "install.sh: --dry-run: no upstream-cmd.txt found, nothing to uninstall"
-      exit 0
-    fi
-    echo "install.sh: no upstream-cmd.txt found; statusLine left untouched"
-    exit 0
-  fi
-  if [ "$DRY_RUN" = 1 ]; then
-    echo "install.sh: --dry-run: would restore statusLine from ${UPSTREAM_CMD_ONLY}"
-    exit 0
-  fi
-  node "$HELPER" "$WIN_TARGET" restore-from-file "$WIN_UPSTREAM_ONLY"
-  rm -f "$UPSTREAM_CMD_FILE" "$UPSTREAM_CMD_ONLY"
-  echo "install.sh: uninstalled — statusLine restored from ${UPSTREAM_CMD_ONLY}"
   exit 0
 fi
 

@@ -2,22 +2,28 @@
 # dev-uninstall.sh — DEV-ONLY: wipe all on-disk state for tokenplan-usage-hud
 # so /plugin install can re-fetch a clean copy from the marketplace.
 #
-# This script does NOT touch:
-#   - ~/.claude/settings.json (statusLine, env, etc.)
-#   - Any other plugin's cache, marketplace, or installed_plugins.json entry
+# Functionally identical to /tokenplan-usage-hud:uninstall (which runs
+# scripts/uninstall.sh). This script exists so the developer can run the
+# same cleanup from `npm run dev:uninstall` even when the slash command
+# can't be invoked (e.g. plugin not yet loaded, or being iterated on).
 #
-# It DOES delete:
-#   - The tokenplan-usage-hud row from installed_plugins.json
-#   - cache/tokenplan-usage-hud/tokenplan-usage-hud/<version>/*
-#   - marketplaces/tokenplan-usage-hud/* and marketplaces/cwf818-tokenplan-usage-hud/*
-#   - The tokenplan-usage-hud entry from known_marketplaces.json
-#
-# A timestamped backup of installed_plugins.json and known_marketplaces.json is
-# written next to the originals, so you can restore if something goes wrong.
+# Behavior (delegated to scripts/uninstall.sh):
+#   - Restores settings.json.statusLine (from preserved upstream-cmd.txt
+#     or the most recent pre-managed .bak.<ts>).
+#   - Removes `tokenplan-usage-hud@tokenplan-usage-hud` from
+#     settings.json.enabledPlugins.
+#   - Wipes cache/tokenplan-usage-hud/, the marketplace dir, and the
+#     legacy `cwf818-tokenplan-usage-hud` alias.
+#   - Strips the plugin's row from installed_plugins.json and
+#     known_marketplaces.json (with timestamped .bak.<TS> backups).
+#   - Backs up settings.json before any destructive change.
+#   - Idempotent. Local-only. Never reads ANTHROPIC_AUTH_TOKEN.
 #
 # Usage:
 #   scripts/dev-uninstall.sh           # actually delete
 #   scripts/dev-uninstall.sh --dry-run # show what would be deleted, no changes
+#   npm run dev:uninstall              # same as scripts/dev-uninstall.sh
+#   npm run dev:uninstall:dry          # same as scripts/dev-uninstall.sh --dry-run
 #
 # After this script, the user can re-run:
 #   /plugin marketplace add cwf818/tokenplan-usage-hud
@@ -29,14 +35,9 @@
 
 set -u
 
-DRY_RUN=0
-if [ "${1:-}" = "--dry-run" ] || [ "${1:-}" = "-n" ]; then
-  DRY_RUN=1
-elif [ -n "${1:-}" ]; then
-  echo "dev-uninstall.sh: unknown argument: $1" >&2
-  echo "  usage: dev-uninstall.sh [--dry-run]" >&2
-  exit 2
-fi
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+exec bash "$SCRIPT_DIR/uninstall.sh" "$@"
+
 
 CLAUDE_ROOT="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 PLUGINS_DIR="${CLAUDE_ROOT}/plugins"
