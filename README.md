@@ -58,8 +58,10 @@ This is a self-contained cleanup that works even after the plugin's cache and ma
    - Else, fall back to the most recent `settings.json.bak.<ts>` whose `statusLine` does **not** have `_tokenplan_managed: true` (the state before the plugin was installed).
    - Else, strip the marker but leave the wrapper in place and print a warning.
 2. **Remove `tokenplan-usage-hud@tokenplan-usage-hud` from `settings.json.enabledPlugins`** (other plugins preserved).
-3. **Wipe** `cache/tokenplan-usage-hud/`, `marketplaces/tokenplan-usage-hud/`, and the legacy `marketplaces/cwf818-tokenplan-usage-hud/` alias.
-4. **Strip the plugin's row** from `installed_plugins.json` and `known_marketplaces.json` (with timestamped `.bak.<TS>` backups).
+3. **Remove `tokenplan-usage-hud` from `settings.json.extraKnownMarketplaces`** (Claude Code records the marketplace source there too — leaving it would re-add the marketplace on next `/plugin marketplace add` with no visible diff).
+4. **Wipe** `cache/tokenplan-usage-hud/`, `marketplaces/tokenplan-usage-hud/`, and the legacy `marketplaces/cwf818-tokenplan-usage-hud/` alias.
+5. **Strip the plugin's row** from `installed_plugins.json` and `known_marketplaces.json` (with timestamped `.bak.<TS>` backups).
+6. **Trim old `.bak.<ts>` files** — invokes `scripts/clean.sh` as the final step so uninstall leaves a tidy filesystem (one newest backup per file). User-named backups like `settings.json.bak-pre-v0.1.8` are NOT touched.
 
 `settings.json` and the two JSON files are backed up **before** any destructive change. Line endings (CRLF/LF) are preserved. The script is **idempotent** — re-running on a clean system prints `nothing to do` and exits 0. Add `--dry-run` to preview actions without modifying anything.
 
@@ -77,6 +79,24 @@ After uninstall, re-install with the four-step flow:
 The legacy `/tokenplan-usage-hud:install --uninstall` flag still works (it's a thin shim that calls the same uninstaller). Prefer the dedicated `:uninstall` slash command in new scripts.
 
 For dev iteration, `npm run dev:uninstall` (or `npm run dev:uninstall:dry`) does the same thing from the command line.
+
+## Clean
+
+```
+/tokenplan-usage-hud:clean
+```
+
+Removes the old `.bak.YYYYMMDDTHHMMSS` backup files our installer leaves behind, keeping only the most recent one per base file:
+
+- `settings.json.bak.<ts>` → keeps the newest
+- `installed_plugins.json.bak.<ts>` → keeps the newest
+- `known_marketplaces.json.bak.<ts>` → keeps the newest
+
+User-named backups (e.g. `settings.json.bak-pre-v0.1.8`) are **not** touched — only the script-generated timestamp pattern. Idempotent: if at most one backup exists per file, prints `nothing to clean` and exits 0. Add `--dry-run` to preview.
+
+The uninstall slash command already runs `clean.sh` as its final step, so explicit cleanup is usually unnecessary after a fresh uninstall. Use the clean command directly if you want to tidy up between installs, or if you've accumulated a lot of `.bak.<ts>` files from earlier dev iteration.
+
+For dev iteration, `npm run settings:clean` (or `npm run settings:clean:dry`) does the same thing from the command line.
 
 ## How it composes with other statuslines
 
@@ -189,10 +209,12 @@ src/
 commands/
   install.md          # /tokenplan-usage-hud:install slash command
   uninstall.md        # /tokenplan-usage-hud:uninstall slash command
+  clean.md            # /tokenplan-usage-hud:clean slash command
 scripts/
   wrapper.sh          # bash wrapper: TOKENPLAN_UPSTREAM_CMD → TOKENPLAN_UPSTREAM → us
   install.sh          # settings.json patcher (install + thin shim for --uninstall)
   uninstall.sh        # self-contained uninstaller (used by :uninstall and dev:uninstall)
+  clean.sh            # trim old .bak.<ts> files, keeping only the most recent per file
   lib/edit-settings.mjs  # ESM helper used by install.sh
   dev-uninstall.sh    # DEV-ONLY thin shim → exec uninstall.sh
 settings.example.json # template (NEVER commit real settings.json)

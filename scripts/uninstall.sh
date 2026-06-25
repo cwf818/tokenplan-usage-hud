@@ -29,6 +29,10 @@
 #   5. Strips the plugin row from installed_plugins.json and
 #      known_marketplaces.json (with timestamped .bak.<TS> backups),
 #      preserving CRLF.
+#   6. Strips `extraKnownMarketplaces.tokenplan-usage-hud` from
+#      settings.json (Claude Code records the marketplace source there
+#      too — leaving it would re-add the marketplace on next
+#      /plugin marketplace add with no visible diff).
 #
 # Idempotency: every step is independently no-op-able. Re-running on
 # a fully clean system prints a "nothing to do" message and exits 0.
@@ -181,6 +185,28 @@ if [ -f "$TARGET" ]; then
   fi
 fi
 
+# Action 2b: strip extraKnownMarketplaces.tokenplan-usage-hud (if present).
+# Claude Code records the marketplace source under both known_marketplaces.json
+# AND settings.json.extraKnownMarketplaces (the latter is what shows up in
+# `claude plugin marketplace list`). Leaving it would re-add the marketplace
+# on next `/plugin marketplace add` with no visible diff.
+EKM_PLAN=""
+if [ -f "$TARGET" ]; then
+  HAS_ROW=$(node -e '
+    const fs = require("fs");
+    try {
+      const d = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+      const k = process.argv[2];
+      process.stdout.write(d.extraKnownMarketplaces && Object.prototype.hasOwnProperty.call(d.extraKnownMarketplaces, k) ? "1" : "0");
+    } catch (e) { process.stdout.write("0"); }
+  ' "$WIN_TARGET" "tokenplan-usage-hud" 2>/dev/null || echo "0")
+  if [ "$HAS_ROW" = "1" ]; then
+    EKM_PLAN="strip tokenplan-usage-hud from extraKnownMarketplaces"
+    ACTIONS+=("extraKnownMarketplaces: ${EKM_PLAN}")
+    DRY_NOTHING=0
+  fi
+fi
+
 # Action 3: wipe dirs
 for d in "$CACHE_DIR" "$MARKETPLACE_DIR" "$TMP_MARKETPLACE_DIR"; do
   if [ -d "$d" ]; then
@@ -246,6 +272,7 @@ for a in "${ACTIONS[@]}"; do
   case "$a" in
     "statusLine: "*) NEEDS_SETTINGS_BACKUP=1 ;;
     "enabledPlugins: "*) NEEDS_SETTINGS_BACKUP=1 ;;
+    "extraKnownMarketplaces: "*) NEEDS_SETTINGS_BACKUP=1 ;;
   esac
 done
 if [ "$NEEDS_SETTINGS_BACKUP" = 1 ] && [ -f "$TARGET" ]; then
@@ -347,6 +374,31 @@ if [ -n "$EP_PLAN" ]; then
   echo "uninstall.sh: removed ${SETTINGS_PLUGIN_KEY} from enabledPlugins"
 fi
 
+# --- Apply: extraKnownMarketplaces strip ------------------------------------
+if [ -n "$EKM_PLAN" ]; then
+  node -e '
+    const fs = require("fs");
+    const target = process.argv[1];
+    const key = process.argv[2];
+    const data = JSON.parse(fs.readFileSync(target, "utf8"));
+    if (data.extraKnownMarketplaces && Object.prototype.hasOwnProperty.call(data.extraKnownMarketplaces, key)) {
+      delete data.extraKnownMarketplaces[key];
+    }
+    let eol = "\n";
+    const size = fs.statSync(target).size;
+    if (size > 0) {
+      const fd = fs.openSync(target, "r");
+      const head = Buffer.alloc(Math.min(64, size));
+      fs.readSync(fd, head, 0, head.length, 0);
+      fs.closeSync(fd);
+      if (head.includes(0x0d)) eol = "\r\n";
+    }
+    const body = JSON.stringify(data, null, 2) + "\n";
+    fs.writeFileSync(target, body.replace(/\n/g, eol));
+  ' "$WIN_TARGET" "tokenplan-usage-hud"
+  echo "uninstall.sh: removed tokenplan-usage-hud from extraKnownMarketplaces"
+fi
+
 # --- Apply: wipe dirs --------------------------------------------------------
 for d in "$CACHE_DIR" "$MARKETPLACE_DIR" "$TMP_MARKETPLACE_DIR"; do
   if [ -d "$d" ]; then
@@ -435,6 +487,18 @@ fi
 
 echo ""
 echo "uninstall.sh: done. tokenplan-usage-hud is fully removed."
+
+# --- Final: trim old backup files (keep only the most recent per file) -------
+# This runs scripts/clean.sh so uninstall leaves a tidy filesystem. It is
+# always safe — clean is a no-op when at most one backup per file exists.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [ -x "${SCRIPT_DIR}/clean.sh" ] || [ -f "${SCRIPT_DIR}/clean.sh" ]; then
+  PROJECT_FLAG=""
+  [ "$PROJECT_LEVEL" = 1 ] && PROJECT_FLAG="--project"
+  bash "${SCRIPT_DIR}/clean.sh" $PROJECT_FLAG || true
+fi
+
+echo ""
 echo "  Re-install with: /plugin marketplace add cwf818/tokenplan-usage-hud"
 echo "                   /plugin install tokenplan-usage-hud@tokenplan-usage-hud"
 echo "                   /reload-plugins"
