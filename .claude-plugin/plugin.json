@@ -1,8 +1,9 @@
 {
   "name": "tokenplan-usage-hud",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "Renders MiniMax token-plan usage (5h + weekly) in the Claude Code statusline. Composes with another statusline via the TOKENPLAN_UPSTREAM_CMD env var.",
   "license": "MIT",
+  "commands": ["./commands/install.md"],
   "keywords": ["statusline", "hud", "minimax", "minimaxi", "token-plan", "claude-code"],
   "homepage": "https://github.com/cwf818/tokenplan-usage-hud"
 }
