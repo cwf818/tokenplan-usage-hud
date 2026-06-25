@@ -2,6 +2,8 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   colorFor,
+  colorForBalance,
+  formatBalanceLine,
   formatLine,
   formatResetSuffix,
   pctBar,
@@ -332,5 +334,108 @@ describe("formatResetSuffix", () => {
 
   it("does not show seconds — sub-minute remainder rounds down", () => {
     assert.equal(formatResetSuffix(at(3_600_000 + 30_000), NOW), "1h↻");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// DeepSeek balance line
+// ---------------------------------------------------------------------------
+
+describe("colorForBalance — 5-band thresholds (5/10/20/50)", () => {
+  it("<5 is RED", () => {
+    assert.equal(colorForBalance(0), RED);
+    assert.equal(colorForBalance(4.99), RED);
+  });
+  it("[5,10) is ORANGE", () => {
+    assert.equal(colorForBalance(5), ORANGE);
+    assert.equal(colorForBalance(9.99), ORANGE);
+  });
+  it("[10,20) is YELLOW", () => {
+    assert.equal(colorForBalance(10), YELLOW);
+    assert.equal(colorForBalance(19.99), YELLOW);
+  });
+  it("[20,50) is DARK_GREEN", () => {
+    assert.equal(colorForBalance(20), DARK_GREEN);
+    assert.equal(colorForBalance(49.99), DARK_GREEN);
+  });
+  it(">=50 is BRIGHT_GREEN", () => {
+    assert.equal(colorForBalance(50), BRIGHT_GREEN);
+    assert.equal(colorForBalance(110), BRIGHT_GREEN);
+    assert.equal(colorForBalance(1_000_000), BRIGHT_GREEN);
+  });
+  it("clamps negative input to 0 (RED)", () => {
+    assert.equal(colorForBalance(-5), RED);
+  });
+});
+
+describe("formatBalanceLine — single-currency", () => {
+  it("integer value, no decimals, bright-green band", () => {
+    const line = formatBalanceLine({
+      isAvailable: true,
+      entries: [{ totalBalance: 110 }],
+      minValue: 110,
+    });
+    assert.equal(strip(line), "Balance: $/￥110");
+    assert.ok(line.startsWith(`Balance: ${BRIGHT_GREEN}`));
+    assert.ok(line.endsWith(RESET));
+  });
+
+  it("decimal value preserved up to 2 dp, trailing zeros stripped", () => {
+    // 110.10 → "110.1"; 110.00 → "110"; 110.05 → "110.05".
+    const a = formatBalanceLine({ isAvailable: true, entries: [{ totalBalance: 110.1 }], minValue: 110.1 });
+    assert.equal(strip(a), "Balance: $/￥110.1");
+    const b = formatBalanceLine({ isAvailable: true, entries: [{ totalBalance: 110.05 }], minValue: 110.05 });
+    assert.equal(strip(b), "Balance: $/￥110.05");
+  });
+
+  it("color band reflects the lowest entry (single entry = that entry)", () => {
+    // 3.5 → ORANGE band (5<=3.5<10? no, 3.5<5 → RED)
+    const red = formatBalanceLine({ isAvailable: true, entries: [{ totalBalance: 3.5 }], minValue: 3.5 });
+    assert.ok(red.startsWith(`Balance: ${RED}`));
+    // 25 → DARK_GREEN band (20<=25<50)
+    const dg = formatBalanceLine({ isAvailable: true, entries: [{ totalBalance: 25 }], minValue: 25 });
+    assert.ok(dg.startsWith(`Balance: ${DARK_GREEN}`));
+  });
+});
+
+describe("formatBalanceLine — multi-currency joined by ·", () => {
+  it("renders all entries, joined by ' · ', single color from lowest", () => {
+    // 110 (BRIGHT_GREEN) + 3.5 (RED). minValue=3.5 → RED band.
+    const line = formatBalanceLine({
+      isAvailable: true,
+      entries: [{ totalBalance: 110 }, { totalBalance: 3.5 }],
+      minValue: 3.5,
+    });
+    assert.equal(strip(line), "Balance: $/￥110 · $/￥3.5");
+    assert.ok(line.startsWith(`Balance: ${RED}`));
+    assert.ok(line.endsWith(RESET));
+    // The colored chunk wraps both chunks together (single SGR block).
+    const colored = line.slice("Balance: ".length, -RESET.length);
+    assert.equal(colored, `${RED}$/￥110 · $/￥3.5`);
+  });
+
+  it("integer formatting per-chunk", () => {
+    const line = formatBalanceLine({
+      isAvailable: true,
+      entries: [{ totalBalance: 100 }, { totalBalance: 200.5 }],
+      minValue: 100,
+    });
+    assert.equal(strip(line), "Balance: $/￥100 · $/￥200.5");
+  });
+});
+
+describe("formatBalanceLine — unavailable", () => {
+  it("renders 'not available!' when isAvailable=false", () => {
+    const line = formatBalanceLine({ isAvailable: false, entries: [], minValue: null });
+    assert.equal(strip(line), "Balance: not available!");
+    assert.ok(line.startsWith(`Balance: ${RED}`));
+  });
+  it("renders 'not available!' when entries is empty despite isAvailable=true", () => {
+    const line = formatBalanceLine({ isAvailable: true, entries: [], minValue: null });
+    assert.equal(strip(line), "Balance: not available!");
+  });
+  it("renders 'not available!' when minValue is null", () => {
+    const line = formatBalanceLine({ isAvailable: true, entries: [{ totalBalance: 0 }], minValue: null });
+    assert.equal(strip(line), "Balance: not available!");
   });
 });

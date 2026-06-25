@@ -1,22 +1,32 @@
 // Entry point. Runs as the Claude Code statusline child process:
 //   - Reads the session JSON from stdin (we don't use it; we drain it so the
 //     child doesn't block on the parent).
-//   - Gates on ANTHROPIC_BASE_URL: only when pointing at MiniMax does it
-//     fetch and render the token-plan line.
+//   - Gates on ANTHROPIC_BASE_URL: only when pointing at a supported
+//     provider (MiniMax or DeepSeek) does it fetch and render a line.
+//     Otherwise the line is hidden and upstream output passes through.
 //   - Composes with upstream claude-hud output (passed via TOKENPLAN_UPSTREAM
 //     by the bash wrapper in scripts/wrapper.sh).
 
 import * as cache from "./cache.ts";
 import { fetchRemains, isMiniMaxBaseUrl, type Remains } from "./api.ts";
-import { formatLine, resolveDisplayMode } from "./render.ts";
+import { fetchBalance, isDeepSeekBaseUrl, type Balance } from "./api.deepseek.ts";
+import type { Provider } from "./types.ts";
+import { formatLine, formatBalanceLine, resolveDisplayMode } from "./render.ts";
 import { compose } from "./composition.ts";
 
-const CACHE_KEY = "remains";
+const CACHE_KEY_REMAINS = "remains";
+const CACHE_KEY_BALANCE = "balance";
 const TTL_MS = 60_000;
 
 // Read the upstream statusline output once at startup so the main flow and the
 // crash handler can't drift apart on env-var reads.
 const UPSTREAM = process.env.TOKENPLAN_UPSTREAM;
+
+function resolveProvider(baseUrl: string | undefined | null): Provider {
+  if (isMiniMaxBaseUrl(baseUrl)) return "minimax";
+  if (isDeepSeekBaseUrl(baseUrl)) return "deepseek";
+  return null;
+}
 
 async function readStdin(): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -30,20 +40,37 @@ async function readStdin(): Promise<string> {
   });
 }
 
-async function getPlanData(token: string): Promise<Remains | null> {
-  const fresh = cache.get<Remains>(CACHE_KEY, TTL_MS);
+async function getRemainsData(token: string): Promise<Remains | null> {
+  const fresh = cache.get<Remains>(CACHE_KEY_REMAINS, TTL_MS);
   if (fresh) return fresh;
 
   try {
     const data = await fetchRemains(token);
     if (data) {
-      cache.set(CACHE_KEY, data);
+      cache.set(CACHE_KEY_REMAINS, data);
       return data;
     }
     return null;
   } catch {
     // Stale-on-error: keep showing the last good value.
-    return cache.peek<Remains>(CACHE_KEY);
+    return cache.peek<Remains>(CACHE_KEY_REMAINS);
+  }
+}
+
+async function getBalanceData(token: string): Promise<Balance | null> {
+  const fresh = cache.get<Balance>(CACHE_KEY_BALANCE, TTL_MS);
+  if (fresh) return fresh;
+
+  try {
+    const data = await fetchBalance(token);
+    if (data) {
+      cache.set(CACHE_KEY_BALANCE, data);
+      return data;
+    }
+    return null;
+  } catch {
+    // Stale-on-error: keep showing the last good value.
+    return cache.peek<Balance>(CACHE_KEY_BALANCE);
   }
 }
 
@@ -66,8 +93,9 @@ async function main(): Promise<void> {
 
   const baseUrl = process.env.ANTHROPIC_BASE_URL;
   const upstream = UPSTREAM;
+  const provider = resolveProvider(baseUrl);
 
-  if (!isMiniMaxBaseUrl(baseUrl)) {
+  if (provider === null) {
     process.stdout.write(compose(upstream, null));
     return;
   }
@@ -78,8 +106,15 @@ async function main(): Promise<void> {
     return;
   }
 
-  const data = await getPlanData(token);
-  const line = data ? renderPlanLine(data) : null;
+  let line: string | null = null;
+  if (provider === "minimax") {
+    const data = await getRemainsData(token);
+    line = data ? renderPlanLine(data) : null;
+  } else if (provider === "deepseek") {
+    const data = await getBalanceData(token);
+    line = data ? formatBalanceLine(data) : null;
+  }
+
   process.stdout.write(compose(upstream, line));
 }
 
