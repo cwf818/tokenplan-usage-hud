@@ -106,7 +106,37 @@ For dev iteration, `npm run settings:clean` (or `npm run settings:clean:dry`) do
 
 ## Activation
 
-The plugin only renders the token-plan line when `ANTHROPIC_BASE_URL` contains `minimaxi.com` (case-insensitive). On vanilla Anthropic, OpenRouter, or any other provider, the line is hidden and any upstream output passes through unchanged.
+The plugin picks a **provider** from `ANTHROPIC_BASE_URL` and renders exactly one line:
+
+| `ANTHROPIC_BASE_URL`                       | Line            | API                                                  |
+|--------------------------------------------|-----------------|------------------------------------------------------|
+| `https://api.minimaxi.com/...`             | `Usage: …` / `Remain: …` | `GET https://www.minimaxi.com/v1/token_plan/remains` |
+| `https://api.deepseek.com/...`             | `Balance: …`    | `GET https://api.deepseek.com/user/balance`          |
+| anything else (vanilla Anthropic, etc.)    | (hidden)        | —                                                    |
+
+Both endpoints are called with `Authorization: Bearer $ANTHROPIC_AUTH_TOKEN` — the same token, no new env vars. The gates are strict prefix matches (case-insensitive), and `isDeepSeekBaseUrl` rejects suffix attacks like `https://api.deepseek.com.evil.example`. On vanilla Anthropic, OpenRouter, or any other provider, the line is hidden and any upstream output passes through unchanged.
+
+### DeepSeek balance line
+
+When `ANTHROPIC_BASE_URL` starts with `https://api.deepseek.com`, the plugin fetches the user's account balance and renders:
+
+```
+Balance: $/￥110.00           # is_available=true, single currency
+Balance: $/￥110.00 · $/￥3.5  # multi-currency: ALL entries from balance_infos,
+                             # joined by ' · ', single color band from the
+                             # LOWEST balance (most urgent currency drives hue).
+Balance: not available!       # is_available=false or no parseable entries
+```
+
+5-band color thresholds on the **lowest** entry's numeric value:
+
+| Range     | Color          |
+|-----------|----------------|
+| `<5`      | red            |
+| `[5,10)`  | orange         |
+| `[10,20)` | yellow         |
+| `[20,50)` | dark green     |
+| `>=50`    | bright green   |
 
 ## Display mode
 
@@ -127,7 +157,7 @@ The plugin reuses `process.env.ANTHROPIC_AUTH_TOKEN` to call the MiniMax `GET ht
 
 ## Caching
 
-In-memory TTL of **60 s**, with stale-on-error fallback. The MiniMax API is not hit on every turn.
+In-memory TTL of **60 s**, with stale-on-error fallback. The MiniMax API is not hit on every turn. DeepSeek balance uses a separate cache key (`"balance"`) but the same 60 s TTL.
 
 ## Response shape
 
@@ -196,12 +226,14 @@ If the loader still says "EPERM" after `dev:uninstall`, the most common cause is
 
 ```
 src/
-  index.ts            # entry — stdin drain, env gate, cache, render, compose
-  api.ts              # fetch + tolerant parser for /v1/token_plan/remains
-  render.ts           # pure: pctBar + ANSI color thresholds + formatLine
+  index.ts            # entry — stdin drain, provider dispatch, cache, render, compose
+  types.ts            # Provider union: 'minimax' | 'deepseek' | null
+  api.ts              # MiniMax fetch + tolerant parser for /v1/token_plan/remains
+  api.deepseek.ts     # DeepSeek fetch + parser for /user/balance + URL gate
+  render.ts           # pure: pctBar + ANSI color thresholds + formatLine + formatBalanceLine
   cache.ts            # 60s TTL + stale-on-error
   composition.ts      # reads TOKENPLAN_UPSTREAM, prepends (preserving ANSI/multi-line) and appends line
-  __fixtures__/       # sample / camelCase / empty / used-only response JSONs
+  __fixtures__/       # remains.real.json, balance.real.json, balance.multi.json, …
   *.test.ts           # node:test unit tests
 .claude-plugin/
   plugin.json         # plugin manifest (declares commands)

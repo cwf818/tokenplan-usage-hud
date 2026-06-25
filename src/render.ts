@@ -198,3 +198,58 @@ export function formatLine(
   const modeLabel = MODE_LABELS[mode];
   return `${modeLabel} ${formatOne("5h", fiveHour, mode, 8, nowMs)} · ${formatOne("wk", weekly, mode, 8, nowMs)}`;
 }
+
+// ----- DeepSeek balance line -------------------------------------------------
+//
+// Distinct from the MiniMax percentage thresholds (0/20/40/60/80): a balance
+// is an ABSOLUTE amount, not a percentage, so the bands live at 5/10/20/50
+// (red / orange / yellow / dark green / bright green). Lower balance = more
+// urgent, so the lowest band (red) corresponds to the LOWEST value — same
+// intuitive direction as the "remaining" mode of the MiniMax render.
+
+const BALANCE_THRESHOLDS = [5, 10, 20, 50] as const;
+// Lowest value → RED, then orange → yellow → dark green → bright green.
+const BALANCE_PALETTE = [RED, ORANGE, YELLOW, DARK_GREEN, BRIGHT_GREEN] as const;
+
+function balanceBandIndex(value: number): number {
+  for (let i = 0; i < BALANCE_THRESHOLDS.length; i++) {
+    if (value < BALANCE_THRESHOLDS[i]) return i;
+  }
+  return BALANCE_THRESHOLDS.length; // top band
+}
+
+export function colorForBalance(value: number): string {
+  const v = Math.max(0, value);
+  return BALANCE_PALETTE[balanceBandIndex(v)];
+}
+
+// Format a single numeric value for display: integers as "100", floats as
+// "110.00". Trim trailing zeros for cases like "110.10" → "110.1".
+function formatBalanceValue(v: number): string {
+  if (Number.isInteger(v)) return String(v);
+  // toFixed(2) then strip trailing zeros and a dangling dot.
+  return v.toFixed(2).replace(/\.?0+$/, "");
+}
+
+// One rendered chunk: `$/￥<value>`. The currency label is fixed by the
+// user's spec — even though DeepSeek reports per-entry currencies, the
+// display prefix is shared.
+function formatBalanceChunk(v: number): string {
+  return `$/￥${formatBalanceValue(v)}`;
+}
+
+export type BalanceLike = {
+  isAvailable: boolean;
+  entries: ReadonlyArray<{ totalBalance: number }>;
+  minValue: number | null;
+};
+
+export function formatBalanceLine(b: BalanceLike): string {
+  if (!b.isAvailable || b.entries.length === 0 || b.minValue == null) {
+    return `Balance: ${RED}not available!${RESET}`;
+  }
+  const chunks = b.entries.map((e) => formatBalanceChunk(e.totalBalance));
+  // Color follows the LOWEST entry — most urgent currency drives the hue.
+  const color = colorForBalance(b.minValue);
+  return `Balance: ${color}${chunks.join(" · ")}${RESET}`;
+}

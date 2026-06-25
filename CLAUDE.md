@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A Claude Code statusline plugin (`tokenplan-usage-hud`) that renders **MiniMax token-plan usage** (5-hour and weekly windows). The plugin ships its own installer (`scripts/install.sh`) that hooks into Claude Code's `statusLine` slot and (optionally) chains any pre-existing statusline (e.g. `ccstatusline`, `claude-hud`) as the upstream. When `ANTHROPIC_BASE_URL` does not point at MiniMax, the plugin hides itself and passes upstream output through unchanged.
+A Claude Code statusline plugin (`tokenplan-usage-hud`) that renders **MiniMax token-plan usage** (5-hour and weekly windows) **or DeepSeek account balance**, picked by `ANTHROPIC_BASE_URL`. The plugin ships its own installer (`scripts/install.sh`) that hooks into Claude Code's `statusLine` slot and (optionally) chains any pre-existing statusline (e.g. `ccstatusline`, `claude-hud`) as the upstream. When `ANTHROPIC_BASE_URL` does not point at a supported provider, the plugin hides itself and passes upstream output through unchanged.
 
 The plugin is shipped as a **single-plugin marketplace**: the repo root IS the marketplace, and `.claude-plugin/plugin.json` declares the plugin. Install with `/plugin marketplace add cwf818/tokenplan-usage-hud` then `/plugin install tokenplan-usage-hud@tokenplan-usage-hud`, then run `/tokenplan-usage-hud:install` to wire it into `settings.json`. Uninstall with `/tokenplan-usage-hud:uninstall` (a self-contained cleanup that works even after the cache and marketplace are gone).
 
@@ -24,12 +24,14 @@ There is no separate `lint` step; `typecheck` covers it. Tests run with built-in
 
 ```
 src/
-  index.ts            # entry — stdin drain, env gate, cache, render, compose
-  api.ts              # fetch + tolerant parser for /v1/token_plan/remains
-  render.ts           # pure: pctBar + ANSI color thresholds + formatLine
+  index.ts            # entry — stdin drain, provider dispatch, cache, render, compose
+  types.ts            # Provider union: 'minimax' | 'deepseek' | null
+  api.ts              # MiniMax fetch + tolerant parser for /v1/token_plan/remains
+  api.deepseek.ts     # DeepSeek fetch + parser for /user/balance + URL gate
+  render.ts           # pure: pctBar + ANSI color thresholds + formatLine + formatBalanceLine
   cache.ts            # 60s TTL + stale-on-error (Map<key, {at, value}>)
   composition.ts      # reads TOKENPLAN_UPSTREAM env, prepends (preserving ANSI/multi-line) and appends line
-  __fixtures__/       # remains.real.json (captured live), remains.empty.json
+  __fixtures__/       # remains.real.json, balance.real.json, balance.multi.json, …
   *.test.ts           # node:test unit tests
 .claude-plugin/
   plugin.json         # plugin manifest (name, version, commands, homepage)
