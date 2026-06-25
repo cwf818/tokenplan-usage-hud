@@ -1,6 +1,6 @@
 {
   "name": "tokenplan-usage-hud",
-  "version": "0.1.14",
+  "version": "0.1.15",
   "private": true,
   "description": "Claude Code statusline plugin that renders MiniMax token-plan usage (5h + weekly). Composes with another statusline via the TOKENPLAN_UPSTREAM_CMD env var.",
   "type": "module",
@@ -14,6 +14,8 @@
     "settings:install:project": "bash scripts/install.sh --project",
     "settings:uninstall": "bash scripts/install.sh --uninstall",
     "settings:restore": "bash scripts/install.sh --restore",
+    "settings:clean": "bash scripts/clean.sh",
+    "settings:clean:dry": "bash scripts/clean.sh --dry-run",
     "dev:uninstall": "bash scripts/dev-uninstall.sh",
     "dev:uninstall:dry": "bash scripts/dev-uninstall.sh --dry-run"
   },

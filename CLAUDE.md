@@ -41,6 +41,7 @@ scripts/
   wrapper.sh          # bash wrapper: TOKENPLAN_UPSTREAM_CMD → TOKENPLAN_UPSTREAM → us
   install.sh          # settings.json patcher (install/restore/dry-run; --uninstall is a thin shim)
   uninstall.sh        # self-contained uninstaller (used by :uninstall and dev:uninstall)
+  clean.sh            # trim old .bak.<ts> files, keeping only the most recent per file
   lib/edit-settings.mjs # ESM helper used by install.sh
   dev-uninstall.sh    # DEV-ONLY thin shim → exec uninstall.sh
 dist/
