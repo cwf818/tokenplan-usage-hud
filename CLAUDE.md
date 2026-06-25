@@ -32,9 +32,10 @@ src/
   __fixtures__/       # remains.real.json (captured live), remains.empty.json
   *.test.ts           # node:test unit tests
 .claude-plugin/
-  plugin.json         # plugin manifest (name, version, homepage)
+  plugin.json         # plugin manifest (name, version, commands, homepage)
   marketplace.json    # single-plugin marketplace wiring
-  commands/install.md # /tokenplan-usage-hud:install slash command
+commands/
+  install.md          # /tokenplan-usage-hud:install slash command (referenced by plugin.json)
 scripts/
   wrapper.sh          # bash wrapper: TOKENPLAN_UPSTREAM_CMD → TOKENPLAN_UPSTREAM → us
   install.sh          # settings.json patcher (install/uninstall/restore/dry-run)

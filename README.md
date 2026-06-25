@@ -113,9 +113,10 @@ src/
   __fixtures__/       # sample / camelCase / empty / used-only response JSONs
   *.test.ts           # node:test unit tests
 .claude-plugin/
-  plugin.json         # plugin manifest
+  plugin.json         # plugin manifest (declares commands)
   marketplace.json    # single-plugin marketplace wiring
-  commands/install.md # /tokenplan-usage-hud:install slash command
+commands/
+  install.md          # /tokenplan-usage-hud:install slash command
 scripts/
   wrapper.sh          # bash wrapper: TOKENPLAN_UPSTREAM_CMD → TOKENPLAN_UPSTREAM → us
   install.sh          # settings.json patcher (install/uninstall/restore/dry-run)
