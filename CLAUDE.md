@@ -4,16 +4,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A Claude Code statusline plugin (`tokenplan-usage-hud`) that appends **MiniMax token-plan usage** (5-hour and weekly windows) to the existing `claude-hud` output. When `ANTHROPIC_BASE_URL` does not point at MiniMax, the plugin hides itself and passes upstream output through unchanged.
+A Claude Code statusline plugin (`tokenplan-usage-hud`) that renders **MiniMax token-plan usage** (5-hour and weekly windows). The plugin ships its own installer (`scripts/install.sh`) that hooks into Claude Code's `statusLine` slot and (optionally) chains any pre-existing statusline (e.g. `ccstatusline`, `claude-hud`) as the upstream. When `ANTHROPIC_BASE_URL` does not point at MiniMax, the plugin hides itself and passes upstream output through unchanged.
 
-The plugin is shipped as a **single-plugin marketplace**: the repo root IS the marketplace, and `.claude-plugin/plugin.json` declares the plugin. Install with `/plugin marketplace add cwf818/tokenplan-usage-hud` then `/plugin install tokenplan-usage-hud@tokenplan-usage-hud`.
+The plugin is shipped as a **single-plugin marketplace**: the repo root IS the marketplace, and `.claude-plugin/plugin.json` declares the plugin. Install with `/plugin marketplace add cwf818/tokenplan-usage-hud` then `/plugin install tokenplan-usage-hud@tokenplan-usage-hud`, then run `/tokenplan-usage-hud:install` to wire it into `settings.json`.
 
 ## Commands
 
 ```bash
 npm install          # install dev deps (esbuild, typescript, tsx, @types/node)
 npm run typecheck    # tsc --noEmit
-npm test             # node:test via tsx (32 tests across api/render/cache/composition)
+npm test             # node:test via tsx (64 tests across api/render/cache/composition)
 npm run build        # esbuild → dist/index.js (single self-contained ESM bundle, target=node18)
 npm run dev          # esbuild --watch
 ```
@@ -28,53 +28,72 @@ src/
   api.ts              # fetch + tolerant parser for /v1/token_plan/remains
   render.ts           # pure: pctBar + ANSI color thresholds + formatLine
   cache.ts            # 60s TTL + stale-on-error (Map<key, {at, value}>)
-  composition.ts      # reads TOKENPLAN_UPSTREAM env, prepends + appends line
+  composition.ts      # reads TOKENPLAN_UPSTREAM env, prepends (preserving ANSI/multi-line) and appends line
   __fixtures__/       # remains.real.json (captured live), remains.empty.json
   *.test.ts           # node:test unit tests
 .claude-plugin/
   plugin.json         # plugin manifest (name, version, homepage)
   marketplace.json    # single-plugin marketplace wiring
+  commands/install.md # /tokenplan-usage-hud:install slash command
 scripts/
-  wrapper.sh          # bash wrapper: claude-hud → TOKENPLAN_UPSTREAM → us
+  wrapper.sh          # bash wrapper: TOKENPLAN_UPSTREAM_CMD → TOKENPLAN_UPSTREAM → us
+  install.sh          # settings.json patcher (install/uninstall/restore/dry-run)
+  lib/edit-settings.mjs # ESM helper used by install.sh
 dist/
   index.js            # gitignored, esbuild bundle, the actual entry point
-settings.example.json # template (NEVER commit real settings.json)
+settings.example.json # template (NEVER commit a real settings.json)
 ```
 
 ### How it runs
 
 Claude Code's `statusLine.command` spawns a child process that reads a session JSON from stdin and writes statusline text to stdout. Per-turn invocation — the plugin must be fast and never block.
 
-1. `scripts/wrapper.sh` (invoked by `statusLine.command`) runs the installed `claude-hud`, captures its stdout into the `TOKENPLAN_UPSTREAM` env var, then execs `dist/index.js` forwarding stdin.
+1. `scripts/wrapper.sh` (invoked by `statusLine.command`) optionally runs the shell command in `$TOKENPLAN_UPSTREAM_CMD` (so the user can compose with another statusline, e.g. `ccstatusline` or `claude-hud`), captures its stdout into the `TOKENPLAN_UPSTREAM` env var, then execs `dist/index.js` forwarding stdin. If `TOKENPLAN_UPSTREAM_CMD` is unset, `TOKENPLAN_UPSTREAM` is empty and this plugin becomes the sole statusline.
 2. `src/index.ts` reads stdin (drains it; we don't use the session fields), gates on `ANTHROPIC_BASE_URL` containing `minimaxi.com`, and reads `process.env.ANTHROPIC_AUTH_TOKEN` as the Bearer token for the API call.
 3. The API response is parsed by `parseRemains` in `src/api.ts`. It accepts two shapes:
    - **Real shape** (verified against `https://www.minimaxi.com/v1/token_plan/remains` on 2026-06-24): `{ model_remains: [{ model_name, current_interval_remaining_percent, current_weekly_remaining_percent, end_time, weekly_end_time, … }, …], base_resp: { status_code } }`. We pick the entry with the **lowest interval remaining %** as the source of truth (the most-active model).
    - **Legacy/fallback shape**: `{ data: { five_hour: { remaining, limit }, weekly: { remaining, limit } } }` — for any provider that returns the simpler schema.
 4. Cache: `src/cache.ts` holds a single 60-second TTL entry. On fetch failure it returns the stale value so the statusline doesn't blank.
 5. Render: `src/render.ts` emits a single compact line `Usage: 5h ░░░▓▓▓▓▓ 38%(47m↻) · wk ░░░░░▓▓▓ 39%(4d47m↻)`. Layout: a single mode label prefix (`Usage:` or `Remain:`), then per-window `<label> <leftPlain><rightColored> <coloredN%><RESET>(<reset>↻)` segments joined with ` · `. Default mode is **`used`** (line begins with `Usage:`); set `TOKENPLAN_DISPLAY=remaining` to switch. 5-band colors (256-color SGR): bright green / dark green / yellow / orange / red, applied to the displayed value at 0/20/40/60/80 boundaries. The colored chunk is always on the right side of the bar, sized by the displayed value.
-6. Compose: `src/composition.ts` emits upstream (claude-hud output) on line 1 and our line on line 2.
+6. Compose: `src/composition.ts` emits upstream (whatever `TOKENPLAN_UPSTREAM` contains — possibly multi-line, possibly ANSI-colored) on the leading lines and our line last. It strips only trailing whitespace, injects `\x1b[0m` if upstream ends with an unclosed SGR, and otherwise preserves upstream verbatim.
 
-### Installation into Claude Code
+### How `install.sh` patches `settings.json`
 
-The plugin is delivered as files at a fixed cache path: `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache/tokenplan-usage-hud/tokenplan-usage-hud/<version>/`. The `wrapper.sh` and `dist/index.js` are picked up by the marketplace machinery once the version directory exists.
+The install script is the **only** way the plugin writes to `settings.json`. The marketplace install copies files into the cache but does not claim `statusLine` (the manifest declares no `statusLine` field). `/tokenplan-usage-hud:install` does the patching:
 
-`~/.claude/settings.json` needs:
-- `statusLine.command` pointing at the wrapper.
-- `enabledPlugins["tokenplan-usage-hud@tokenplan-usage-hud"] = true`.
-- `extraKnownMarketplaces["tokenplan-usage-hud"]` registered.
+1. Resolves the active `settings.json` (user-level by default; `--project` for project-level). If `--project` and the file is missing, creates a minimal one (it does NOT copy from user-level).
+2. Reads `statusLine` via `scripts/lib/edit-settings.mjs`:
+   - `_tokenplan_managed === true` → already ours, no-op.
+   - `command` is some foreign string → back up the file to `settings.json.bak.<ISO-timestamp>`, preserve the original command at `<plugin-cache>/state/upstream-cmd.sh` (with shebang) and `<plugin-cache>/state/upstream-cmd.txt` (bare command), then rewrite `statusLine` to invoke our wrapper with `TOKENPLAN_UPSTREAM_CMD=<upstream-cmd.sh>`.
+   - no `statusLine` → just install our wrapper.
+3. Rewrites the file via `scripts/lib/edit-settings.mjs`, which preserves the original line ending (CRLF on Windows, LF elsewhere).
+
+`install.sh --uninstall` reverses step 2 by reading `<plugin-cache>/state/upstream-cmd.txt` and writing it back into `statusLine.command`, then removing both state files.
+
+`install.sh --restore` is a coarser recovery: it copies the most recent `settings.json.bak.<ts>` over the current `settings.json`, regardless of what changed since.
+
+## Installation into Claude Code
+
+The plugin is delivered as files at a fixed cache path: `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache/tokenplan-usage-hud/tokenplan-usage-hud/<version>/`. The `wrapper.sh`, `install.sh`, and `dist/index.js` are picked up by the marketplace machinery once the version directory exists.
+
+After install, run `/tokenplan-usage-hud:install` to wire the wrapper into `settings.json`. The script marks `statusLine._tokenplan_managed = true` so re-running it is a no-op. If another plugin later overwrites `statusLine`, just re-run `/tokenplan-usage-hud:install` — it detects the marker is gone and re-establishes it.
+
+**This plugin must be the sole `statusLine` owner.** Claude Code does not currently compose two plugins' `statusLine` fields — the later-installed plugin wins. To compose with another statusline (e.g. `ccstatusline`), invoke it from inside our wrapper via `TOKENPLAN_UPSTREAM_CMD` rather than installing it as a second plugin.
 
 ## Security
 
 - `ANTHROPIC_AUTH_TOKEN` is read from `process.env` and used only as the Bearer header for a single GET. It is **never** logged, written to stdout, persisted, or echoed in error messages.
 - `.gitignore` excludes `.claude/settings.json` (which contains the live token in this project) and `~/.claude/settings.json` is the user's file — never modify it programmatically without preserving all other keys.
+- `scripts/install.sh` only touches `settings.json`; it never reads `env.ANTHROPIC_AUTH_TOKEN` and never writes it to a different file.
 - `settings.example.json` is a checked-in template; never put a real token in it.
 - See `SECURITY.md` for full policy.
 
 ## Testing notes
 
-- `npm test` runs all 32 tests in ~250ms. No network calls in tests — they exercise pure functions and fixtures.
+- `npm test` runs all 64 tests in ~250ms. No network calls in tests — they exercise pure functions and fixtures.
 - The captured real response lives at `src/__fixtures__/remains.real.json` and is the source of truth for the parser's shape assumptions. If MiniMax changes the API, capture a fresh response and update both the fixture and `src/api.ts`.
 - Live smoke test (no Claude Code needed): `echo '{}' | ANTHROPIC_BASE_URL=https://api.minimaxi.com/anthropic ANTHROPIC_AUTH_TOKEN=<token> node dist/index.js`.
+- Live install smoke test: `bash scripts/install.sh --dry-run` then `bash scripts/install.sh` then `bash scripts/install.sh --uninstall`.
 
 ## Build & release
 

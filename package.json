@@ -1,15 +1,19 @@
 {
   "name": "tokenplan-usage-hud",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "description": "Claude Code statusline plugin that appends MiniMax token-plan usage (5h + weekly) to the existing claude-hud output.",
+  "description": "Claude Code statusline plugin that renders MiniMax token-plan usage (5h + weekly). Composes with another statusline via the TOKENPLAN_UPSTREAM_CMD env var.",
   "type": "module",
   "license": "MIT",
   "scripts": {
     "build": "esbuild src/index.ts --bundle --platform=node --target=node18 --format=esm --outfile=dist/index.js",
     "dev": "esbuild src/index.ts --bundle --platform=node --target=node18 --format=esm --outfile=dist/index.js --watch",
     "typecheck": "tsc --noEmit",
-    "test": "node --test --import tsx src/**/*.test.ts"
+    "test": "node --test --import tsx src/**/*.test.ts",
+    "install": "bash scripts/install.sh",
+    "install:project": "bash scripts/install.sh --project",
+    "uninstall": "bash scripts/install.sh --uninstall",
+    "restore": "bash scripts/install.sh --restore"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",

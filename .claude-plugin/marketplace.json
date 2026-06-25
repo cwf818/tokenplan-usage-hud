@@ -1,12 +1,15 @@
 {
   "name": "tokenplan-usage-hud",
-  "owner": { "name": "cwf818" },
+  "owner": {
+    "name": "cwf818"
+  },
   "plugins": [
     {
       "name": "tokenplan-usage-hud",
       "source": "./",
-      "description": "Claude Code statusline plugin that appends MiniMax token-plan usage (5h + weekly) to the existing claude-hud output. Hides itself on non-MiniMax providers.",
-      "version": "0.1.0"
+      "description": "Renders MiniMax token-plan usage (5h + weekly) in the Claude Code statusline. Composes with another statusline via the TOKENPLAN_UPSTREAM_CMD env var. Hides itself on non-MiniMax providers.",
+      "version": "0.2.0"
     }
-  ]
+  ],
+  "version": "0.2.0"
 }
