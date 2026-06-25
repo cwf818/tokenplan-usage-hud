@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A Claude Code statusline plugin (`tokenplan-usage-hud`) that renders **MiniMax token-plan usage** (5-hour and weekly windows). The plugin ships its own installer (`scripts/install.sh`) that hooks into Claude Code's `statusLine` slot and (optionally) chains any pre-existing statusline (e.g. `ccstatusline`, `claude-hud`) as the upstream. When `ANTHROPIC_BASE_URL` does not point at MiniMax, the plugin hides itself and passes upstream output through unchanged.
 
-The plugin is shipped as a **single-plugin marketplace**: the repo root IS the marketplace, and `.claude-plugin/plugin.json` declares the plugin. Install with `/plugin marketplace add cwf818/tokenplan-usage-hud` then `/plugin install tokenplan-usage-hud@tokenplan-usage-hud`, then run `/tokenplan-usage-hud:install` to wire it into `settings.json`.
+The plugin is shipped as a **single-plugin marketplace**: the repo root IS the marketplace, and `.claude-plugin/plugin.json` declares the plugin. Install with `/plugin marketplace add cwf818/tokenplan-usage-hud` then `/plugin install tokenplan-usage-hud@tokenplan-usage-hud`, then run `/tokenplan-usage-hud:install` to wire it into `settings.json`. Uninstall with `/tokenplan-usage-hud:uninstall` (a self-contained cleanup that works even after the cache and marketplace are gone).
 
 ## Commands
 
@@ -36,11 +36,13 @@ src/
   marketplace.json    # single-plugin marketplace wiring
 commands/
   install.md          # /tokenplan-usage-hud:install slash command (referenced by plugin.json)
+  uninstall.md        # /tokenplan-usage-hud:uninstall slash command (referenced by plugin.json)
 scripts/
   wrapper.sh          # bash wrapper: TOKENPLAN_UPSTREAM_CMD → TOKENPLAN_UPSTREAM → us
-  install.sh          # settings.json patcher (install/uninstall/restore/dry-run)
+  install.sh          # settings.json patcher (install/restore/dry-run; --uninstall is a thin shim)
+  uninstall.sh        # self-contained uninstaller (used by :uninstall and dev:uninstall)
   lib/edit-settings.mjs # ESM helper used by install.sh
-  dev-uninstall.sh    # DEV-ONLY: wipe tokenplan on-disk state for re-install (npm run dev:uninstall)
+  dev-uninstall.sh    # DEV-ONLY thin shim → exec uninstall.sh
 dist/
   index.js            # gitignored, esbuild bundle, the actual entry point
 settings.example.json # template (NEVER commit a real settings.json)
@@ -50,7 +52,7 @@ settings.example.json # template (NEVER commit a real settings.json)
 
 Claude Code's `statusLine.command` spawns a child process that reads a session JSON from stdin and writes statusline text to stdout. Per-turn invocation — the plugin must be fast and never block.
 
-1. `scripts/wrapper.sh` (invoked by `statusLine.command`) optionally runs the shell command in `$TOKENPLAN_UPSTREAM_CMD` (so the user can compose with another statusline, e.g. `ccstatusline` or `claude-hud`), captures its stdout into the `TOKENPLAN_UPSTREAM` env var, then execs `dist/index.js` forwarding stdin. If `TOKENPLAN_UPSTREAM_CMD` is unset, `TOKENPLAN_UPSTREAM` is empty and this plugin becomes the sole statusline.
+1. `scripts/wrapper.sh` (invoked by `statusLine.command`) optionally runs the bash script at `$TOKENPLAN_UPSTREAM_CMD` (so the user can compose with another statusline, e.g. `ccstatusline` or `claude-hud`), captures its stdout into the `TOKENPLAN_UPSTREAM` env var, then execs `dist/index.js` forwarding stdin. If `TOKENPLAN_UPSTREAM_CMD` is unset, `TOKENPLAN_UPSTREAM` is empty and this plugin becomes the sole statusline. Note: `TOKENPLAN_UPSTREAM_CMD` is an **absolute path** to a bash script (a shebang + `exec bash -c '...'` wrapper written by install.sh), not a shell command line — older v0.1.10–v0.1.11 used `bash -c` against the path and silently failed; v0.1.12 runs it as a script (`bash "$TOKENPLAN_UPSTREAM_CMD"`).
 2. `src/index.ts` reads stdin (drains it; we don't use the session fields), gates on `ANTHROPIC_BASE_URL` containing `minimaxi.com`, and reads `process.env.ANTHROPIC_AUTH_TOKEN` as the Bearer token for the API call.
 3. The API response is parsed by `parseRemains` in `src/api.ts`. It accepts two shapes:
    - **Real shape** (verified against `https://www.minimaxi.com/v1/token_plan/remains` on 2026-06-24): `{ model_remains: [{ model_name, current_interval_remaining_percent, current_weekly_remaining_percent, end_time, weekly_end_time, … }, …], base_resp: { status_code } }`. We pick the entry with the **lowest interval remaining %** as the source of truth (the most-active model).
@@ -70,7 +72,7 @@ The install script is the **only** way the plugin writes to `settings.json`. The
    - no `statusLine` → just install our wrapper.
 3. Rewrites the file via `scripts/lib/edit-settings.mjs`, which preserves the original line ending (CRLF on Windows, LF elsewhere).
 
-`install.sh --uninstall` reverses step 2 by reading `<plugin-cache>/state/upstream-cmd.txt` and writing it back into `statusLine.command`, then removing both state files.
+`install.sh --uninstall` is a thin shim that exec's `scripts/uninstall.sh`. The uninstaller is the source of truth; it works even when the plugin cache is gone (falls back to the most recent pre-managed `settings.json.bak.<ts>` if `state/upstream-cmd.txt` is missing). It also removes `tokenplan-usage-hud@tokenplan-usage-hud` from `settings.json.enabledPlugins` and wipes `cache/`, `marketplaces/`, and the loader's JSON rows. Idempotent. See `scripts/uninstall.sh` for the full state machine.
 
 `install.sh --restore` is a coarser recovery: it copies the most recent `settings.json.bak.<ts>` over the current `settings.json`, regardless of what changed since.
 
@@ -95,7 +97,8 @@ After install, run `/tokenplan-usage-hud:install` to wire the wrapper into `sett
 - `npm test` runs all 64 tests in ~250ms. No network calls in tests — they exercise pure functions and fixtures.
 - The captured real response lives at `src/__fixtures__/remains.real.json` and is the source of truth for the parser's shape assumptions. If MiniMax changes the API, capture a fresh response and update both the fixture and `src/api.ts`.
 - Live smoke test (no Claude Code needed): `echo '{}' | ANTHROPIC_BASE_URL=https://api.minimaxi.com/anthropic ANTHROPIC_AUTH_TOKEN=<token> node dist/index.js`.
-- Live install smoke test: `bash scripts/install.sh --dry-run` then `bash scripts/install.sh` then `bash scripts/install.sh --uninstall`.
+- Live install smoke test: `bash scripts/install.sh --dry-run` then `bash scripts/install.sh` then `bash scripts/uninstall.sh` (or `bash scripts/uninstall.sh --dry-run` first).
+- Live uninstall smoke test: `bash scripts/uninstall.sh --dry-run` then `bash scripts/uninstall.sh`. Re-run to confirm idempotency.
 
 ## Build & release
 
