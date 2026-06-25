@@ -13,7 +13,9 @@
     "install": "bash scripts/install.sh",
     "install:project": "bash scripts/install.sh --project",
     "uninstall": "bash scripts/install.sh --uninstall",
-    "restore": "bash scripts/install.sh --restore"
+    "restore": "bash scripts/install.sh --restore",
+    "dev:uninstall": "bash scripts/dev-uninstall.sh",
+    "dev:uninstall:dry": "bash scripts/dev-uninstall.sh --dry-run"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
