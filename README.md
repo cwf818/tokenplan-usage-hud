@@ -1,9 +1,9 @@
 # tokenplan-usage-hud
 
-Claude Code statusline plugin that appends **MiniMax token-plan usage** (5-hour and weekly windows) to the existing `claude-hud` output. Stays silent on any non-MiniMax provider.
+Claude Code statusline plugin that renders **MiniMax token-plan usage** (5-hour and weekly windows). The plugin ships its own installer that hooks into Claude Code's `statusLine` slot and (optionally) chains any pre-existing statusline (e.g. `ccstatusline`, `claude-hud`) as the upstream. When `ANTHROPIC_BASE_URL` does not point at MiniMax, the line is hidden and upstream output passes through unchanged.
 
 ```
-[claude-hud line]
+[upstream statusline lines]
 5h ▓▓▓▓░░░░ 40% · wk ▓▓░░░░░░ 20%
 ```
 
@@ -11,51 +11,49 @@ ANSI colors: green ≥ 50 % used, yellow 20–50 %, red < 20 %. Applied to the f
 
 ## Install
 
-### From the marketplace (recommended, once the repo is published)
+After `/plugin install tokenplan-usage-hud@tokenplan-usage-hud`, run the install command:
 
-```bash
-/plugin marketplace add cwf818/tokenplan-usage-hud
-/plugin install tokenplan-usage-hud@tokenplan-usage-hud
+```
+/tokenplan-usage-hud:install
 ```
 
-### From a local clone
+This patches the active `settings.json` (user-level by default; pass `--project` for project-level):
 
-```bash
-# inside this repo:
-npm install
-npm run build
+1. If `statusLine` is already managed by us (`_tokenplan_managed: true`), the command is a no-op.
+2. Otherwise, the current `settings.json` is backed up to `settings.json.bak.<ISO-timestamp>`.
+3. The original `statusLine.command` is preserved at `<plugin-cache>/state/upstream-cmd.sh` and `<plugin-cache>/state/upstream-cmd.txt`.
+4. The `statusLine` is rewritten to invoke our wrapper, which sets `TOKENPLAN_UPSTREAM_CMD=<upstream-cmd.sh>` so the original statusline runs above our line.
+
+If you want to preview what install will do, run `/tokenplan-usage-hud:install --dry-run` first.
+
+If your active `settings.json` doesn't exist at the project level, install creates a minimal one (with `permissions.defaultMode: bypassPermissions`). It does **not** copy from the user-level file.
+
+### Uninstall
+
+```
+/tokenplan-usage-hud:install --uninstall
 ```
 
-Then add the entry below to `~/.claude/settings.json`. It composes with the
-existing `claude-hud` by piping its output through this plugin via
-`TOKENPLAN_UPSTREAM`.
+Restores the original `statusLine.command` from `<plugin-cache>/state/upstream-cmd.txt` and removes both state files. Re-running `install` after `--uninstall` is a fresh install (because the marker is gone).
 
-## settings.json
+### Restore from backup
 
-The wrapper at `scripts/wrapper.sh` is inlined into `statusLine.command`:
-
-```jsonc
-{
-  "statusLine": {
-    "type": "command",
-    "command": "bash -c 'hud_dir=$(ls -d \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}\"/plugins/cache/claude-hud/claude-hud/*/ 2>/dev/null | awk -F/ '\\''{ print $(NF-1) \"\\t\" $(0) }'\\'' | sort -t. -k1,1n -k2,2n -k3,3n -k4,4n | tail -1 | cut -f2-); self_dir=$(ls -d \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}\"/plugins/cache/tokenplan-usage-hud/tokenplan-usage-hud/*/ 2>/dev/null | tail -1); hud_out=$(/c/Program\\ Files/nodejs/node \"${hud_dir}dist/index.js\" 2>/dev/null || true); TOKENPLAN_UPSTREAM=\"$hud_out\" /c/Program\\ Files/nodejs/node \"${self_dir}dist/index.js\"'"
-  },
-  "enabledPlugins": {
-    "tokenplan-usage-hud@tokenplan-usage-hud": true
-  },
-  "extraKnownMarketplaces": {
-    "tokenplan-usage-hud": {
-      "source": { "source": "github", "repo": "cwf818/tokenplan-usage-hud" }
-    }
-  }
-}
+```
+/tokenplan-usage-hud:install --restore
 ```
 
-Replace `/c/Program Files/nodejs/node` with your platform's `node` path on non-Windows. On macOS / Linux this becomes simply `node`.
+Replaces the active `settings.json` with the most recent `settings.json.bak.<ts>`. Useful if you want to roll back an edit that wasn't made by us.
+
+## How it composes with other statuslines
+
+- The wrapper script is `scripts/wrapper.sh`. It reads `TOKENPLAN_UPSTREAM_CMD` from the environment and runs it via `bash -c`, capturing stdout into `TOKENPLAN_UPSTREAM`.
+- If `TOKENPLAN_UPSTREAM_CMD` is unset, the wrapper runs the plugin as the sole statusline.
+- `TOKENPLAN_UPSTREAM_CMD` is any shell string — most users pass it an absolute path to a script that `exec`s the upstream (this is what `install.sh` writes to `state/upstream-cmd.sh`).
+- The plugin preserves interior newlines in upstream output and injects `\x1b[0m` before its own line if upstream ends with an unclosed ANSI SGR — so multi-line, ANSI-colored upstream statuslines render correctly.
 
 ## Activation
 
-The plugin only renders the token-plan line when `ANTHROPIC_BASE_URL` contains `minimaxi.com` (case-insensitive). On vanilla Anthropic, OpenRouter, or any other provider, the line is hidden and upstream `claude-hud` output passes through unchanged.
+The plugin only renders the token-plan line when `ANTHROPIC_BASE_URL` contains `minimaxi.com` (case-insensitive). On vanilla Anthropic, OpenRouter, or any other provider, the line is hidden and any upstream output passes through unchanged.
 
 ## Display mode
 
@@ -111,15 +109,18 @@ src/
   api.ts              # fetch + tolerant parser for /v1/token_plan/remains
   render.ts           # pure: pctBar + ANSI color thresholds + formatLine
   cache.ts            # 60s TTL + stale-on-error
-  composition.ts      # reads TOKENPLAN_UPSTREAM, prepends + appends line
+  composition.ts      # reads TOKENPLAN_UPSTREAM, prepends (preserving ANSI/multi-line) and appends line
   __fixtures__/       # sample / camelCase / empty / used-only response JSONs
   *.test.ts           # node:test unit tests
 .claude-plugin/
   plugin.json         # plugin manifest
   marketplace.json    # single-plugin marketplace wiring
+  commands/install.md # /tokenplan-usage-hud:install slash command
 scripts/
-  wrapper.sh          # bash wrapper: claude-hud → TOKENPLAN_UPSTREAM → us
-settings.example.json # template (NEVER commit a real settings.json)
+  wrapper.sh          # bash wrapper: TOKENPLAN_UPSTREAM_CMD → TOKENPLAN_UPSTREAM → us
+  install.sh          # settings.json patcher (install/uninstall/restore/dry-run)
+  lib/edit-settings.mjs  # ESM helper used by install.sh
+settings.example.json # template (NEVER commit real settings.json)
 ```
 
 ## License

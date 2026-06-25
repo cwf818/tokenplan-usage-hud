@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
-# statusLine wrapper: runs the installed claude-hud (if present), then pipes
-# the upstream output through our token-plan plugin via TOKENPLAN_UPSTREAM.
+# statusLine wrapper for tokenplan-usage-hud.
+#
+# 1. Optionally runs an arbitrary "upstream" statusline command, captured in
+#    the TOKENPLAN_UPSTREAM env var. The command string is taken from
+#    $TOKENPLAN_UPSTREAM_CMD. If unset, TOKENPLAN_UPSTREAM is empty and
+#    this plugin becomes the sole statusline.
+# 2. Execs our bundled dist/index.js, forwarding stdin (the session JSON).
 #
 # Used as the body of `statusLine.command` in ~/.claude/settings.json.
 #
-# Tolerates missing claude-hud (TOKENPLAN_UPSTREAM stays empty) so this
-# plugin still works as the sole statusline provider.
 # Portable: works on Linux, macOS, and Git Bash on Windows.
 
 set -u
@@ -23,15 +26,7 @@ if [ -z "$NODE_BIN" ]; then
 fi
 
 CLAUDE_ROOT="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
-HUD_CACHE_GLOB="${CLAUDE_ROOT}/plugins/cache/claude-hud/claude-hud/*/"
 SELF_CACHE_GLOB="${CLAUDE_ROOT}/plugins/cache/tokenplan-usage-hud/tokenplan-usage-hud/*/"
-
-# Pick the highest-version installed claude-hud (mirrors the sort pattern in
-# the existing settings.json snippet).
-HUD_DIR=$(ls -d $HUD_CACHE_GLOB 2>/dev/null \
-  | awk -F/ '{ print $(NF-1) "\t" $(0) }' \
-  | sort -t. -k1,1n -k2,2n -k3,3n -k4,4n \
-  | tail -1 | cut -f2-)
 
 # Pick the highest-version installed tokenplan-usage-hud (ourselves).
 SELF_DIR=$(ls -d $SELF_CACHE_GLOB 2>/dev/null \
@@ -39,17 +34,18 @@ SELF_DIR=$(ls -d $SELF_CACHE_GLOB 2>/dev/null \
   | sort -t. -k1,1n -k2,2n -k3,3n -k4,4n \
   | tail -1 | cut -f2-)
 
-# Run claude-hud. Tolerate failure or absence — empty upstream is fine.
-HUD_OUT=""
-if [ -n "$HUD_DIR" ] && [ -f "${HUD_DIR}dist/index.js" ]; then
-  HUD_OUT=$("$NODE_BIN" "${HUD_DIR}dist/index.js" 2>/dev/null || true)
+# Run the optional upstream statusline, if the user has set TOKENPLAN_UPSTREAM_CMD.
+# stdout -> TOKENPLAN_UPSTREAM. Failure / unset / empty -> TOKENPLAN_UPSTREAM="".
+UPSTREAM_OUT=""
+if [ -n "${TOKENPLAN_UPSTREAM_CMD:-}" ]; then
+  UPSTREAM_OUT=$(bash -c "$TOKENPLAN_UPSTREAM_CMD" 2>/dev/null || true)
 fi
 
 if [ -z "$SELF_DIR" ] || [ ! -f "${SELF_DIR}dist/index.js" ]; then
   # No token-plan plugin installed — fall back to whatever upstream gave us.
-  printf '%s' "$HUD_OUT"
+  printf '%s' "$UPSTREAM_OUT"
   exit 0
 fi
 
 # Forward stdin (session JSON) to our entry, with upstream output as env var.
-TOKENPLAN_UPSTREAM="$HUD_OUT" "$NODE_BIN" "${SELF_DIR}dist/index.js"
+TOKENPLAN_UPSTREAM="$UPSTREAM_OUT" "$NODE_BIN" "${SELF_DIR}dist/index.js"
