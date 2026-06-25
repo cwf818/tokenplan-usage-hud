@@ -121,12 +121,16 @@ Both endpoints are called with `Authorization: Bearer $ANTHROPIC_AUTH_TOKEN` —
 When `ANTHROPIC_BASE_URL` starts with `https://api.deepseek.com`, the plugin fetches the user's account balance and renders:
 
 ```
-Balance: $/￥110.00           # is_available=true, single currency
-Balance: $/￥110.00 · $/￥3.5  # multi-currency: ALL entries from balance_infos,
+Balance: ￥110.00             # is_available=true, single CNY entry
+Balance: $25.00               # is_available=true, single USD entry
+Balance: ￥110 · $3.5         # multi-currency: ALL entries from balance_infos,
                              # joined by ' · ', single color band from the
                              # LOWEST balance (most urgent currency drives hue).
 Balance: not available!       # is_available=false or no parseable entries
 ```
+
+Per-currency display prefix: `USD` → `$`, `CNY` / `RMB` → `￥`. Any other
+currency code is rendered as itself, uppercased (e.g. `EUR42.50`).
 
 5-band color thresholds on the **lowest** entry's numeric value:
 
