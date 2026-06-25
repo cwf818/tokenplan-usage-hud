@@ -81,6 +81,28 @@ if [ -z "$PLUGIN_DIR" ] || [ ! -f "$WRAPPER" ]; then
   exit 1
 fi
 
+# Build dist/index.js on demand. The marketplace install copies the source
+# tree but does not run `npm run build`, so a fresh install needs us to do
+# that. Skip silently if the file is already present (re-install case).
+DIST_JS="${PLUGIN_DIR%/}/dist/index.js"
+if [ ! -f "$DIST_JS" ]; then
+  if [ "$DRY_RUN" = 1 ]; then
+    echo "install.sh: --dry-run: would build ${DIST_JS} (npm install && npm run build) in ${PLUGIN_DIR%/}"
+  else
+    if ! command -v npm >/dev/null 2>&1; then
+      echo "install.sh: npm not found on PATH; cannot build dist/index.js" >&2
+      echo "install.sh: install Node.js (https://nodejs.org) and re-run." >&2
+      exit 1
+    fi
+    echo "install.sh: dist/index.js missing; running npm install + npm run build in ${PLUGIN_DIR%/}" >&2
+    (
+      cd "${PLUGIN_DIR%/}" || exit 1
+      npm install --no-audit --no-fund || exit 1
+      npm run build || exit 1
+    ) || exit 1
+  fi
+fi
+
 # Resolve target settings file.
 if [ "$PROJECT_LEVEL" = 1 ]; then
   TARGET=".claude/settings.json"
