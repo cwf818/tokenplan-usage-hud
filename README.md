@@ -121,6 +121,7 @@ scripts/
   wrapper.sh          # bash wrapper: TOKENPLAN_UPSTREAM_CMD → TOKENPLAN_UPSTREAM → us
   install.sh          # settings.json patcher (install/uninstall/restore/dry-run)
   lib/edit-settings.mjs  # ESM helper used by install.sh
+  dev-uninstall.sh    # DEV-ONLY: wipe on-disk state for re-install (npm run dev:uninstall)
 settings.example.json # template (NEVER commit real settings.json)
 ```
 

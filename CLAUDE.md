@@ -40,6 +40,7 @@ scripts/
   wrapper.sh          # bash wrapper: TOKENPLAN_UPSTREAM_CMD → TOKENPLAN_UPSTREAM → us
   install.sh          # settings.json patcher (install/uninstall/restore/dry-run)
   lib/edit-settings.mjs # ESM helper used by install.sh
+  dev-uninstall.sh    # DEV-ONLY: wipe tokenplan on-disk state for re-install (npm run dev:uninstall)
 dist/
   index.js            # gitignored, esbuild bundle, the actual entry point
 settings.example.json # template (NEVER commit a real settings.json)
@@ -101,3 +102,33 @@ After install, run `/tokenplan-usage-hud:install` to wire the wrapper into `sett
 - `npm run build` produces `dist/index.js` (~9kb). This is the only artifact the runtime needs.
 - Tag releases as `vX.Y.Z`; marketplace install picks up the highest version directory under `~/.claude/plugins/cache/<plugin>/<plugin>/`.
 - Push to GitHub via `gh repo create cwf818/tokenplan-usage-hud --public --source=. --remote=origin --push` then `git push --tags`. (This requires `gh` CLI auth — see README "Push to GitHub" if `gh` is not available.)
+
+## Dev loop: re-installing the plugin from scratch
+
+When iterating on the install flow itself (changes to `scripts/install.sh`, `scripts/lib/edit-settings.mjs`, the `commands/install.md` slash command, or the version), you need to **fully wipe** the plugin's on-disk state before `/plugin install` will re-fetch the new version. The plugin loader caches the marketplace and refuses to bump an already-installed plugin, so a stale `installed_plugins.json` row or a stale `known_marketplaces.json` row can block upgrades silently (and on Windows the loader surfaces this as `EPERM: operation not permitted, rename ... -> ... .bak`).
+
+Use the bundled dev helper (does **not** touch `settings.json` — your statusLine is preserved):
+
+```bash
+# Preview what will be removed (no changes):
+npm run dev:uninstall:dry
+
+# Actually wipe tokenplan-usage-hud state:
+npm run dev:uninstall
+# — or:  bash scripts/dev-uninstall.sh
+```
+
+It removes:
+- the tokenplan row from `installed_plugins.json` and `known_marketplaces.json` (with timestamped `.bak.<ts>` backups of both files)
+- `cache/tokenplan-usage-hud/`, `marketplaces/tokenplan-usage-hud/`, and the loader's leftover `marketplaces/cwf818-tokenplan-usage-hud/` directory
+
+Then re-install:
+
+```
+/plugin marketplace add cwf818/tokenplan-usage-hud
+/plugin install tokenplan-usage-hud@tokenplan-usage-hud
+/reload-plugins
+/tokenplan-usage-hud:install
+```
+
+If the loader still says "EPERM" after `dev:uninstall`, the most common cause is a Claude Code process holding a file lock on the marketplace dir. **Quit all running Claude Code sessions** (not just this one) and re-run `npm run dev:uninstall`.
