@@ -186,24 +186,24 @@ The plugin reuses `process.env.ANTHROPIC_AUTH_TOKEN` to call the provider's plan
 
 ## Caching
 
-In-memory TTL of **60 s**, with stale-on-error fallback. Two scopes of "refresh interval" are involved and they're independent:
+The Claude Code statusline is updated in response to interaction events by default (every prompt, every tool result). Starting with **Claude Code 2.1.97**, the `statusLine.refreshInterval` field is honored, letting the statusline refresh on a fixed cadence instead. Two scopes of "refresh interval" are involved and they're independent:
 
 - **This plugin's 60 s TTL** — how long we cache a successful API response before re-fetching. MiniMax and DeepSeek have different rate-limit policies and refresh cadences; 60 s is a deliberate default that keeps the statusline responsive without hammering the API.
-- **Claude Code's `statusLine.refreshInterval`** — how often the harness invokes the statusline command (every prompt, every tool result). Set in `~/.claude/settings.json` independently of this plugin:
+- **Claude Code's `statusLine.refreshInterval`** — how often the harness invokes the statusline command. Set in `~/.claude/settings.json` independently of this plugin:
 
   ```json
   {
     "statusLine": {
       "type": "command",
       "command": "...",
-      "refreshInterval": 300000
+      "refreshInterval": 60
     }
   }
   ```
 
-  Within a single Claude Code invocation, this plugin is only re-run when the harness decides to (per `refreshInterval`); between those calls the 60 s TTL decides whether we hit the API or just re-render the cached value.
+  Unit is **seconds** (not milliseconds — that's a frequent footgun; the harness will reject or misbehave on values like `30000`). For this plugin, **30–120 s is a sensible range**: shorter than the 60 s TTL is wasted, much longer and the line lags behind reality. The `refreshInterval` value does **not** affect the API-call TTL — they are independent knobs.
 
-  This plugin follows the **minimum-change principle**: it does not write `refreshInterval` into `settings.json`. Set it yourself if you want a different cadence — the default the harness ships with is fine for most users.
+  This plugin follows the **minimum-change principle**: it does not write `refreshInterval` into `settings.json`. Set it yourself if you want a non-default cadence.
 
 DeepSeek balance uses a separate cache key (`"balance"`) so the two providers don't invalidate each other.
 
