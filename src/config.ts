@@ -57,12 +57,14 @@ const DEFAULT_STALE = {
   separator: " · ",
   // Sub-minute ages round UP to this many minutes ("0m ago" looks broken).
   minMinutes: 1,
-  // Suffix for the reset countdown when more than half the window remains
-  // (e.g. ⏳ — hourglass full).
-  resetArrowMore: "⏳",
-  // Suffix for the reset countdown when less than or equal to half the
-  // window remains (e.g. ⌛ — hourglass empty).
-  resetArrowLess: "⌛",
+  // Glyphs appended to the reset countdown (e.g. "2h3m🕛"). The picker
+  // indexes into this array by `remainingMs / resetDurationMs` so the
+  // array reads left-to-right as "fresh → about to reset". Index 0 is
+  // shown right after the window resets; the last entry is shown just
+  // before the next reset. Twelve clock-face emoji give a smooth visual
+  // ramp; two glyphs give a binary "hourglass" pair (full/empty);
+  // one glyph is a static indicator.
+  resetArrows: ["🕛", "🕐", "🕑", "🕒", "🕓", "🕔", "🕕", "🕖", "🕗", "🕘", "🕙", "🕚"],
 };
 
 const DEFAULT_BAR = {
@@ -340,13 +342,13 @@ function mergeConfig(raw: Record<string, unknown>): Config {
         if (isFinitePositiveNumber(sm.minMinutes)) out.stale.minMinutes = sm.minMinutes;
         else warn("stale.minMinutes must be a positive number; using default");
       }
-      if ("resetArrowMore" in sm) {
-        if (typeof sm.resetArrowMore === "string") out.stale.resetArrowMore = sm.resetArrowMore;
-        else warn("stale.resetArrowMore must be a string; using default");
-      }
-      if ("resetArrowLess" in sm) {
-        if (typeof sm.resetArrowLess === "string") out.stale.resetArrowLess = sm.resetArrowLess;
-        else warn("stale.resetArrowLess must be a string; using default");
+      if ("resetArrows" in sm) {
+        const arr = sm.resetArrows;
+        if (Array.isArray(arr) && arr.every((v) => typeof v === "string" && !/\n/.test(v)) && arr.length > 0) {
+          out.stale.resetArrows = arr as string[];
+        } else {
+          warn("stale.resetArrows must be a non-empty array of single-line strings; using default");
+        }
       }
     } else {
       warn("stale must be an object; using default");
