@@ -26,6 +26,7 @@
   "stale": {
     "separator": " · ",
     "minMinutes": 1,
+    "minUnit": "m",
     "resetArrows": ["🕛", "🕐", "🕑", "🕒", "🕓", "🕔", "🕕", "🕖", "🕗", "🕘", "🕙", "🕚"]
   },
   "bar": {
