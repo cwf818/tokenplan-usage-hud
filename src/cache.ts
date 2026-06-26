@@ -22,6 +22,16 @@ export function peek<T>(key: string): T | null {
   return e ? e.value : null;
 }
 
+// Sibling of peek that ALSO returns the entry's age in milliseconds. Used by
+// the renderer to print a "stale" annotation (" · 5m ago") when we're
+// displaying a cached value after a fetch error. Returns null on miss (same
+// shape as peek), so callers can use `if (!cached) ...` uniformly.
+export function peekWithAge<T>(key: string): { value: T; ageMs: number } | null {
+  const e = store.get(key) as Entry<T> | undefined;
+  if (!e) return null;
+  return { value: e.value, ageMs: Date.now() - e.at };
+}
+
 export function clear(key?: string): void {
   if (key === undefined) store.clear();
   else store.delete(key);

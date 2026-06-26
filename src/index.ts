@@ -11,8 +11,8 @@ import * as cache from "./cache.ts";
 import { fetchRemains, isMiniMaxBaseUrl, type Remains } from "./api.ts";
 import { fetchBalance, isDeepSeekBaseUrl, type Balance } from "./api.deepseek.ts";
 import type { Provider } from "./types.ts";
-import { formatLine, formatBalanceLine, resolveDisplayMode } from "./render.ts";
 import { compose } from "./composition.ts";
+import { type FetchResult, buildProviderLine } from "./dispatch.ts";
 
 const CACHE_KEY_REMAINS = "remains";
 const CACHE_KEY_BALANCE = "balance";
@@ -40,50 +40,59 @@ async function readStdin(): Promise<string> {
   });
 }
 
-async function getRemainsData(token: string): Promise<Remains | null> {
+// Three outcomes the provider data layer can report:
+//   fresh — we just successfully fetched the data
+//   stale — fetch failed but a cached value exists; `ageMs` is how old it is
+//   fail  — fetch failed AND no cached value; caller renders "not available!"
+//
+// The renderer uses the distinction to decide whether to append the dim
+// " · Xm ago" annotation (stale only) or to render a hard-fail placeholder
+// (fail only). Fresh renders are unchanged.
+//
+// FetchResult and buildProviderLine live in src/dispatch.ts so tests can
+// import them without dragging in index.ts's stdin side effects.
+
+async function getRemainsData(token: string): Promise<FetchResult<Remains>> {
   const fresh = cache.get<Remains>(CACHE_KEY_REMAINS, TTL_MS);
-  if (fresh) return fresh;
+  if (fresh) return { kind: "fresh", data: fresh };
 
   try {
     const data = await fetchRemains(token);
     if (data) {
       cache.set(CACHE_KEY_REMAINS, data);
-      return data;
+      return { kind: "fresh", data };
     }
-    return null;
+    // Fetcher returned null (e.g. base_resp.status_code != 0). Treat as a
+    // hard fail, but still try the stale cache.
+    const cached = cache.peekWithAge<Remains>(CACHE_KEY_REMAINS);
+    if (cached) return { kind: "stale", data: cached.value, ageMs: cached.ageMs };
+    return { kind: "fail" };
   } catch {
-    // Stale-on-error: keep showing the last good value.
-    return cache.peek<Remains>(CACHE_KEY_REMAINS);
+    // Network / HTTP error. Stale-on-error: keep showing the last good value.
+    const cached = cache.peekWithAge<Remains>(CACHE_KEY_REMAINS);
+    if (cached) return { kind: "stale", data: cached.value, ageMs: cached.ageMs };
+    return { kind: "fail" };
   }
 }
 
-async function getBalanceData(token: string): Promise<Balance | null> {
+async function getBalanceData(token: string): Promise<FetchResult<Balance>> {
   const fresh = cache.get<Balance>(CACHE_KEY_BALANCE, TTL_MS);
-  if (fresh) return fresh;
+  if (fresh) return { kind: "fresh", data: fresh };
 
   try {
     const data = await fetchBalance(token);
     if (data) {
       cache.set(CACHE_KEY_BALANCE, data);
-      return data;
+      return { kind: "fresh", data };
     }
-    return null;
+    const cached = cache.peekWithAge<Balance>(CACHE_KEY_BALANCE);
+    if (cached) return { kind: "stale", data: cached.value, ageMs: cached.ageMs };
+    return { kind: "fail" };
   } catch {
-    // Stale-on-error: keep showing the last good value.
-    return cache.peek<Balance>(CACHE_KEY_BALANCE);
+    const cached = cache.peekWithAge<Balance>(CACHE_KEY_BALANCE);
+    if (cached) return { kind: "stale", data: cached.value, ageMs: cached.ageMs };
+    return { kind: "fail" };
   }
-}
-
-function renderPlanLine(data: Remains): string | null {
-  const mode = resolveDisplayMode(process.env.TOKENPLAN_DISPLAY);
-  if (data.fiveHour && data.weekly) {
-    return formatLine(data.fiveHour, data.weekly, mode);
-  }
-  // If only one window is present, render what's available rather than nothing.
-  const zero = { pct: 0 } as const;
-  if (data.fiveHour) return formatLine(data.fiveHour, zero, mode);
-  if (data.weekly) return formatLine(zero, data.weekly, mode);
-  return null;
 }
 
 async function main(): Promise<void> {
@@ -108,11 +117,11 @@ async function main(): Promise<void> {
 
   let line: string | null = null;
   if (provider === "minimax") {
-    const data = await getRemainsData(token);
-    line = data ? renderPlanLine(data) : null;
+    const result = await getRemainsData(token);
+    line = buildProviderLine("minimax", result);
   } else if (provider === "deepseek") {
-    const data = await getBalanceData(token);
-    line = data ? formatBalanceLine(data) : null;
+    const result = await getBalanceData(token);
+    line = buildProviderLine("deepseek", result);
   }
 
   process.stdout.write(compose(upstream, line));

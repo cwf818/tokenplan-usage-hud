@@ -6,6 +6,7 @@ import {
   formatBalanceLine,
   formatLine,
   formatResetSuffix,
+  formatStaleSuffix,
   pctBar,
   resolveDisplayMode,
   splitBar,
@@ -17,6 +18,7 @@ const DARK_GREEN = "\x1b[38;5;29m";
 const YELLOW = "\x1b[38;5;220m";
 const ORANGE = "\x1b[38;5;208m";
 const RED = "\x1b[38;5;196m";
+const STALE_COLOR = "\x1b[90m";
 
 // Strip ANSI escape codes so we can inspect content cleanly.
 const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
@@ -470,5 +472,130 @@ describe("formatBalanceLine — unavailable", () => {
   it("renders 'not available!' when minValue is null", () => {
     const line = formatBalanceLine({ isAvailable: true, entries: [{ currency: "USD", totalBalance: 0 }], minValue: null });
     assert.equal(strip(line), "Balance: not available!");
+  });
+});
+
+describe("formatStaleSuffix", () => {
+  it("returns empty for non-positive or non-finite ageMs", () => {
+    assert.equal(formatStaleSuffix(0), "");
+    assert.equal(formatStaleSuffix(-1), "");
+    assert.equal(formatStaleSuffix(Number.NaN), "");
+    assert.equal(formatStaleSuffix(Number.POSITIVE_INFINITY), "");
+  });
+
+  it("rounds sub-minute remainder UP to 1m ago", () => {
+    // 30 seconds is well under a minute but we never want to show "0m ago".
+    assert.equal(strip(formatStaleSuffix(30_000)), " · 1m ago");
+    // Exactly 1s short of 1m — round up to 1m, not down to 0.
+    assert.equal(strip(formatStaleSuffix(59_000)), " · 1m ago");
+  });
+
+  it("sub-minute → 'Xm ago' (X >= 1)", () => {
+    assert.equal(strip(formatStaleSuffix(60_000)), " · 1m ago");
+    assert.equal(strip(formatStaleSuffix(5 * 60_000)), " · 5m ago");
+    assert.equal(strip(formatStaleSuffix(59 * 60_000)), " · 59m ago");
+  });
+
+  it(">= 1h → 'Xh ago' (drops minutes)", () => {
+    assert.equal(strip(formatStaleSuffix(60 * 60_000)), " · 1h ago");
+    assert.equal(strip(formatStaleSuffix(90 * 60_000)), " · 1h ago");
+    assert.equal(strip(formatStaleSuffix(4 * 60 * 60_000)), " · 4h ago");
+    assert.equal(strip(formatStaleSuffix(23 * 60 * 60_000)), " · 23h ago");
+  });
+
+  it(">= 24h → 'Xd ago' (drops hours)", () => {
+    assert.equal(strip(formatStaleSuffix(24 * 60 * 60_000)), " · 1d ago");
+    assert.equal(strip(formatStaleSuffix(25 * 60 * 60_000)), " · 1d ago");
+    assert.equal(strip(formatStaleSuffix(3 * 24 * 60 * 60_000)), " · 3d ago");
+  });
+
+  it("is wrapped in STALE_COLOR and ends with RESET", () => {
+    const suffix = formatStaleSuffix(5 * 60_000);
+    assert.equal(suffix, ` · ${STALE_COLOR}5m ago${RESET}`);
+  });
+
+  it("separator is ' · ' (with leading space and middot)", () => {
+    const suffix = formatStaleSuffix(60_000);
+    assert.ok(suffix.startsWith(" · "));
+    assert.ok(suffix.includes("·"));
+  });
+});
+
+describe("formatLine — stale suffix integration", () => {
+  it("appends the stale suffix when staleMs is provided", () => {
+    const line = formatLine(
+      { pct: 38, resetAt: null },
+      { pct: 39, resetAt: null },
+      "used",
+      Date.now(),
+      5 * 60_000
+    );
+    // Stale suffix should be at the END of the line.
+    assert.ok(line.endsWith(`${STALE_COLOR}5m ago${RESET}`), `unexpected tail: ${JSON.stringify(line)}`);
+    assert.ok(strip(line).endsWith(" · 5m ago"), `stripped: ${strip(line)}`);
+  });
+
+  it("does NOT append the stale suffix when staleMs is omitted", () => {
+    const line = formatLine({ pct: 38, resetAt: null }, { pct: 39, resetAt: null });
+    assert.ok(!line.includes("ago"));
+    assert.ok(!line.includes(STALE_COLOR));
+  });
+
+  it("does NOT append the stale suffix when staleMs is 0", () => {
+    const line = formatLine(
+      { pct: 38, resetAt: null },
+      { pct: 39, resetAt: null },
+      "used",
+      Date.now(),
+      0
+    );
+    assert.ok(!line.includes("ago"));
+  });
+});
+
+describe("formatBalanceLine — stale suffix integration", () => {
+  it("appends the stale suffix on a healthy single-currency line", () => {
+    const line = formatBalanceLine(
+      { isAvailable: true, entries: [{ currency: "CNY", totalBalance: 110 }], minValue: 110 },
+      5 * 60_000
+    );
+    assert.ok(line.endsWith(`${STALE_COLOR}5m ago${RESET}`));
+    assert.ok(strip(line).endsWith(" · 5m ago"));
+  });
+
+  it("appends the stale suffix on a multi-currency line", () => {
+    const line = formatBalanceLine(
+      {
+        isAvailable: true,
+        entries: [
+          { currency: "CNY", totalBalance: 110 },
+          { currency: "USD", totalBalance: 3.5 },
+        ],
+        minValue: 3.5,
+      },
+      90 * 60_000
+    );
+    // 1h30m → drops minutes, shows "1h ago".
+    assert.ok(strip(line).endsWith(" · 1h ago"));
+  });
+
+  it("does NOT append the stale suffix on the 'not available!' branch", () => {
+    // Even when staleMs is passed, the API-failed branch must not append —
+    // there's no cached value to be stale-OF.
+    const line = formatBalanceLine(
+      { isAvailable: false, entries: [], minValue: null },
+      5 * 60_000
+    );
+    assert.equal(strip(line), "Balance: not available!");
+    assert.ok(!line.includes("ago"));
+  });
+
+  it("does NOT append the stale suffix when staleMs is omitted", () => {
+    const line = formatBalanceLine({
+      isAvailable: true,
+      entries: [{ currency: "USD", totalBalance: 25 }],
+      minValue: 25,
+    });
+    assert.ok(!line.includes("ago"));
   });
 });
