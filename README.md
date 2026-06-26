@@ -1,4 +1,14 @@
+<pre>
+[upstream statusline lines]
+Usage: ▓▓▓▓░░░░ 40% (1h27m↻ / 5h) · ▓▓░░░░░░ 20% (4d3h↻ / wk)    # Tokeplan
+Balance: ￥110.00 · $3.5                                          # Balance
+</pre>
+
 # tokenplan-usage-hud
+
+[![License](https://img.shields.io/github/license/cwf818/tokenplan-usage-hud)](LICENSE)
+[![Tag](https://img.shields.io/github/tag/cwf818/tokenplan-usage-hud)](https://github.com/cwf818/tokenplan-usage-hud/tags)
+[![Stars](https://img.shields.io/github/stars/cwf818/tokenplan-usage-hud)](https://github.com/cwf818/tokenplan-usage-hud/stargazers)
 
 A provider-agnostic Claude Code statusline plugin for **token-plan usage / remaining quota**. It picks what to render from `ANTHROPIC_BASE_URL`, so the same plugin works against any supported provider's plan endpoint — no per-provider re-install. Currently supported:
 
@@ -7,13 +17,7 @@ A provider-agnostic Claude Code statusline plugin for **token-plan usage / remai
 
 For vanilla Anthropic, OpenRouter, or any other provider not on the list above, the plugin **hides itself** and passes any chained upstream statusline through unchanged.
 
-```
-[upstream statusline lines]
-Usage: 5h ▓▓▓▓░░░░ 40% (1h↻) · wk ▓▓░░░░░░ 20% (4d↻)        # MiniMax
-Balance: ￥110.00 · $3.5                                       # DeepSeek (multi-currency)
-```
-
-We deliberately don't reimplement the kitchen-sink statuslines that already exist for vanilla Anthropic — [`claude-hud`](https://github.com/...) and [`ccstatusline`](https://github.com/...) cover that. This plugin is only the **plan / quota** piece that's provider-specific.
+We deliberately don't reimplement the kitchen-sink statuslines that already exist for vanilla Anthropic — [`claude-hud`](https://github.com/jarrodwatts/claude-hud) and [`ccstatusline`](https://github.com/sirmalloc/ccstatusline) cover that. This plugin is only the **plan / quota** piece that's provider-specific.
 
 ANSI colors are 5-band (256-color SGR): bright green / dark green / yellow / orange / red. Applied to the displayed value + the colored bar segment; the empty part of the bar stays uncolored so it remains readable.
 
@@ -118,20 +122,20 @@ For dev iteration, `npm run settings:clean` (or `npm run settings:clean:dry`) do
 
 The plugin picks a **provider** from `ANTHROPIC_BASE_URL` and renders exactly one line:
 
-| `ANTHROPIC_BASE_URL`                       | Line            | API                                                  |
-|--------------------------------------------|-----------------|------------------------------------------------------|
-| `https://api.minimaxi.com/...`             | `Usage: …` / `Remain: …` | `GET https://www.minimaxi.com/v1/token_plan/remains` |
-| `https://api.deepseek.com/...`             | `Balance: …`    | `GET https://api.deepseek.com/user/balance`          |
-| anything else (vanilla Anthropic, etc.)    | (hidden)        | —                                                    |
+| `ANTHROPIC_BASE_URL`                    | Line                     | API                                                  |
+| --------------------------------------- | ------------------------ | ---------------------------------------------------- |
+| `https://api.minimaxi.com/...`          | `Usage: …` / `Remain: …` | `GET https://www.minimaxi.com/v1/token_plan/remains` |
+| `https://api.deepseek.com/...`          | `Balance: …`             | `GET https://api.deepseek.com/user/balance`          |
+| anything else (vanilla Anthropic, etc.) | (hidden)                 | —                                                    |
 
 Both endpoints are called with `Authorization: Bearer $ANTHROPIC_AUTH_TOKEN` — the same token, no new env vars. The gates are strict prefix matches (case-insensitive), and `isDeepSeekBaseUrl` rejects suffix attacks like `https://api.deepseek.com.evil.example`. On vanilla Anthropic, OpenRouter, or any other provider, the line is hidden and any upstream output passes through unchanged.
 
 ### MiniMax token-plan line
 
-```
-Usage: 5h ▓▓▓▓▓░░░ 38% (47m↻ / 5h) · wk ░░░░░▓▓▓ 39% (4d47m↻ / wk)
-Remain: 5h ▓▓▓▓▓░░░ 62% (47m↻ / 5h) · wk ░░░░░▓▓▓ 61% (4d47m↻ / wk)
-```
+<pre>
+ Usage: 5h ▓▓▓▓▓░░░ 38% (47m↻ / 5h) · wk ▓▓▓░░░░░ 39% (4d47m↻ / wk)
+Remain: 5h ░░░░░▓▓▓ 62% (47m↻ / 5h) · wk ░░░▓▓▓▓▓ 61% (4d47m↻ / wk)
+</pre>
 
 Two windows (5-hour + weekly), split-bar with colored percentage, reset countdown in parentheses, window label after the slash.
 
@@ -153,13 +157,13 @@ currency code is rendered as itself, uppercased (e.g. `EUR42.50`).
 
 5-band color thresholds on the **lowest** entry's numeric value:
 
-| Range     | Color          |
-|-----------|----------------|
-| `<5`      | red            |
-| `[5,10)`  | orange         |
-| `[10,20)` | yellow         |
-| `[20,50)` | dark green     |
-| `>=50`    | bright green   |
+| Range     | Color        |
+| --------- | ------------ |
+| `<5`      | red          |
+| `[5,10)`  | orange       |
+| `[10,20)` | yellow       |
+| `[20,50)` | dark green   |
+| `>=50`    | bright green |
 
 ## Display mode
 
@@ -217,10 +221,10 @@ npm run dev          # esbuild --watch
 
 The MiniMax parser is defensive and tries multiple plausible field names:
 
-| Window   | Keys tried (in order)                                            |
-|----------|------------------------------------------------------------------|
-| 5-hour   | `five_hour`, `fiveHour`, `fivehour`, `5h`, `hour5`               |
-| Weekly   | `weekly`, `week`, `wk`, `seven_day`, `sevenDay`, `7d`            |
+| Window | Keys tried (in order)                                 |
+| ------ | ----------------------------------------------------- |
+| 5-hour | `five_hour`, `fiveHour`, `fivehour`, `5h`, `hour5`    |
+| Weekly | `weekly`, `week`, `wk`, `seven_day`, `sevenDay`, `7d` |
 
 Inside each window: `remaining` / `left` / `available`; `limit` / `total` / `quota`; `used` (used ⇒ remaining = limit − used). Both `data.{…}` envelope and flat shapes are accepted. If `base_resp.status_code ≠ 0`, the response is treated as failure and the line is omitted.
 
@@ -229,7 +233,13 @@ The verified real shape (captured 2026-06-24 against `https://www.minimaxi.com/v
 ```json
 {
   "model_remains": [
-    { "model_name": "...", "current_interval_remaining_percent": 60, "current_weekly_remaining_percent": 92, "end_time": "...", "weekly_end_time": "..." }
+    {
+      "model_name": "...",
+      "current_interval_remaining_percent": 60,
+      "current_weekly_remaining_percent": 92,
+      "end_time": "...",
+      "weekly_end_time": "..."
+    }
   ],
   "base_resp": { "status_code": 0 }
 }
@@ -254,6 +264,7 @@ npm run dev:uninstall
 ```
 
 It removes:
+
 - the tokenplan row from `installed_plugins.json` and `known_marketplaces.json` (with timestamped `.bak.<ts>` backups of both files)
 - `cache/tokenplan-usage-hud/`, `marketplaces/tokenplan-usage-hud/`, and the loader's leftover `marketplaces/cwf818-tokenplan-usage-hud/` directory
 
