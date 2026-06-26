@@ -6,6 +6,9 @@
 //     Otherwise the line is hidden and upstream output passes through.
 //   - Composes with upstream claude-hud output (passed via TOKENPLAN_UPSTREAM
 //     by the bash wrapper in scripts/wrapper.sh).
+//   - Loads ~/.claude/plugins/tokenplan-usage-hud/config.json once at
+//     startup; every tunable (cache TTL, fetch timeout, colors, display
+//     mode, …) reads from there via the configStore singleton.
 
 import * as cache from "./cache.ts";
 import { fetchRemains, isMiniMaxBaseUrl, type Remains } from "./api.ts";
@@ -13,10 +16,10 @@ import { fetchBalance, isDeepSeekBaseUrl, type Balance } from "./api.deepseek.ts
 import type { Provider } from "./types.ts";
 import { compose } from "./composition.ts";
 import { type FetchResult, buildProviderLine } from "./dispatch.ts";
+import { configStore, loadConfig } from "./config.ts";
 
 const CACHE_KEY_REMAINS = "remains";
 const CACHE_KEY_BALANCE = "balance";
-const TTL_MS = 60_000;
 
 // Read the upstream statusline output once at startup so the main flow and the
 // crash handler can't drift apart on env-var reads.
@@ -53,11 +56,12 @@ async function readStdin(): Promise<string> {
 // import them without dragging in index.ts's stdin side effects.
 
 async function getRemainsData(token: string): Promise<FetchResult<Remains>> {
-  const fresh = cache.get<Remains>(CACHE_KEY_REMAINS, TTL_MS);
+  const ttlMs = configStore.get().cacheTtlMs;
+  const fresh = cache.get<Remains>(CACHE_KEY_REMAINS, ttlMs);
   if (fresh) return { kind: "fresh", data: fresh };
 
   try {
-    const data = await fetchRemains(token);
+    const data = await fetchRemains(token, AbortSignal.timeout(configStore.get().fetchTimeoutMs));
     if (data) {
       cache.set(CACHE_KEY_REMAINS, data);
       return { kind: "fresh", data };
@@ -76,11 +80,12 @@ async function getRemainsData(token: string): Promise<FetchResult<Remains>> {
 }
 
 async function getBalanceData(token: string): Promise<FetchResult<Balance>> {
-  const fresh = cache.get<Balance>(CACHE_KEY_BALANCE, TTL_MS);
+  const ttlMs = configStore.get().cacheTtlMs;
+  const fresh = cache.get<Balance>(CACHE_KEY_BALANCE, ttlMs);
   if (fresh) return { kind: "fresh", data: fresh };
 
   try {
-    const data = await fetchBalance(token);
+    const data = await fetchBalance(token, AbortSignal.timeout(configStore.get().fetchTimeoutMs));
     if (data) {
       cache.set(CACHE_KEY_BALANCE, data);
       return { kind: "fresh", data };
@@ -135,4 +140,8 @@ process.on("uncaughtException", (err) => {
   process.exit(0);
 });
 
+// Load user config once before main() runs. ENOENT and parse errors
+// fall back to DEFAULT_CONFIG (with a stderr line) — never blocks
+// startup on a missing file.
+await loadConfig();
 await main();

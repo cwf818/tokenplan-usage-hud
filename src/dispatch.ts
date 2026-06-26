@@ -55,7 +55,9 @@ export function buildProviderLine(
     return null;
   }
   if (provider === "minimax") {
-    const mode = resolveDisplayMode(process.env.TOKENPLAN_DISPLAY);
+    // Display mode now lives in configStore — the old TOKENPLAN_DISPLAY
+    // env var is gone (see README "Configuration").
+    const mode = resolveDisplayMode();
     return renderPlanLine(result.data as Remains, mode, result.kind === "stale" ? result.ageMs : undefined);
   }
   if (provider === "deepseek") {

@@ -1,5 +1,12 @@
 // Pure rendering helpers: split-bar (left colorless / right colored),
 // 5-band thresholds, ANSI coloring, and line assembly.
+//
+// All tunable values (colors, thresholds, bar geometry, currency
+// prefixes, display-mode labels, stale annotation formatting) come
+// from the singleton in ./config.ts. The defaults in config.ts match
+// today's hardcoded values exactly.
+
+import { configStore } from "./config.ts";
 
 export type Window = {
   // Percentage USED in [0, 100]. May be fractional; we'll round.
@@ -10,23 +17,28 @@ export type Window = {
 
 export type DisplayMode = "remaining" | "used";
 
-// Exported so sibling modules (src/dispatch.ts) can compose colored output
-// without duplicating these literal strings.
+// Shorthand for the active config snapshot. Reading configStore.get()
+// on every call would be wasteful for hot paths (every formatLine call
+// does many color/band lookups) — the helpers below read it lazily.
+function cfg() {
+  return configStore.get();
+}
+
+// Exported so sibling modules (src/dispatch.ts, src/composition.ts) can
+// compose colored output without duplicating these literal strings.
 export const RESET = "\x1b[0m";
 
-// 256-color SGR sequences.
-// "Dark green" is intentionally not too dark — closer to a forest/jade tone
-// so it stays distinguishable from bright green but still readable on dark
-// terminals.
-export const BRIGHT_GREEN = "\x1b[38;5;41m"; // #00d787
-export const DARK_GREEN = "\x1b[38;5;29m"; // #00af5f — forest/jade, not muddy
-export const YELLOW = "\x1b[38;5;220m"; // #ffd75f
-export const ORANGE = "\x1b[38;5;208m"; // #ff8700
-export const RED = "\x1b[38;5;196m"; // #ff5f5f
+// 256-color SGR sequences are read from configStore so a user can
+// override any band via config.json. We re-export them under the same
+// names so existing imports (RED, RESET) keep working.
+export const BRIGHT_GREEN = configStore.get().colors.brightGreen;
+export const DARK_GREEN = configStore.get().colors.darkGreen;
+export const YELLOW = configStore.get().colors.yellow;
+export const ORANGE = configStore.get().colors.orange;
+export const RED = configStore.get().colors.red;
 // Used for the stale-on-error annotation (" · 5m ago"). ANSI bright black
-// (\x1b[90m) reads as "dim gray" on both light and dark terminals without
-// competing with the 5-band palette above.
-export const STALE_COLOR = "\x1b[90m"; // #808080
+// (\x1b[90m) reads as "dim gray" on both light and dark terminals.
+export const STALE_COLOR = configStore.get().colors.stale;
 
 // 5-band thresholds applied to the **displayed** value (so remaining/used
 // modes share the same numeric thresholds — only the meaning flips).
@@ -35,12 +47,24 @@ export const STALE_COLOR = "\x1b[90m"; // #808080
 // the bands run low → high: bright green / dark green / yellow / orange /
 // red, because less used = healthier. We achieve this by indexing into the
 // SAME 5-color palette from opposite ends.
-const COLOR_THRESHOLDS = [20, 40, 60, 80] as const; // 4 boundaries → 5 bands
+function colorThresholds(): readonly number[] {
+  return cfg().thresholds.minimaxPercent;
+}
 
 // 5-color palette indexed by band (0..4). In "remaining" mode, band 0
 // (lowest remaining) gets RED and band 4 (most remaining) gets BRIGHT_GREEN.
 // In "used" mode the mapping is reversed.
-const PALETTE_BY_USED = [BRIGHT_GREEN, DARK_GREEN, YELLOW, ORANGE, RED] as const;
+function paletteByUsed(): readonly string[] {
+  const c = cfg().colors;
+  return [c.brightGreen, c.darkGreen, c.yellow, c.orange, c.red];
+}
+
+// In "remaining" mode we want the LOW band → red, so this is the
+// REVERSE of paletteByUsed().
+function paletteByRemaining(): readonly string[] {
+  const c = cfg().colors;
+  return [c.red, c.orange, c.yellow, c.darkGreen, c.brightGreen];
+}
 
 function bandIndex(value: number, thresholds: readonly number[]): number {
   // thresholds[i] is the upper bound for band i (exclusive on the low end).
@@ -57,19 +81,16 @@ function bandIndex(value: number, thresholds: readonly number[]): number {
 }
 
 export function colorFor(displayedPct: number, mode: DisplayMode): string {
-  const idx = bandIndex(displayedPct, COLOR_THRESHOLDS);
-  if (mode === "remaining") {
-    // Remaining: low remaining = bad. band 0 (lowest displayed) = red.
-    return [RED, ORANGE, YELLOW, DARK_GREEN, BRIGHT_GREEN][idx];
-  }
-  // Used: low used = good. band 0 (lowest displayed) = bright green.
-  return PALETTE_BY_USED[idx];
+  const idx = bandIndex(displayedPct, colorThresholds());
+  if (mode === "remaining") return paletteByRemaining()[idx];
+  return paletteByUsed()[idx];
 }
 
 // Split-bar with a fixed positional layout:
 //   [<USED cells>][<REMAINING cells>]
-// USED cells use '▓', REMAINING cells use '░'. The side that gets COLORED
-// depends on the mode:
+// USED cells use the configured "filled" glyph (default ▓), REMAINING
+// cells use the configured "empty" glyph (default ░). The side that
+// gets COLORED depends on the mode:
 //   used mode      → color the LEFT (used cells)     — colored by used%
 //   remaining mode → color the RIGHT (remaining cells) — colored by remaining%
 // This is the unified rule "left = used, right = remaining; the metric the
@@ -83,7 +104,7 @@ export type SplitBar = {
 export function splitBar(
   usedPct: number,
   mode: DisplayMode,
-  width = 8
+  width = configStore.get().bar.width,
 ): SplitBar {
   const used = Math.max(0, Math.min(100, usedPct));
   const remaining = 100 - used;
@@ -95,12 +116,14 @@ export function splitBar(
   const coloredSize = Math.round((displayed / 100) * width);
   const plainSize = Math.max(0, width - coloredSize);
 
-  // Fixed layout: left = used cells (▓), right = remaining cells (░).
+  const filled = cfg().bar.filled;
+  const empty = cfg().bar.empty;
+
+  // Fixed layout: left = used cells (filled), right = remaining cells (empty).
   // Which side gets the color is decided by mode.
   if (mode === "used") {
-    // Color the LEFT (the used ▓ cells).
-    const left = "▓".repeat(coloredSize);
-    const right = "░".repeat(plainSize);
+    const left = filled.repeat(coloredSize);
+    const right = empty.repeat(plainSize);
     return {
       leftChunk: coloredSize > 0 ? `${color}${left}${RESET}` : "",
       rightChunk: right,
@@ -108,9 +131,8 @@ export function splitBar(
     };
   }
   // mode === "remaining"
-  // Color the RIGHT (the remaining ░ cells).
-  const left = "▓".repeat(plainSize);
-  const right = "░".repeat(coloredSize);
+  const left = filled.repeat(plainSize);
+  const right = empty.repeat(coloredSize);
   return {
     leftChunk: left,
     rightChunk: coloredSize > 0 ? `${color}${right}${RESET}` : "",
@@ -120,27 +142,22 @@ export function splitBar(
 
 // Backwards-compatible simple "filled on left" bar — exported for tests but
 // not used by formatOne anymore.
-export function pctBar(usedPctValue: number, width = 8): { filled: string; empty: string } {
+export function pctBar(usedPctValue: number, width = configStore.get().bar.width): { filled: string; empty: string } {
   const clamped = Math.max(0, Math.min(100, usedPctValue));
   const filledCount = Math.round((clamped / 100) * width);
   const emptyCount = Math.max(0, width - filledCount);
   return {
-    filled: "▓".repeat(filledCount),
-    empty: "░".repeat(emptyCount),
+    filled: cfg().bar.filled.repeat(filledCount),
+    empty: cfg().bar.empty.repeat(emptyCount),
   };
 }
-
-const MODE_LABELS: Record<DisplayMode, string> = {
-  remaining: "Remain:",
-  used: "Usage:",
-};
 
 function formatOne(
   windowLabel: string,
   w: Window,
   mode: DisplayMode,
-  width = 8,
-  nowMs: number = Date.now()
+  width = cfg().bar.width,
+  nowMs: number = Date.now(),
 ): string {
   const usedPct = Math.max(0, Math.min(100, Math.round(w.pct)));
   const remainingPct = 100 - usedPct;
@@ -153,7 +170,8 @@ function formatOne(
   // Window label sits at the END of each segment, after the reset countdown,
   // separated by ' / '. When reset info is missing we still emit the label
   // (without the parentheses) so the segment isn't orphaned. The mode label
-  // (Usage:/Remain:) is prepended once by formatLine.
+  // (Usage:/Remain:) is prepended once by formatLine. The reset arrow glyph
+  // is appended by formatResetSuffix itself (no need to add it here).
   const tail = resetSuffix ? ` (${resetSuffix} / ${windowLabel})` : ` / ${windowLabel}`;
   return `${bar.leftChunk}${bar.rightChunk} ${bar.color}${displayedPct}%${RESET}${tail}`;
 }
@@ -184,18 +202,19 @@ export function formatResetSuffix(resetAt: string | null | undefined, nowMs: num
   const nonZero = units.filter(([v]) => v > 0);
   if (nonZero.length === 0) return "";
   const shown = nonZero.slice(0, 2);
-  return shown.map(([v, u]) => `${v}${u}`).join("") + "↻";
+  return shown.map(([v, u]) => `${v}${u}`).join("") + cfg().stale.resetArrow;
 }
 
 // Compact "age of cached value" formatter for the stale-on-error annotation.
 // Returns e.g. " · 5m ago" / " · 1h ago" / " · 1d ago", already SGR-wrapped
 // in STALE_COLOR and RESET-terminated. Returns "" when ageMs is not positive.
-// Min unit is 1m (a sub-minute remainder rounds UP — we never show "0m ago"
-// because that looks like the cache hasn't actually moved).
+// Min unit is configurable (default 1m — sub-minute remainder rounds UP so
+// we never show "0m ago", which looks like the cache hasn't actually moved).
 export function formatStaleSuffix(ageMs: number): string {
   if (!Number.isFinite(ageMs) || ageMs <= 0) return "";
+  const minMin = cfg().stale.minMinutes;
   const totalMinutes = Math.floor(ageMs / 60_000);
-  // Sub-minute remainder → bump to 1m so the user sees "1m ago", not "0m ago".
+  // Sub-minute remainder → bump to minMinutes so the user never sees "0m ago".
   const minutes = ageMs % 60_000 > 0 ? totalMinutes + 1 : totalMinutes;
   const hours = Math.floor(minutes / 60);
   const days = Math.floor(hours / 24);
@@ -206,53 +225,60 @@ export function formatStaleSuffix(ageMs: number): string {
   } else if (hours >= 1) {
     label = `${hours}h ago`;
   } else {
-    label = `${Math.max(1, minutes)}m ago`;
+    label = `${Math.max(minMin, minutes)}m ago`;
   }
-  return ` · ${STALE_COLOR}${label}${RESET}`;
+  return `${cfg().stale.separator}${STALE_COLOR}${label}${RESET}`;
 }
 
-// Parse the TOKENPLAN_DISPLAY env var (or any caller-provided string) into a
-// DisplayMode. Defaults to "used" on anything unrecognized. Pass
-// TOKENPLAN_DISPLAY=remaining to opt into remaining-mode.
-export function resolveDisplayMode(value: string | undefined | null): DisplayMode {
-  if (value && value.toLowerCase() === "remaining") return "remaining";
-  return "used";
+// Read the configured display mode. The earlier TOKENPLAN_DISPLAY env
+// var is gone (per the v0.2.0 config-file migration); anyone using it
+// must move to config.json's `display` field.
+export function resolveDisplayMode(): DisplayMode {
+  return cfg().display;
 }
 
 export function formatLine(
   fiveHour: Window,
   weekly: Window,
-  mode: DisplayMode = "used",
+  mode: DisplayMode = resolveDisplayMode(),
   nowMs: number = Date.now(),
-  staleMs?: number
+  staleMs?: number,
 ): string {
-  const modeLabel = MODE_LABELS[mode];
-  const base = `${modeLabel} ${formatOne("5h", fiveHour, mode, 8, nowMs)} · ${formatOne("wk", weekly, mode, 8, nowMs)}`;
+  const modeLabel = cfg().modeLabels[mode];
+  const base = `${modeLabel} ${formatOne("5h", fiveHour, mode, undefined, nowMs)} · ${formatOne("wk", weekly, mode, undefined, nowMs)}`;
   return base + (staleMs ? formatStaleSuffix(staleMs) : "");
 }
 
 // ----- DeepSeek balance line -------------------------------------------------
 //
 // Distinct from the MiniMax percentage thresholds (0/20/40/60/80): a balance
-// is an ABSOLUTE amount, not a percentage, so the bands live at 5/10/20/50
-// (red / orange / yellow / dark green / bright green). Lower balance = more
-// urgent, so the lowest band (red) corresponds to the LOWEST value — same
-// intuitive direction as the "remaining" mode of the MiniMax render.
+// is an ABSOLUTE amount, not a percentage, so the bands live at the
+// configured thresholds (default 5/10/20/50 — red / orange / yellow / dark
+// green / bright green). Lower balance = more urgent, so the lowest band
+// (red) corresponds to the LOWEST value — same intuitive direction as the
+// "remaining" mode of the MiniMax render.
 
-const BALANCE_THRESHOLDS = [5, 10, 20, 50] as const;
+function balanceThresholds(): readonly number[] {
+  return cfg().thresholds.deepseekBalance;
+}
+
 // Lowest value → RED, then orange → yellow → dark green → bright green.
-const BALANCE_PALETTE = [RED, ORANGE, YELLOW, DARK_GREEN, BRIGHT_GREEN] as const;
+function balancePalette(): readonly string[] {
+  const c = cfg().colors;
+  return [c.red, c.orange, c.yellow, c.darkGreen, c.brightGreen];
+}
 
 function balanceBandIndex(value: number): number {
-  for (let i = 0; i < BALANCE_THRESHOLDS.length; i++) {
-    if (value < BALANCE_THRESHOLDS[i]) return i;
+  const t = balanceThresholds();
+  for (let i = 0; i < t.length; i++) {
+    if (value < t[i]) return i;
   }
-  return BALANCE_THRESHOLDS.length; // top band
+  return t.length; // top band
 }
 
 export function colorForBalance(value: number): string {
   const v = Math.max(0, value);
-  return BALANCE_PALETTE[balanceBandIndex(v)];
+  return balancePalette()[balanceBandIndex(v)];
 }
 
 // Format a single numeric value for display: integers as "100", floats as
@@ -263,20 +289,18 @@ function formatBalanceValue(v: number): string {
   return v.toFixed(2).replace(/\.?0+$/, "");
 }
 
-// One rendered chunk: `$/￥<value>`. The currency label is fixed by the
-// user's spec — even though DeepSeek reports per-entry currencies, the
-// display prefix is shared.
 // Per-currency display prefix. The DeepSeek API may return any string in
-// `currency`; we recognize the two common ones and fall back to the raw
+// `currency`; we recognize the configured ones and fall back to the raw
 // currency code for anything else (e.g. EUR → "EUR10.50"). Unknown
 // currencies are still rendered (the user can see the code) rather than
 // blanked, so a new provider currency never silently disappears.
 function prefixForCurrency(currency: string): string {
   const upper = currency.toUpperCase();
-  if (upper === "USD") return "$";
-  if (upper === "CNY" || upper === "RMB") return "￥";
-  // Default: show the currency code itself, uppercased.
-  return upper || "￥";
+  const mapped = cfg().currency.prefixes[upper];
+  if (mapped !== undefined) return mapped;
+  // Default: show the currency code itself, uppercased. If even the code
+  // is empty, fall back to the configured fallback prefix.
+  return upper || cfg().currency.fallback;
 }
 
 function formatBalanceChunk(currency: string, v: number): string {

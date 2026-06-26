@@ -11,6 +11,7 @@ import {
   resolveDisplayMode,
   splitBar,
 } from "./render.ts";
+import { __resetForTest } from "./config.ts";
 
 const RESET = "\x1b[0m";
 const BRIGHT_GREEN = "\x1b[38;5;41m";
@@ -178,15 +179,14 @@ describe("colorFor — 5-band thresholds on DISPLAYED value", () => {
 });
 
 describe("resolveDisplayMode", () => {
-  it("defaults to 'used'", () => {
-    assert.equal(resolveDisplayMode(undefined), "used");
-    assert.equal(resolveDisplayMode(""), "used");
-    assert.equal(resolveDisplayMode("bogus"), "used");
+  it("defaults to 'used' from DEFAULT_CONFIG", () => {
+    assert.equal(resolveDisplayMode(), "used");
   });
-  it("recognises 'remaining' (case-insensitive)", () => {
-    assert.equal(resolveDisplayMode("remaining"), "remaining");
-    assert.equal(resolveDisplayMode("REMAINING"), "remaining");
-    assert.equal(resolveDisplayMode("Remaining"), "remaining");
+  it("reflects config.json `display` field", () => {
+    __resetForTest({ display: "remaining" });
+    assert.equal(resolveDisplayMode(), "remaining");
+    __resetForTest();
+    assert.equal(resolveDisplayMode(), "used");
   });
 });
 

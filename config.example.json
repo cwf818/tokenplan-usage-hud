@@ -1,0 +1,36 @@
+{
+  "cacheTtlMs": 60000,
+  "fetchTimeoutMs": 5000,
+  "display": "used",
+  "modeLabels": {
+    "used": "Usage:",
+    "remaining": "Remain:"
+  },
+  "colors": {
+    "brightGreen": "brightGreen",
+    "darkGreen": "darkGreen",
+    "yellow": "yellow",
+    "orange": "orange",
+    "red": "red",
+    "stale": "brightBlack"
+  },
+  "thresholds": {
+    "minimaxPercent": [20, 40, 60, 80],
+    "deepseekBalance": [5, 10, 20, 50]
+  },
+  "currency": {
+    "prefixes": { "USD": "$", "CNY": "￥", "RMB": "￥" },
+    "fallback": "￥",
+    "default": "CNY"
+  },
+  "stale": {
+    "separator": " · ",
+    "minMinutes": 1,
+    "resetArrow": "↻"
+  },
+  "bar": {
+    "width": 8,
+    "filled": "▓",
+    "empty": "░"
+  }
+}

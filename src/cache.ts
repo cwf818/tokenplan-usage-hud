@@ -6,7 +6,7 @@ type Entry<T> = { at: number; value: T };
 // Exported for tests; treat as read-only outside of this module.
 export const store = new Map<string, Entry<unknown>>();
 
-export function get<T>(key: string, ttlMs = 60_000): T | null {
+export function get<T>(key: string, ttlMs: number): T | null {
   const e = store.get(key) as Entry<T> | undefined;
   if (!e) return null;
   if (Date.now() - e.at > ttlMs) return null;

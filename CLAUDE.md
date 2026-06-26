@@ -24,12 +24,13 @@ There is no separate `lint` step; `typecheck` covers it. Tests run with built-in
 
 ```
 src/
-  index.ts            # entry — stdin drain, provider dispatch, cache, render, compose
+  index.ts            # entry — stdin drain, provider dispatch, cache, render, compose, loadConfig()
   types.ts            # Provider union: 'minimax' | 'deepseek' | null
   api.ts              # MiniMax fetch + tolerant parser for /v1/token_plan/remains
   api.deepseek.ts     # DeepSeek fetch + parser for /user/balance + URL gate
-  render.ts           # pure: pctBar + ANSI color thresholds + formatLine + formatBalanceLine
-  cache.ts            # 60s TTL + stale-on-error (Map<key, {at, value}>)
+  render.ts           # pure: pctBar + ANSI color thresholds + formatLine + formatBalanceLine (reads configStore)
+  cache.ts            # TTL + stale-on-error (Map<key, {at, value}>) — TTL passed in by index.ts from configStore
+  config.ts           # loads ~/.claude/plugins/tokenplan-usage-hud/config.json; module-level singleton store
   composition.ts      # reads TOKENPLAN_UPSTREAM env, prepends (preserving ANSI/multi-line) and appends line
   __fixtures__/       # remains.real.json, balance.real.json, balance.multi.json, …
   *.test.ts           # node:test unit tests
