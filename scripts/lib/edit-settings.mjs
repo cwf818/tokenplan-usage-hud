@@ -56,13 +56,51 @@ function writeJson(p, obj) {
   writeFileSync(p, body);
 }
 
+// Fingerprint for the wrapper command install.sh writes. Two-part check:
+//   1. The command path lives inside our plugin cache (the only place
+//      install.sh points the wrapper at). Match either separator since
+//      the actual paths in settings.json come from a Cygwin / native
+//      boundary — on Windows install.sh converts via `cygpath -w` and
+//      we see backslashes; on Linux/macOS we see forward slashes.
+//   2. The command ends with `wrapper.sh"'` — the literal `bash -c '...'`
+//      closing single-quote install.sh emits, preceded by the double-quote
+//      that wraps the wrapper path inside the bash -c arg.
+//
+// Why this matters: _tokenplan_managed === true is a marker WE write, but
+// a foreign command can be in place when (a) another plugin overwrites
+// statusLine after ours, (b) the user hand-edits settings.json, or
+// (c) Claude Code re-derives statusLine. The marker survives all of
+// those. Trusting the marker alone causes uninstall to clobber the
+// foreign command with our cached wrapper — losing the user's intent.
+function isOurWrapperCommand(command) {
+  if (typeof command !== "string" || command.length === 0) return false;
+  // Path matches "plugins[/\]cache[/\]tokenplan-usage-hud[/\]tokenplan-usage-hud[/\]".
+  // Using a runtime regex (not a string .includes) sidesteps the JS string
+  // escape rules: in the regex source `\\` matches a single literal `\`.
+  // Accepts either separator since the paths in settings.json come from
+  // a Cygwin / native boundary (backslashes on Windows, forward slashes
+  // on Linux/macOS).
+  const pathRe = /plugins[\/\\]cache[\/\\]tokenplan-usage-hud[\/\\]tokenplan-usage-hud[\/\\]/;
+  // Suffix: install.sh writes `bash -c '...exec bash "<path>"'`, so the
+  // last three characters of the command are literally `sh"'`. The
+  // trailing `'` distinguishes our wrapper from a different command
+  // that happens to mention our cache path.
+  return pathRe.test(command) && /wrapper\.sh"'\s*$/.test(command);
+}
+
 switch (op) {
   case "status": {
     const data = readJson(target);
     const sl = data.statusLine;
-    if (sl && sl._tokenplan_managed === true) {
+    if (sl && sl._tokenplan_managed === true && isOurWrapperCommand(sl.command)) {
+      // Both the marker AND the wrapper command are ours → safe to treat as
+      // managed (uninstall can restore from upstream-cmd.txt; re-install is
+      // a no-op).
       process.stdout.write("managed");
     } else if (sl && typeof sl.command === "string") {
+      // Either no marker, or marker is set but the command is foreign
+      // (another plugin / human overwrote it). Treat as foreign so install.sh
+      // preserves the current command and writes a new upstream-cmd.sh.
       process.stdout.write("foreign:" + sl.command);
     } else {
       process.stdout.write("none");
@@ -90,11 +128,24 @@ switch (op) {
     const [upstreamCmdOnly] = rest;
     const original = readFileSync(upstreamCmdOnly, "utf8").trim();
     const data = readJson(target);
-    if (data.statusLine && data.statusLine._tokenplan_managed === true) {
-      delete data.statusLine._tokenplan_managed;
-      data.statusLine.command = original;
+    // Same guard as `status`: only restore when the current command is
+    // actually ours. Otherwise the user (or another plugin) replaced the
+    // command after install; touching it would clobber their intent.
+    if (data.statusLine && isOurWrapperCommand(data.statusLine.command)) {
+      // Replace the entire statusLine with the pre-managed shape
+      // (type + command). This drops any fields that Claude Code added
+      // after install (e.g. refreshInterval) — they are not part of the
+      // user-authored state we are restoring.
+      data.statusLine = { type: "command", command: original };
     } else if (!data.statusLine) {
       data.statusLine = { type: "command", command: original };
+    } else {
+      // Foreign command under a stale _tokenplan_managed marker — leave
+      // it alone. The marker is no longer meaningful; the user owns the
+      // current command.
+      process.stderr.write(
+        "edit-settings.mjs: restore-from-file skipped — current statusLine.command is not the tokenplan wrapper\n"
+      );
     }
     writeJson(target, data);
     break;
