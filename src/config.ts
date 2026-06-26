@@ -66,13 +66,30 @@ const DEFAULT_STALE = {
   //                  visibility at the cost of a chatty line.
   minUnit: "m" as "m" | "s",
   // Glyphs appended to the reset countdown (e.g. "2h3m🕛"). The picker
-  // indexes into this array by `remainingMs / resetDurationMs` so the
-  // array reads left-to-right as "fresh → about to reset". Index 0 is
-  // shown right after the window resets; the last entry is shown just
-  // before the next reset. Twelve clock-face emoji give a smooth visual
-  // ramp; two glyphs give a binary "hourglass" pair (full/empty);
-  // one glyph is a static indicator.
-  resetArrows: ["🕛", "🕐", "🕑", "🕒", "🕓", "🕔", "🕕", "🕖", "🕗", "🕘", "🕙", "🕚"],
+  // indexes into this array by `remainingMs / resetDurationMs`, so the
+  // array reads left-to-right as "few remaining → many remaining":
+  //   index 0        : remainingMs ≈ 0 (just reset / about to reset)
+  //   last index     : remainingMs ≈ resetDurationMs (fresh)
+  // `min(…, length-1)` clamps ratio=1.0 to the last entry instead of
+  // running off the end. Twelve clock-face emoji give a smooth visual
+  // ramp from 12 o'clock (🕛, least remaining) around to 1 o'clock
+  // (🕐, most remaining); two glyphs give a binary "hourglass" pair
+  // (full/empty); one glyph is a static indicator. Providers without
+  // start_time (DeepSeek, legacy) fall back to index 0.
+  resetArrows: [
+    "🕛",
+    "🕚",
+    "🕙",
+    "🕘",
+    "🕗",
+    "🕖",
+    "🕕",
+    "🕔",
+    "🕓",
+    "🕒",
+    "🕑",
+    "🕐",
+  ],
 };
 
 const DEFAULT_BAR = {
@@ -124,7 +141,13 @@ export const configStore = {
 // ----- Loader -----
 
 function defaultConfigPath(): string {
-  return join(homedir(), ".claude", "plugins", "tokenplan-usage-hud", "config.json");
+  return join(
+    homedir(),
+    ".claude",
+    "plugins",
+    "tokenplan-usage-hud",
+    "config.json",
+  );
 }
 
 // Test hook: replace the path resolver so tests can point at a temp
@@ -256,9 +279,12 @@ function mergeConfig(raw: Record<string, unknown>): Config {
     if (ml && typeof ml === "object" && !Array.isArray(ml)) {
       const m = ml as Record<string, unknown>;
       if (typeof m.used === "string") out.modeLabels.used = m.used;
-      else if ("used" in m) warn("modeLabels.used must be a string; using default");
-      if (typeof m.remaining === "string") out.modeLabels.remaining = m.remaining;
-      else if ("remaining" in m) warn("modeLabels.remaining must be a string; using default");
+      else if ("used" in m)
+        warn("modeLabels.used must be a string; using default");
+      if (typeof m.remaining === "string")
+        out.modeLabels.remaining = m.remaining;
+      else if ("remaining" in m)
+        warn("modeLabels.remaining must be a string; using default");
     } else {
       warn("modeLabels must be an object; using default");
     }
@@ -269,13 +295,22 @@ function mergeConfig(raw: Record<string, unknown>): Config {
     const c = raw.colors;
     if (c && typeof c === "object" && !Array.isArray(c)) {
       const cm = c as Record<string, unknown>;
-      for (const key of ["brightGreen", "darkGreen", "yellow", "orange", "red", "stale"] as const) {
+      for (const key of [
+        "brightGreen",
+        "darkGreen",
+        "yellow",
+        "orange",
+        "red",
+        "stale",
+      ] as const) {
         if (key in cm) {
           const norm = normalizeColor(cm[key]);
           if (norm) {
             out.colors[key] = norm;
           } else {
-            warn(`colors.${key} must be an ANSI SGR string or a known shortcut; using default`);
+            warn(
+              `colors.${key} must be an ANSI SGR string or a known shortcut; using default`,
+            );
           }
         }
       }
@@ -293,14 +328,18 @@ function mergeConfig(raw: Record<string, unknown>): Config {
         if (isAscending4Tuple(tm.minimaxPercent)) {
           out.thresholds.minimaxPercent = tm.minimaxPercent;
         } else {
-          warn("thresholds.minimaxPercent must be 4 ascending numbers; using default");
+          warn(
+            "thresholds.minimaxPercent must be 4 ascending numbers; using default",
+          );
         }
       }
       if ("deepseekBalance" in tm) {
         if (isAscending4Tuple(tm.deepseekBalance)) {
           out.thresholds.deepseekBalance = tm.deepseekBalance;
         } else {
-          warn("thresholds.deepseekBalance must be 4 ascending numbers; using default");
+          warn(
+            "thresholds.deepseekBalance must be 4 ascending numbers; using default",
+          );
         }
       }
     } else {
@@ -314,9 +353,17 @@ function mergeConfig(raw: Record<string, unknown>): Config {
     if (c && typeof c === "object" && !Array.isArray(c)) {
       const cm = c as Record<string, unknown>;
       if ("prefixes" in cm) {
-        if (cm.prefixes && typeof cm.prefixes === "object" && !Array.isArray(cm.prefixes)) {
-          const merged: Record<string, string> = { ...DEFAULT_CURRENCY.prefixes };
-          for (const [k, v] of Object.entries(cm.prefixes as Record<string, unknown>)) {
+        if (
+          cm.prefixes &&
+          typeof cm.prefixes === "object" &&
+          !Array.isArray(cm.prefixes)
+        ) {
+          const merged: Record<string, string> = {
+            ...DEFAULT_CURRENCY.prefixes,
+          };
+          for (const [k, v] of Object.entries(
+            cm.prefixes as Record<string, unknown>,
+          )) {
             if (typeof v === "string") merged[k.toUpperCase()] = v;
           }
           out.currency.prefixes = merged;
@@ -325,7 +372,8 @@ function mergeConfig(raw: Record<string, unknown>): Config {
         }
       }
       if ("fallback" in cm) {
-        if (typeof cm.fallback === "string") out.currency.fallback = cm.fallback;
+        if (typeof cm.fallback === "string")
+          out.currency.fallback = cm.fallback;
         else warn("currency.fallback must be a string; using default");
       }
       if ("default" in cm) {
@@ -343,23 +391,32 @@ function mergeConfig(raw: Record<string, unknown>): Config {
     if (s && typeof s === "object" && !Array.isArray(s)) {
       const sm = s as Record<string, unknown>;
       if ("separator" in sm) {
-        if (typeof sm.separator === "string") out.stale.separator = sm.separator;
+        if (typeof sm.separator === "string")
+          out.stale.separator = sm.separator;
         else warn("stale.separator must be a string; using default");
       }
       if ("minMinutes" in sm) {
-        if (isFinitePositiveNumber(sm.minMinutes)) out.stale.minMinutes = sm.minMinutes;
+        if (isFinitePositiveNumber(sm.minMinutes))
+          out.stale.minMinutes = sm.minMinutes;
         else warn("stale.minMinutes must be a positive number; using default");
       }
       if ("minUnit" in sm) {
-        if (sm.minUnit === "m" || sm.minUnit === "s") out.stale.minUnit = sm.minUnit;
+        if (sm.minUnit === "m" || sm.minUnit === "s")
+          out.stale.minUnit = sm.minUnit;
         else warn('stale.minUnit must be "m" or "s"; using default');
       }
       if ("resetArrows" in sm) {
         const arr = sm.resetArrows;
-        if (Array.isArray(arr) && arr.every((v) => typeof v === "string" && !/\n/.test(v)) && arr.length > 0) {
+        if (
+          Array.isArray(arr) &&
+          arr.every((v) => typeof v === "string" && !/\n/.test(v)) &&
+          arr.length > 0
+        ) {
           out.stale.resetArrows = arr as string[];
         } else {
-          warn("stale.resetArrows must be a non-empty array of single-line strings; using default");
+          warn(
+            "stale.resetArrows must be a non-empty array of single-line strings; using default",
+          );
         }
       }
     } else {
@@ -376,18 +433,24 @@ function mergeConfig(raw: Record<string, unknown>): Config {
         // Accept any finite number in [3, 64] — narrower than the [3,32]
         // range first sketched, because wider bars look bad in any
         // statusline context the user might compose this with.
-        if (isFiniteNumber(bm.width) && (bm.width as number) >= 3 && (bm.width as number) <= 64) {
+        if (
+          isFiniteNumber(bm.width) &&
+          (bm.width as number) >= 3 &&
+          (bm.width as number) <= 64
+        ) {
           out.bar.width = bm.width;
         } else {
           warn("bar.width must be an integer in [3, 64]; using default");
         }
       }
       if ("filled" in bm) {
-        if (typeof bm.filled === "string" && !/\n/.test(bm.filled)) out.bar.filled = bm.filled;
+        if (typeof bm.filled === "string" && !/\n/.test(bm.filled))
+          out.bar.filled = bm.filled;
         else warn("bar.filled must be a single-line string; using default");
       }
       if ("empty" in bm) {
-        if (typeof bm.empty === "string" && !/\n/.test(bm.empty)) out.bar.empty = bm.empty;
+        if (typeof bm.empty === "string" && !/\n/.test(bm.empty))
+          out.bar.empty = bm.empty;
         else warn("bar.empty must be a single-line string; using default");
       }
     } else {
@@ -410,14 +473,19 @@ export function __resetForTest(overrides?: Partial<Config>): void {
   // ...overrides` would replace the whole `stale` object with a partial
   // one missing minMinutes / separator.
   const base = JSON.parse(JSON.stringify(DEFAULT_CONFIG)) as Config;
-  const merged = deepMerge(base, overrides as Record<string, unknown>) as Config;
+  const merged = deepMerge(
+    base,
+    overrides as Record<string, unknown>,
+  ) as Config;
   _current = merged;
 }
 
 function deepMerge(base: unknown, over: unknown): unknown {
   if (over === undefined) return base;
-  if (over === null || typeof over !== "object" || Array.isArray(over)) return over;
-  if (base === null || typeof base !== "object" || Array.isArray(base)) return over;
+  if (over === null || typeof over !== "object" || Array.isArray(over))
+    return over;
+  if (base === null || typeof base !== "object" || Array.isArray(base))
+    return over;
   const out: Record<string, unknown> = { ...(base as Record<string, unknown>) };
   for (const [k, v] of Object.entries(over as Record<string, unknown>)) {
     out[k] = v === undefined ? out[k] : deepMerge(out[k], v);
