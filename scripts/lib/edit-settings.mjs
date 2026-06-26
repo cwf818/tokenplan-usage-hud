@@ -115,11 +115,18 @@ switch (op) {
     const upstreamPart = upstream
       ? `export TOKENPLAN_UPSTREAM_CMD="${upstream}"; `
       : "";
-    data.statusLine = {
-      type: "command",
-      command: `bash -c '${upstreamPart}exec bash "${wrapper}"'`,
-      _tokenplan_managed: true,
-    };
+    // Preserve user-set fields on the existing statusLine (notably
+    // refreshInterval) — only overwrite the keys we own (type, command,
+    // _tokenplan_managed). The earlier "data.statusLine = {…}" form
+    // nuked every other field on install.
+    const prev = (data.statusLine && typeof data.statusLine === "object")
+      ? data.statusLine
+      : {};
+    const next = { ...prev };
+    next.type = "command";
+    next.command = `bash -c '${upstreamPart}exec bash "${wrapper}"'`;
+    next._tokenplan_managed = true;
+    data.statusLine = next;
     writeJson(target, data);
     break;
   }
