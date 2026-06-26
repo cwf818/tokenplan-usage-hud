@@ -1,6 +1,6 @@
 {
   "name": "tokenplan-usage-hud",
-  "version": "0.2.7",
+  "version": "0.2.9",
   "private": true,
   "description": "Claude Code statusline plugin that renders MiniMax token-plan usage (5h + weekly) or DeepSeek account balance, picked by ANTHROPIC_BASE_URL. Composes with another statusline via the TOKENPLAN_UPSTREAM_CMD env var.",
   "type": "module",
@@ -16,7 +16,11 @@
     "settings:restore": "bash scripts/install.sh --restore",
     "settings:clean": "bash scripts/clean.sh",
     "settings:clean:dry": "bash scripts/clean.sh --dry-run",
+    "settings:clean-cache": "bash scripts/clean-cache.sh",
+    "settings:clean-cache:dry": "bash scripts/clean-cache.sh --dry-run",
     "scripts:test": "bash scripts/test-edit-settings.sh",
+    "scripts:test:install": "bash scripts/test-install.sh",
+    "scripts:test:clean-cache": "bash scripts/test-clean-cache.sh",
     "dev:uninstall": "bash scripts/dev-uninstall.sh",
     "dev:uninstall:dry": "bash scripts/dev-uninstall.sh --dry-run"
   },
