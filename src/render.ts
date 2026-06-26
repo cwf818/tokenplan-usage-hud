@@ -231,29 +231,35 @@ export function formatResetSuffix(
   return label + arrow;
 }
 
-// Choose between the two reset arrows based on how full the window is.
-// Boundary: elapsed/total > 0.5 → reset is closer than the midpoint →
-// the window is mostly consumed → use the "Less" (⌛) glyph. At-or-below
-// the midpoint → use the "More" (⏳) glyph. When the interval data is
-// missing (DeepSeek, legacy shape) we fall back to the More glyph to
-// preserve the prior behavior for callers that never set these fields.
+// Pick a reset-countdown glyph from the configured array by how full the
+// window still is. Index = floor(remainingMs / resetDurationMs * length),
+// so the array reads left-to-right as "fresh → about to reset":
+//   index 0        : right after the window reset (ratio = 0)
+//   last index     : just before the next reset    (ratio ≈ 1)
+// `min(…, length-1)` clamps ratio=1.0 to the last entry instead of
+// running off the end. Falls back to index 0 when the interval data is
+// missing (DeepSeek, legacy shape, clock skew) — same "neutral" reading
+// for any unknown state, so users don't see a glyph swap just because
+// we couldn't parse the new fields.
 function pickResetArrow(
   nowMs: number,
   resetStartAt: string | null | undefined,
   resetDurationMs: number | null | undefined,
 ): string {
-  const s = cfg().stale;
-  if (resetStartAt == null || resetDurationMs == null) return s.resetArrowMore;
+  const arrows = cfg().stale.resetArrows;
+  const first = arrows[0] ?? "";
+  if (resetStartAt == null || resetDurationMs == null) return first;
   const startMs = Date.parse(resetStartAt);
   if (!Number.isFinite(startMs) || !Number.isFinite(resetDurationMs) || resetDurationMs <= 0) {
-    return s.resetArrowMore;
+    return first;
   }
   const elapsed = nowMs - startMs;
-  // Ratio in (0, ∞); we only split on > 0.5. Negative elapsed (clock skew)
-  // counts as "fully remaining" → More.
-  const ratio = elapsed / resetDurationMs;
-  if (ratio > 0.5) return s.resetArrowLess;
-  return s.resetArrowMore;
+  // Clamp ratio to [0, 1] — negative remaining means we're past the
+  // window end (formatResetSuffix already filters those, but defense in
+  // depth). Slightly-above-1 (clock skew) clamps to the last index.
+  const ratio = Math.max(0, Math.min(1, (resetDurationMs - elapsed) / resetDurationMs));
+  const idx = Math.min(arrows.length - 1, Math.floor(ratio * arrows.length));
+  return arrows[idx];
 }
 
 // Compact "age of cached value" formatter for the stale-on-error annotation.
