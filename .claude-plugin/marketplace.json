@@ -7,9 +7,9 @@
     {
       "name": "tokenplan-usage-hud",
       "source": "./",
-      "description": "Renders MiniMax token-plan usage (5h + weekly) in the Claude Code statusline. Composes with another statusline via the TOKENPLAN_UPSTREAM_CMD env var. Hides itself on non-MiniMax providers.",
-      "version": "0.1.9"
+      "description": "Provider-agnostic Claude Code statusline plugin for token-plan usage and account balance. Picks the provider from ANTHROPIC_BASE_URL (currently MiniMax + DeepSeek); hides itself otherwise. Ships :install, :uninstall, :clean, and :clean-cache slash commands.",
+      "version": "0.2.10"
     }
   ],
-  "version": "0.1.9"
+  "version": "0.2.10"
 }
