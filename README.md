@@ -1,22 +1,32 @@
 # tokenplan-usage-hud
 
-Claude Code statusline plugin that renders **MiniMax token-plan usage** (5-hour and weekly windows). The plugin ships its own installer that hooks into Claude Code's `statusLine` slot and (optionally) chains any pre-existing statusline (e.g. `ccstatusline`, `claude-hud`) as the upstream. When `ANTHROPIC_BASE_URL` does not point at MiniMax, the line is hidden and upstream output passes through unchanged.
+A provider-agnostic Claude Code statusline plugin for **token-plan usage / remaining quota**. It picks what to render from `ANTHROPIC_BASE_URL`, so the same plugin works against any supported provider's plan endpoint — no per-provider re-install. Currently supported:
+
+- **MiniMax** — `Usage: …` / `Remain: …` (5-hour + weekly windows), from `/v1/token_plan/remains`
+- **DeepSeek** — `Balance: …` (account balance), from `/user/balance`
+
+For vanilla Anthropic, OpenRouter, or any other provider not on the list above, the plugin **hides itself** and passes any chained upstream statusline through unchanged.
 
 ```
 [upstream statusline lines]
-Usage: 5h ▓▓▓▓░░░░ 40% (1h↻) · wk ▓▓░░░░░░ 20% (4d↻)
+Usage: 5h ▓▓▓▓░░░░ 40% (1h↻) · wk ▓▓░░░░░░ 20% (4d↻)        # MiniMax
+Balance: ￥110.00 · $3.5                                       # DeepSeek (multi-currency)
 ```
 
-ANSI colors are 5-band (256-color SGR): bright green / dark green / yellow / orange / red at 0 / 20 / 40 / 60 / 80 boundaries. Applied to the displayed value + the colored bar segment; the empty part of the bar stays uncolored so it remains readable.
+We deliberately don't reimplement the kitchen-sink statuslines that already exist for vanilla Anthropic — [`claude-hud`](https://github.com/...) and [`ccstatusline`](https://github.com/...) cover that. This plugin is only the **plan / quota** piece that's provider-specific.
+
+ANSI colors are 5-band (256-color SGR): bright green / dark green / yellow / orange / red. Applied to the displayed value + the colored bar segment; the empty part of the bar stays uncolored so it remains readable.
 
 ## Install
 
-The plugin is a single-plugin marketplace. Install it in two steps:
+The plugin is a single-plugin marketplace. Install it in three steps:
 
 ```
 /plugin marketplace add cwf818/tokenplan-usage-hud
 /plugin install tokenplan-usage-hud@tokenplan-usage-hud
 ```
+
+> After the plugin install, run `/reload-plugins` so the loader picks up the new commands before wiring it into `settings.json`. Forgetting this step is the most common cause of "command not found" right after install.
 
 Then wire it into `settings.json`:
 
@@ -116,6 +126,15 @@ The plugin picks a **provider** from `ANTHROPIC_BASE_URL` and renders exactly on
 
 Both endpoints are called with `Authorization: Bearer $ANTHROPIC_AUTH_TOKEN` — the same token, no new env vars. The gates are strict prefix matches (case-insensitive), and `isDeepSeekBaseUrl` rejects suffix attacks like `https://api.deepseek.com.evil.example`. On vanilla Anthropic, OpenRouter, or any other provider, the line is hidden and any upstream output passes through unchanged.
 
+### MiniMax token-plan line
+
+```
+Usage: 5h ▓▓▓▓▓░░░ 38% (47m↻ / 5h) · wk ░░░░░▓▓▓ 39% (4d47m↻ / wk)
+Remain: 5h ▓▓▓▓▓░░░ 62% (47m↻ / 5h) · wk ░░░░░▓▓▓ 61% (4d47m↻ / wk)
+```
+
+Two windows (5-hour + weekly), split-bar with colored percentage, reset countdown in parentheses, window label after the slash.
+
 ### DeepSeek balance line
 
 When `ANTHROPIC_BASE_URL` starts with `https://api.deepseek.com`, the plugin fetches the user's account balance and renders:
@@ -155,17 +174,48 @@ claude
 
 In remaining mode the line begins with `Remain:` and the percentage is what's left; the colored bar segment represents the remaining portion.
 
+`TOKENPLAN_DISPLAY` is MiniMax-only — DeepSeek's `Balance:` line doesn't have a percentage to flip.
+
 ## Auth
 
-The plugin reuses `process.env.ANTHROPIC_AUTH_TOKEN` to call the MiniMax `GET https://www.minimaxi.com/v1/token_plan/remains` endpoint. **No new env vars.** See [SECURITY.md](./SECURITY.md) for how the token is handled.
+The plugin reuses `process.env.ANTHROPIC_AUTH_TOKEN` to call the provider's plan endpoint. **No new env vars.** See [SECURITY.md](./SECURITY.md) for how the token is handled.
 
 ## Caching
 
-In-memory TTL of **60 s**, with stale-on-error fallback. The MiniMax API is not hit on every turn. DeepSeek balance uses a separate cache key (`"balance"`) but the same 60 s TTL.
+In-memory TTL of **60 s**, with stale-on-error fallback. Two scopes of "refresh interval" are involved and they're independent:
 
-## Response shape
+- **This plugin's 60 s TTL** — how long we cache a successful API response before re-fetching. MiniMax and DeepSeek have different rate-limit policies and refresh cadences; 60 s is a deliberate default that keeps the statusline responsive without hammering the API.
+- **Claude Code's `statusLine.refreshInterval`** — how often the harness invokes the statusline command (every prompt, every tool result). Set in `~/.claude/settings.json` independently of this plugin:
 
-The parser is defensive and tries multiple plausible field names:
+  ```json
+  {
+    "statusLine": {
+      "type": "command",
+      "command": "...",
+      "refreshInterval": 300000
+    }
+  }
+  ```
+
+  Within a single Claude Code invocation, this plugin is only re-run when the harness decides to (per `refreshInterval`); between those calls the 60 s TTL decides whether we hit the API or just re-render the cached value.
+
+  This plugin follows the **minimum-change principle**: it does not write `refreshInterval` into `settings.json`. Set it yourself if you want a different cadence — the default the harness ships with is fine for most users.
+
+DeepSeek balance uses a separate cache key (`"balance"`) so the two providers don't invalidate each other.
+
+## Develop
+
+```bash
+npm install
+npm run typecheck    # tsc --noEmit
+npm test             # node --test --import tsx src/**/*.test.ts
+npm run build        # esbuild → dist/index.js
+npm run dev          # esbuild --watch
+```
+
+### Response shape
+
+The MiniMax parser is defensive and tries multiple plausible field names:
 
 | Window   | Keys tried (in order)                                            |
 |----------|------------------------------------------------------------------|
@@ -187,15 +237,7 @@ The verified real shape (captured 2026-06-24 against `https://www.minimaxi.com/v
 
 The plugin picks the entry with the **lowest interval remaining %** as the source of truth (the most-active model). If you capture a fresh response and the shape diverges, save it as `src/__fixtures__/remains.real.json` and tighten the parser in `src/api.ts`.
 
-## Develop
-
-```bash
-npm install
-npm run typecheck    # tsc --noEmit
-npm test             # node --test --import tsx src/**/*.test.ts
-npm run build        # esbuild → dist/index.js
-npm run dev          # esbuild --watch
-```
+The DeepSeek response shape is simpler — `{ is_available: bool, balance_infos: [{ currency, total_balance, granted_balance, topped_up_balance }, ...] }` — and the parser iterates **all** entries so every currency the account holds is rendered.
 
 ### Dev loop: re-installing the plugin from scratch
 

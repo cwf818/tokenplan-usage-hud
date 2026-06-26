@@ -1,7 +1,7 @@
 {
   "name": "tokenplan-usage-hud",
-  "version": "0.1.17",
-  "description": "Renders MiniMax token-plan usage (5h + weekly) or DeepSeek account balance in the Claude Code statusline, picked by ANTHROPIC_BASE_URL. Composes with another statusline via the TOKENPLAN_UPSTREAM_CMD env var.",
+  "version": "0.1.18",
+  "description": "Provider-agnostic Claude Code statusline plugin for token-plan usage and account balance. Picks the provider from ANTHROPIC_BASE_URL (currently MiniMax + DeepSeek); hides itself otherwise. Composes with another statusline via the TOKENPLAN_UPSTREAM_CMD env var.",
   "license": "MIT",
   "commands": ["./commands/install.md", "./commands/uninstall.md", "./commands/clean.md"],
   "keywords": ["statusline", "hud", "minimax", "minimaxi", "deepseek", "token-plan", "balance", "claude-code"],
