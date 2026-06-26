@@ -57,6 +57,14 @@ const DEFAULT_STALE = {
   separator: " · ",
   // Sub-minute ages round UP to this many minutes ("0m ago" looks broken).
   minMinutes: 1,
+  // Smallest unit shown on the reset countdown.
+  //   "m" (default): sub-minute shows as "<1m<arrow>" — the "<" prefix
+  //                  signals "less than" so a window about to reset is
+  //                  visually distinct from one with a full minute left.
+  //   "s":           sub-minute shows as actual seconds (e.g. "47s<arrow>").
+  //                  Opt in if you want fine-grained "about to reset"
+  //                  visibility at the cost of a chatty line.
+  minUnit: "m" as "m" | "s",
   // Glyphs appended to the reset countdown (e.g. "2h3m🕛"). The picker
   // indexes into this array by `remainingMs / resetDurationMs` so the
   // array reads left-to-right as "fresh → about to reset". Index 0 is
@@ -341,6 +349,10 @@ function mergeConfig(raw: Record<string, unknown>): Config {
       if ("minMinutes" in sm) {
         if (isFinitePositiveNumber(sm.minMinutes)) out.stale.minMinutes = sm.minMinutes;
         else warn("stale.minMinutes must be a positive number; using default");
+      }
+      if ("minUnit" in sm) {
+        if (sm.minUnit === "m" || sm.minUnit === "s") out.stale.minUnit = sm.minUnit;
+        else warn('stale.minUnit must be "m" or "s"; using default');
       }
       if ("resetArrows" in sm) {
         const arr = sm.resetArrows;

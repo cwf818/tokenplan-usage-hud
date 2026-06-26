@@ -175,60 +175,78 @@ function formatOne(
   const displayedPct = mode === "remaining" ? remainingPct : usedPct;
 
   const bar = splitBar(usedPct, mode, width);
-  const resetSuffix = formatResetSuffix(w.resetAt, nowMs, w.resetStartAt, w.resetDurationMs);
-
-  // Layout: "<bar> <coloredDisplayedPct>%<RESET> (<reset> / <windowLabel>)"
-  // Window label sits at the END of each segment, after the reset countdown,
-  // separated by ' / '. When reset info is missing we still emit the label
-  // (without the parentheses) so the segment isn't orphaned. The mode label
-  // (Usage:/Remain:) is prepended once by formatLine. The reset arrow glyph
-  // is appended by formatResetSuffix itself (no need to add it here).
-  const tail = resetSuffix ? ` (${resetSuffix} / ${windowLabel})` : ` / ${windowLabel}`;
+  // Two pieces: the countdown (e.g. "2h3m") and the arrow (e.g. "🕛").
+  // Both are derived from the same Window + nowMs; the arrow is the
+  // single thing we always have even when the countdown is empty
+  // (e.g. "<1m" or just the arrow alone if resetAt is present but
+  // remaining is 0). Template:
+  //   resetAt present → " (<countdown><arrow> <windowLabel>)"
+  //   resetAt missing  → " <windowLabel>" (DeepSeek / legacy — no
+  //   reset info at all, don't fake it with a default arrow)
+  const resetSuffix = formatResetSuffix(w.resetAt, nowMs);
+  const arrow = pickResetArrow(nowMs, w.resetStartAt, w.resetDurationMs);
+  const tail = w.resetAt
+    ? ` (${resetSuffix}${arrow} ${windowLabel})`
+    : ` ${windowLabel}`;
   return `${bar.leftChunk}${bar.rightChunk} ${bar.color}${displayedPct}%${RESET}${tail}`;
 }
 
-// Compact "remaining time until reset" formatter. Returns e.g. "2h3m⏳"
-// (no surrounding parens — the caller wraps the broader context) or "" when
-// reset info is missing or already past. Drops the leading unit when it is
-// zero; minimum unit is minutes.
+// Compact "remaining time until reset" formatter. Returns the countdown
+// portion of the reset annotation (no arrow, no parens) — e.g. "2h3m" or
+// "<1m" for sub-minute. The caller (`formatOne`) appends the window
+// label and the fill-state arrow glyph picked by `pickResetArrow`.
 //
-// The appended arrow reflects how full the window still is — ⏳ when more
-// than half the window remains, ⌛ when at most half remains. The ratio
-// comes from (nowMs - resetStartAt) / resetDurationMs; when either side is
-// missing (DeepSeek, legacy providers) we fall back to the More glyph to
-// avoid silently swapping the icon on data that's already in the user's
-// expectations from earlier versions.
+// Never returns "" when `resetAt` is present — the smallest unit is
+// configurable via `stale.minUnit`:
+//   "m" (default): sub-minute → "<1m" so the user can tell that a
+//                  window is about to reset (not just sitting at "0m"
+//                  for an unknown amount of time).
+//   "s":           sub-minute → actual seconds (e.g. "47s").
+//
+// The label drops leading zero units and keeps at most 2 non-zero ones
+// to stay compact: 0d 0h 5m → "5m"; 1d 2h 3m → "1d2h"; 3d 5h 0m → "3d5h".
 export function formatResetSuffix(
   resetAt: string | null | undefined,
   nowMs: number = Date.now(),
-  resetStartAt?: string | null | undefined,
-  resetDurationMs?: number | null | undefined,
 ): string {
   if (!resetAt) return "";
   const t = Date.parse(resetAt);
   if (!Number.isFinite(t)) return "";
   const remainingMs = t - nowMs;
-  if (remainingMs <= 0) return "";
+  if (remainingMs <= 0) {
+    // Window is past-due. The caller still wants the parens to show, so
+    // emit a "<0s" / "<1m" placeholder rather than "".
+    return cfg().stale.minUnit === "s" ? "<0s" : "<1m";
+  }
 
-  const totalMinutes = Math.floor(remainingMs / 60_000);
+  const totalSeconds = Math.floor(remainingMs / 1000);
+  const totalMinutes = Math.floor(totalSeconds / 60);
   const days = Math.floor(totalMinutes / (60 * 24));
   const hours = Math.floor((totalMinutes % (60 * 24)) / 60);
   const minutes = totalMinutes % 60;
+  const seconds = totalSeconds % 60;
 
-  // Keep up to 2 non-zero units. Drop leading zero units.
-  // Examples: 0d 0h 5m → "5m"; 1d 2h 3m → "1d2h"; 3d 5h 0m → "3d5h".
+  const minUnit = cfg().stale.minUnit;
+
+  // Sub-minute in 'm' mode: "<1m" — visually unambiguous, can't be
+  // confused with "0m" (which would imply a definite wait). The "<"
+  // mirrors the "<" used in many countdown UIs for "less than 1".
+  if (minUnit === "m" && totalMinutes === 0) return "<1m";
+
+  // Sub-minute in 's' mode: round to the nearest second. "<60s" → e.g.
+  // "47s". We do not pad to two digits ("47s", not "47.0s").
+  if (minUnit === "s" && totalMinutes === 0) return `${seconds}s`;
+
+  // ≥1 minute: drop leading zero units, keep up to 2 non-zero ones.
   const units: Array<[number, string]> = [
     [days, "d"],
     [hours, "h"],
     [minutes, "m"],
   ];
   const nonZero = units.filter(([v]) => v > 0);
-  if (nonZero.length === 0) return "";
+  if (nonZero.length === 0) return "<1m";
   const shown = nonZero.slice(0, 2);
-  const label = shown.map(([v, u]) => `${v}${u}`).join("");
-
-  const arrow = pickResetArrow(nowMs, resetStartAt, resetDurationMs);
-  return label + arrow;
+  return shown.map(([v, u]) => `${v}${u}`).join("");
 }
 
 // Pick a reset-countdown glyph from the configured array by how full the

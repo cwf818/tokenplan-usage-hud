@@ -1,4 +1,4 @@
-import { describe, it } from "node:test";
+import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import {
   colorFor,
@@ -216,8 +216,10 @@ describe("formatLine — mode='used' (default)", () => {
     // Bar: 6 plain ▓ + 2 colored ░
     assert.ok(line.includes(`▓▓▓▓▓▓${ORANGE}░░${RESET} ${ORANGE}25%${RESET}`),
       `got: ${line}`);
-    // Window label sits at the END after the reset countdown.
-    assert.ok(line.includes(` / 5h`), `got: ${line}`);
+    // No resetAt → bare " 5h" with no parens and no slash.
+    assert.ok(line.includes(" 5h "), `got: ${line}`);
+    assert.ok(!line.includes("/ 5h"), `got: ${line}`);
+    assert.ok(!line.includes("("), `got: ${line}`);
   });
 });
 
@@ -240,11 +242,13 @@ describe("formatLine — mode='used'", () => {
     // Bar: 6 colored ▓ (LEFT) + 2 plain ░ (RIGHT)
     assert.ok(line.includes(`${ORANGE}▓▓▓▓▓▓${RESET}░░ ${ORANGE}75%${RESET}`),
       `got: ${line}`);
-    // Window label at the END after the reset countdown.
-    assert.ok(line.includes(` / 5h`), `got: ${line}`);
+    // No resetAt → bare " 5h" with no parens and no slash.
+    assert.ok(line.includes(" 5h "), `got: ${line}`);
+    assert.ok(!line.includes("/ 5h"), `got: ${line}`);
+    assert.ok(!line.includes("("), `got: ${line}`);
   });
 
-  it("full layout matches spec: 'Usage: <bar> <pct>% (reset / 5h) · ...'", () => {
+  it("full layout matches spec: 'Usage: <bar> <pct>% (<reset><arrow> <windowLabel>) · ...'", () => {
     const now = Date.parse("2026-06-24T12:00:00Z");
     const line = formatLine(
       { pct: 62, resetAt: "2026-06-24T12:38:00Z" },
@@ -252,26 +256,29 @@ describe("formatLine — mode='used'", () => {
       "used",
       now
     );
-    // 5h: used=62 → 5 colored ▓ (LEFT) + 3 plain ░ (RIGHT), ORANGE
+    // 5h: used=62 → 5 colored ▓ (LEFT) + 3 plain ░ (RIGHT), ORANGE.
+    // New template: "(38m🕛 5h)" — countdown + arrow + space + label, no slash.
     assert.ok(
-      line.includes(`${ORANGE}▓▓▓▓▓${RESET}░░░ ${ORANGE}62%${RESET} (38m🕛 / 5h)`),
+      line.includes(`${ORANGE}▓▓▓▓▓${RESET}░░░ ${ORANGE}62%${RESET} (38m🕛 5h)`),
       `got: ${line}`
     );
-    // wk: used=42 → 3 colored ▓ (LEFT) + 5 plain ░ (RIGHT), YELLOW
+    // wk: used=42 → 3 colored ▓ (LEFT) + 5 plain ░ (RIGHT), YELLOW.
     assert.ok(
-      line.includes(`${YELLOW}▓▓▓${RESET}░░░░░ ${YELLOW}42%${RESET} (4d16h🕛 / wk)`),
+      line.includes(`${YELLOW}▓▓▓${RESET}░░░░░ ${YELLOW}42%${RESET} (4d16h🕛 wk)`),
       `got: ${line}`
     );
     // Mode label once at the front, ' · ' between windows.
     assert.ok(line.startsWith("Usage: "), `got: ${line}`);
     assert.ok(line.includes(" · "));
-    // No double parens: "(38m🕛 / 5h)" not "(38m🕛) / 5h".
+    // No double parens: "(38m🕛 5h)" not "(38m🕛) 5h".
     assert.ok(!line.includes("🕛)"), `got: ${line}`);
+    // No slash inside the reset annotation.
+    assert.ok(!line.includes("🕛 /"), `got: ${line}`);
   });
 });
 
 describe("formatLine — reset suffix integration", () => {
-  it("appends reset countdown inside parens, label after slash", () => {
+  it("appends reset countdown + arrow + label inside parens, no slash", () => {
     const now = Date.parse("2026-06-24T12:00:00Z");
     const line = formatLine(
       { pct: 30, resetAt: "2026-06-24T14:03:00Z" },
@@ -279,15 +286,30 @@ describe("formatLine — reset suffix integration", () => {
       "remaining",
       now
     );
-    assert.ok(line.includes("(2h3m🕛 / 5h)"));
-    assert.ok(line.includes("(3d5h🕛 / wk)"));
+    assert.ok(line.includes("(2h3m🕛 5h)"));
+    assert.ok(line.includes("(3d5h🕛 wk)"));
   });
 
-  it("omits suffix and inner parens when resetAt is missing, label still appears", () => {
+  it("no resetAt → bare ' 5h' / ' wk' with no parens and no arrow", () => {
     const line = formatLine({ pct: 30 }, { pct: 40 });
     assert.ok(!line.includes("🕛"));
-    assert.ok(line.includes(" / 5h"));
-    assert.ok(line.includes(" / wk"));
+    assert.ok(!line.includes("("));
+    assert.ok(line.includes(" 5h"));
+    assert.ok(line.includes(" wk"));
+  });
+
+  it("sub-minute remaining → '<1m' (still wrapped in parens, arrow preserved)", () => {
+    const now = Date.parse("2026-06-24T12:00:00Z");
+    // 5h window with 30 seconds remaining
+    const line = formatLine(
+      { pct: 99, resetAt: new Date(now + 30_000).toISOString() },
+      { pct: 99, resetAt: new Date(now + 30_000).toISOString() },
+      "used",
+      now
+    );
+    assert.ok(line.includes("(<1m"), `got: ${line}`);
+    // The parens must still be present even when the countdown is the "<1m" fallback.
+    assert.ok(line.includes(")"), `got: ${line}`);
   });
 });
 
@@ -302,142 +324,194 @@ describe("formatResetSuffix", () => {
     assert.equal(formatResetSuffix("not-a-date", NOW), "");
   });
 
-  it("returns empty when reset is in the past", () => {
-    assert.equal(formatResetSuffix(at(-60_000), NOW), "");
+  it("returns '<1m' when reset is in the past (default minUnit='m')", () => {
+    assert.equal(formatResetSuffix(at(-60_000), NOW), "<1m");
   });
 
-  it("formats hours and minutes (drops zero days), no surrounding parens", () => {
-    assert.equal(formatResetSuffix(at(2 * 3_600_000 + 3 * 60_000), NOW), "2h3m🕛");
+  it("formats hours and minutes (drops zero days), no arrow", () => {
+    // formatResetSuffix is now arrow-less — the caller (formatOne) adds the glyph.
+    assert.equal(formatResetSuffix(at(2 * 3_600_000 + 3 * 60_000), NOW), "2h3m");
   });
 
   it("formats minutes only when hours and days are zero", () => {
-    assert.equal(formatResetSuffix(at(5 * 60_000), NOW), "5m🕛");
+    assert.equal(formatResetSuffix(at(5 * 60_000), NOW), "5m");
   });
 
   it("keeps two units when all three are non-zero", () => {
     assert.equal(
       formatResetSuffix(at((24 + 2) * 3_600_000 + 3 * 60_000), NOW),
-      "1d2h🕛"
+      "1d2h"
     );
   });
 
   it("formats days + hours when minutes are zero", () => {
     assert.equal(
       formatResetSuffix(at((3 * 24 + 5) * 3_600_000), NOW),
-      "3d5h🕛"
+      "3d5h"
     );
   });
 
   it("formats a single unit when only one is non-zero", () => {
-    assert.equal(formatResetSuffix(at(1 * 60_000), NOW), "1m🕛");
-    assert.equal(formatResetSuffix(at(2 * 3_600_000), NOW), "2h🕛");
-    assert.equal(formatResetSuffix(at(2 * 24 * 3_600_000), NOW), "2d🕛");
+    assert.equal(formatResetSuffix(at(1 * 60_000), NOW), "1m");
+    assert.equal(formatResetSuffix(at(2 * 3_600_000), NOW), "2h");
+    assert.equal(formatResetSuffix(at(2 * 24 * 3_600_000), NOW), "2d");
   });
 
-  it("does not show seconds — sub-minute remainder rounds down", () => {
-    assert.equal(formatResetSuffix(at(3_600_000 + 30_000), NOW), "1h🕛");
+  it("does not show seconds by default — sub-minute returns '<1m'", () => {
+    // 30 seconds remaining → "<1m" (was "0m" before, but the user
+    // pointed out that was confusing — the window is about to reset,
+    // not exactly at 0).
+    assert.equal(formatResetSuffix(at(30_000), NOW), "<1m");
+    // 1 second remaining → still "<1m"
+    assert.equal(formatResetSuffix(at(1_000), NOW), "<1m");
+    // 59.999 seconds remaining → still "<1m"
+    assert.equal(formatResetSuffix(at(59_999), NOW), "<1m");
   });
 
-  describe("reset-arrow picker (stale.resetArrows[] by remaining/total)", () => {
-    // Index = floor(remainingMs / resetDurationMs * length), clamped to
-    // [0, length-1]. Defaults are 12 clock-face emoji reading fresh → about
-    // to reset (🕛 at 12 o'clock, 🕚 just before midnight). Existing call
-    // sites that don't pass start/duration fall back to index 0 — the
-    // backwards-compat path for DeepSeek + legacy providers.
-
-    // Helper: construct a Window where `remainingMs` remains and the
-    // total duration is `totalMs`. Caller provides the elapsed ratio.
-    const suffixes = (ratio: number, durMs: number = 5 * 3_600_000) => {
-      const remaining = ratio * durMs;
-      const startMs = NOW - (durMs - remaining);
-      return formatResetSuffix(
-        new Date(NOW + remaining).toISOString(),
-        NOW,
-        new Date(startMs).toISOString(),
-        durMs
-      );
-    };
-
-    it("default 12-emoji array: ratio≈0 → 🕛", () => {
-      // ratio=0 is the boundary case where formatResetSuffix returns "" (the
-      // window just reset) and tiny ratios yield a sub-minute value with no
-      // displayable unit. Use 1 minute's worth (1/(5*60) of the 5h window)
-      // so the picker is exercised with a real "1m🕛" output.
-      assert.ok(suffixes(1 / 300).endsWith("🕛"));
+  describe("minUnit='s' (second granularity)", () => {
+    beforeEach(() => {
+      __resetForTest({ stale: { minUnit: "s", minMinutes: 1, resetArrows: ["🕛","🕐","🕑","🕒","🕓","🕔","🕕","🕖","🕗","🕘","🕙","🕚"], separator: " · " } });
+    });
+    afterEach(() => {
+      __resetForTest();
     });
 
-    it("default 12-emoji array: ratio≈1/12 → 🕐", () => {
-      // 0.0833 * 12 = 1.0 → index 1
-      assert.ok(suffixes(1 / 12).endsWith("🕐"));
+    it("sub-minute → actual seconds", () => {
+      assert.equal(formatResetSuffix(at(30_000), NOW), "30s");
+      assert.equal(formatResetSuffix(at(1_000), NOW), "1s");
+      assert.equal(formatResetSuffix(at(59_999), NOW), "59s");
     });
 
-    it("default 12-emoji array: ratio≈0.5 → 🕕 (index 6)", () => {
-      // 0.5 * 12 = 6 → index 6
-      assert.ok(suffixes(0.5).endsWith("🕕"));
+    it("exactly 1 minute → '1m' (no sub-minute display when ≥ 1m)", () => {
+      assert.equal(formatResetSuffix(at(60_000), NOW), "1m");
     });
 
-    it("default 12-emoji array: ratio=1 → 🕚 (clamped, not out-of-bounds)", () => {
-      // 1.0 * 12 = 12 → would index out, clamped to 11 → 🕚
-      assert.ok(suffixes(1).endsWith("🕚"));
+    it("past-due → '<0s'", () => {
+      assert.equal(formatResetSuffix(at(-1_000), NOW), "<0s");
     });
+  });
+});
 
-    it("default 12-emoji array: ratio just past 1 → last index (clock skew)", () => {
-      assert.ok(suffixes(1.001).endsWith("🕚"));
-    });
+describe("pickResetArrow (stale.resetArrows[] by remaining/total)", () => {
+  // index = floor(remainingMs / resetDurationMs * length), clamped to
+  // [0, length-1]. Defaults are 12 clock-face emoji (🕛 at 12 o'clock,
+  // 🕚 just before midnight). When the interval data is missing
+  // (DeepSeek, legacy, clock skew), falls back to index 0.
+  const NOW = Date.parse("2026-06-24T12:00:00Z");
 
-    it("two-glyph hourglass pair: full→empty", () => {
-      __resetForTest({ stale: { resetArrows: ["⏳", "⌛"], separator: " · ", minMinutes: 1 } });
-      try {
-        // ratio < 0.5 → ⏳; ratio >= 0.5 → ⌛
-        assert.ok(suffixes(0.4).endsWith("⏳"));
-        assert.ok(suffixes(0.5).endsWith("⌛"));
-        assert.ok(suffixes(0.9).endsWith("⌛"));
-      } finally {
-        __resetForTest();
-      }
-    });
+  // Helper: call formatLine so the rendered glyph is what the user sees.
+  // Builds a Window with the given remaining/total, sets nowMs via the
+  // 4th arg. Reads the arrow off the rendered line.
+  const arrow = (ratio: number, durMs: number = 5 * 3_600_000) => {
+    const remaining = ratio * durMs;
+    const startMs = NOW - (durMs - remaining);
+    const line = formatLine(
+      {
+        pct: 50,
+        resetAt: new Date(NOW + remaining).toISOString(),
+        resetStartAt: new Date(startMs).toISOString(),
+        resetDurationMs: durMs,
+      },
+      { pct: 50, resetAt: new Date(NOW + 100_000_000).toISOString() },
+      "used",
+      NOW
+    );
+    // The 5h segment is the first "(...)"; grab the arrow between
+    // the last digit of the countdown and the space before "5h".
+    const m = line.match(/\((?:[^\u{1F550}-\u{1F55B}]+)([\u{1F550}-\u{1F55B}]) 5h\)/u);
+    return m?.[1] ?? "";
+  };
 
-    it("single-glyph array: always the same glyph regardless of ratio", () => {
-      __resetForTest({ stale: { resetArrows: ["X"], separator: " · ", minMinutes: 1 } });
-      try {
-        // Use minute-scale ratios so formatResetSuffix produces a non-empty
-        // label (sub-minute remaining rounds down to nothing).
-        assert.ok(suffixes(1 / 60).endsWith("X")); // ~5min remaining
-        assert.ok(suffixes(0.5).endsWith("X"));
-        assert.ok(suffixes(1 - 1 / 60).endsWith("X")); // ~5min remaining, near end
-      } finally {
-        __resetForTest();
-      }
-    });
+  it("ratio≈0 → 🕛", () => {
+    // ~1 minute remaining out of 5h
+    assert.equal(arrow(1 / 300), "🕛");
+  });
 
-    it("falls back to index 0 when resetStartAt is missing (DeepSeek path)", () => {
-      const result = formatResetSuffix(at(1 * 60_000), NOW, undefined, undefined);
-      assert.ok(result.endsWith("🕛"), `expected 🕛 fallback, got: ${result}`);
-    });
+  it("ratio≈1/12 → 🕐", () => {
+    assert.equal(arrow(1 / 12), "🕐");
+  });
 
-    it("falls back to index 0 when resetDurationMs is missing", () => {
-      const startAt = new Date(NOW - 3_600_000).toISOString();
-      const result = formatResetSuffix(at(2 * 3_600_000), NOW, startAt, undefined);
-      assert.ok(result.endsWith("🕛"), `expected 🕛 fallback, got: ${result}`);
-    });
+  it("ratio≈0.5 → 🕕 (index 6)", () => {
+    assert.equal(arrow(0.5), "🕕");
+  });
 
-    it("falls back to index 0 when resetDurationMs is non-positive", () => {
-      const startAt = new Date(NOW - 3_600_000).toISOString();
-      const result = formatResetSuffix(at(2 * 3_600_000), NOW, startAt, 0);
-      assert.ok(result.endsWith("🕛"), `expected 🕛 fallback, got: ${result}`);
-    });
+  it("ratio=1 → 🕚 (clamped, not out-of-bounds)", () => {
+    assert.equal(arrow(1), "🕚");
+  });
 
-    it("ignores clock skew (nowMs < resetStartAt) — clamps to last index", () => {
-      // startAt slightly in the future. elapsed negative → remaining > total
-      // → ratio > 1 → clamped to 1 → last index. Defensive — we trust the
-      // formatResetSuffix past-date filter upstream, but if it ever lets
-      // one through, the picker still produces a valid glyph instead of
-      // crashing or rendering an empty string.
-      const startAt = new Date(NOW + 5_000).toISOString();
-      const dur = 5 * 3_600_000;
-      const result = formatResetSuffix(at(dur), NOW, startAt, dur);
-      assert.ok(result.endsWith("🕚"), `expected 🕚 on skew, got: ${result}`);
-    });
+  it("two-glyph hourglass pair: full→empty", () => {
+    __resetForTest({ stale: { resetArrows: ["⏳", "⌛"], minUnit: "m", minMinutes: 1, separator: " · " } });
+    try {
+      // Use a small but non-trivial remaining so the countdown is non-empty.
+      const arrowAt = (ratio: number) => {
+        const remaining = ratio * 5 * 3_600_000;
+        const startMs = NOW - (5 * 3_600_000 - remaining);
+        const line = formatLine(
+          {
+            pct: 50,
+            resetAt: new Date(NOW + remaining).toISOString(),
+            resetStartAt: new Date(startMs).toISOString(),
+            resetDurationMs: 5 * 3_600_000,
+          },
+          { pct: 50, resetAt: new Date(NOW + 100_000_000).toISOString() },
+          "used",
+          NOW
+        );
+        const m = line.match(/\((?:[^⏳⌛]+)([⏳⌛]) 5h\)/);
+        return m?.[1] ?? "";
+      };
+      assert.equal(arrowAt(0.4), "⏳");
+      assert.equal(arrowAt(0.5), "⌛");
+      assert.equal(arrowAt(0.9), "⌛");
+    } finally {
+      __resetForTest();
+    }
+  });
+
+  it("falls back to index 0 when resetStartAt is missing (DeepSeek path)", () => {
+    const line = formatLine(
+      { pct: 50, resetAt: new Date(NOW + 60_000).toISOString() },
+      { pct: 50, resetAt: new Date(NOW + 100_000_000).toISOString() },
+      "used",
+      NOW
+    );
+    // The 5h segment is rendered — even with no start/duration, the
+    // default index 0 is 🕛.
+    assert.ok(line.includes("🕛 5h"), `got: ${line}`);
+  });
+
+  it("falls back to index 0 when resetDurationMs is missing", () => {
+    const startAt = new Date(NOW - 3_600_000).toISOString();
+    const line = formatLine(
+      {
+        pct: 50,
+        resetAt: new Date(NOW + 2 * 3_600_000).toISOString(),
+        resetStartAt: startAt,
+      },
+      { pct: 50, resetAt: new Date(NOW + 100_000_000).toISOString() },
+      "used",
+      NOW
+    );
+    assert.ok(line.includes("🕛 5h"), `got: ${line}`);
+  });
+
+  it("ignores clock skew — clamps to last index", () => {
+    // startAt slightly in the future. elapsed negative → ratio > 1
+    // → clamped to 1 → last index 🕚.
+    const startAt = new Date(NOW + 5_000).toISOString();
+    const dur = 5 * 3_600_000;
+    const line = formatLine(
+      {
+        pct: 50,
+        resetAt: new Date(NOW + dur).toISOString(),
+        resetStartAt: startAt,
+        resetDurationMs: dur,
+      },
+      { pct: 50, resetAt: new Date(NOW + 100_000_000).toISOString() },
+      "used",
+      NOW
+    );
+    assert.ok(line.includes("🕚 5h"), `got: ${line}`);
   });
 });
 
