@@ -41,6 +41,45 @@ describe("parseRemains — model_remains array shape (real)", () => {
     assert.equal(typeof r.weekly?.resetAt, "string");
   });
 
+  it("threads resetStartAt and resetDurationMs from start_time/end_time", () => {
+    // Real fixture has start_time=1782302400000, end_time=1782316800000
+    // → 14400000ms = 4h window. weekly_* span is 604800000ms = 7d.
+    const r = parseRemains(fixture("remains.real.json"));
+    assert.ok(r);
+    assert.equal(r.fiveHour?.resetDurationMs, 4 * 3_600_000);
+    assert.equal(r.weekly?.resetDurationMs, 7 * 24 * 3_600_000);
+    // Both start fields are ISO strings parseable as dates.
+    const fhStart = Date.parse(r.fiveHour?.resetStartAt ?? "");
+    const wkStart = Date.parse(r.weekly?.resetStartAt ?? "");
+    assert.ok(Number.isFinite(fhStart));
+    assert.ok(Number.isFinite(wkStart));
+    // end - start == duration, sanity-check.
+    assert.equal(
+      Date.parse(r.fiveHour!.resetAt!) - fhStart,
+      r.fiveHour!.resetDurationMs
+    );
+    assert.equal(
+      Date.parse(r.weekly!.resetAt!) - wkStart,
+      r.weekly!.resetDurationMs
+    );
+  });
+
+  it("omits resetStartAt/resetDurationMs when the source has no start_time", () => {
+    const r = parseRemains({
+      model_remains: [
+        {
+          model_name: "general",
+          current_interval_remaining_percent: 50,
+          end_time: 1_000_000, // only end_time, no start_time
+        },
+      ],
+    });
+    assert.ok(r);
+    assert.equal(r.fiveHour?.resetAt, new Date(1_000_000).toISOString());
+    assert.equal(r.fiveHour?.resetStartAt, undefined);
+    assert.equal(r.fiveHour?.resetDurationMs, undefined);
+  });
+
   it("picks the most-active entry (lowest interval_remaining_percent)", () => {
     const r = parseRemains({
       model_remains: [

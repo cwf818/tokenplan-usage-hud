@@ -47,7 +47,9 @@ type ModelEntry = {
   weekly_remaining_percent?: number | null;
   weekly_total_count?: number | null;
   weekly_usage_count?: number | null;
+  start_time?: number | null;
   end_time?: number | null;
+  weekly_start_time?: number | null;
   weekly_end_time?: number | null;
 };
 
@@ -89,7 +91,9 @@ function normalizeModelEntry(raw: unknown): ModelEntry | null {
     weekly_remaining_percent: weeklyPct,
     weekly_total_count: weeklyTotal,
     weekly_usage_count: weeklyUsage,
+    start_time: asNumber(pickFirst(r, ["start_time", "interval_start_time", "five_hour_start_time"])),
     end_time: asNumber(pickFirst(r, ["end_time", "interval_end_time", "five_hour_end_time"])),
+    weekly_start_time: asNumber(pickFirst(r, ["weekly_start_time", "seven_day_start_time"])),
     weekly_end_time: asNumber(pickFirst(r, ["weekly_end_time", "seven_day_end_time"])),
   };
 }
@@ -109,7 +113,13 @@ function entryToWindows(entry: ModelEntry): Remains {
   // Build Window objects from either:
   //  (a) a direct "remaining percent" — used% = 100 - remaining%
   //  (b) raw counts: total & usage — used% = usage / total * 100
-  function pctOrNull(remaining: number | null | undefined, total: number | null | undefined, usage: number | null | undefined, resetMs: number | null | undefined): Window | null {
+  function pctOrNull(
+    remaining: number | null | undefined,
+    total: number | null | undefined,
+    usage: number | null | undefined,
+    resetMs: number | null | undefined,
+    startMs: number | null | undefined,
+  ): Window | null {
     let usedPct: number | null = null;
     if (remaining != null) {
       usedPct = 100 - remaining;
@@ -117,7 +127,22 @@ function entryToWindows(entry: ModelEntry): Remains {
       usedPct = (usage / total) * 100;
     }
     if (usedPct == null) return null;
-    return { pct: Math.max(0, Math.min(100, usedPct)), resetAt: tsToIso(resetMs ?? null) };
+    const resetIso = tsToIso(resetMs ?? null);
+    const startIso = tsToIso(startMs ?? null);
+    // resetDurationMs is only meaningful when BOTH endpoints are present
+    // and start < end. The renderer treats it as the window-length signal
+    // for picking the fill-state-appropriate reset arrow.
+    let durationMs: number | null = null;
+    if (startMs != null && resetMs != null && Number.isFinite(startMs) && Number.isFinite(resetMs) && resetMs > startMs) {
+      durationMs = resetMs - startMs;
+    }
+    const w: Window = {
+      pct: Math.max(0, Math.min(100, usedPct)),
+      resetAt: resetIso,
+    };
+    if (startIso !== null) w.resetStartAt = startIso;
+    if (durationMs !== null) w.resetDurationMs = durationMs;
+    return w;
   }
 
   return {
@@ -125,13 +150,15 @@ function entryToWindows(entry: ModelEntry): Remains {
       entry.interval_remaining_percent,
       entry.interval_total_count,
       entry.interval_usage_count,
-      entry.end_time
+      entry.end_time,
+      entry.start_time
     ),
     weekly: pctOrNull(
       entry.weekly_remaining_percent,
       entry.weekly_total_count,
       entry.weekly_usage_count,
-      entry.weekly_end_time
+      entry.weekly_end_time,
+      entry.weekly_start_time
     ),
   };
 }

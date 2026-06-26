@@ -57,8 +57,12 @@ const DEFAULT_STALE = {
   separator: " · ",
   // Sub-minute ages round UP to this many minutes ("0m ago" looks broken).
   minMinutes: 1,
-  // Suffix for the reset countdown on the percentage line.
-  resetArrow: "↻",
+  // Suffix for the reset countdown when more than half the window remains
+  // (e.g. ⏳ — hourglass full).
+  resetArrowMore: "⏳",
+  // Suffix for the reset countdown when less than or equal to half the
+  // window remains (e.g. ⌛ — hourglass empty).
+  resetArrowLess: "⌛",
 };
 
 const DEFAULT_BAR = {
@@ -336,9 +340,13 @@ function mergeConfig(raw: Record<string, unknown>): Config {
         if (isFinitePositiveNumber(sm.minMinutes)) out.stale.minMinutes = sm.minMinutes;
         else warn("stale.minMinutes must be a positive number; using default");
       }
-      if ("resetArrow" in sm) {
-        if (typeof sm.resetArrow === "string") out.stale.resetArrow = sm.resetArrow;
-        else warn("stale.resetArrow must be a string; using default");
+      if ("resetArrowMore" in sm) {
+        if (typeof sm.resetArrowMore === "string") out.stale.resetArrowMore = sm.resetArrowMore;
+        else warn("stale.resetArrowMore must be a string; using default");
+      }
+      if ("resetArrowLess" in sm) {
+        if (typeof sm.resetArrowLess === "string") out.stale.resetArrowLess = sm.resetArrowLess;
+        else warn("stale.resetArrowLess must be a string; using default");
       }
     } else {
       warn("stale must be an object; using default");
@@ -383,7 +391,24 @@ export function __resetForTest(overrides?: Partial<Config>): void {
     _current = DEFAULT_CONFIG;
     return;
   }
-  _current = { ...DEFAULT_CONFIG, ...overrides };
+  // Deep-merge so tests can override `stale: { resetArrowMore: "A" }`
+  // without erasing colors / bar / etc. Plain `...DEFAULT_CONFIG,
+  // ...overrides` would replace the whole `stale` object with a partial
+  // one missing minMinutes / separator.
+  const base = JSON.parse(JSON.stringify(DEFAULT_CONFIG)) as Config;
+  const merged = deepMerge(base, overrides as Record<string, unknown>) as Config;
+  _current = merged;
+}
+
+function deepMerge(base: unknown, over: unknown): unknown {
+  if (over === undefined) return base;
+  if (over === null || typeof over !== "object" || Array.isArray(over)) return over;
+  if (base === null || typeof base !== "object" || Array.isArray(base)) return over;
+  const out: Record<string, unknown> = { ...(base as Record<string, unknown>) };
+  for (const [k, v] of Object.entries(over as Record<string, unknown>)) {
+    out[k] = v === undefined ? out[k] : deepMerge(out[k], v);
+  }
+  return out;
 }
 
 export const __testing = {

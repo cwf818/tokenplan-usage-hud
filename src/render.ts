@@ -13,6 +13,17 @@ export type Window = {
   pct: number;
   // ISO timestamp string when the window resets, if known.
   resetAt?: string | null;
+  // ISO timestamp string for when the current window STARTED. Paired with
+  // resetAt so we can compute the window's total duration and pick a
+  // fill-state-appropriate reset arrow (⏳ when plenty of time remains,
+  // ⌛ when the window is mostly consumed). Optional — DeepSeek has no
+  // such concept, so missing fields fall back to the legacy single-arrow.
+  resetStartAt?: string | null;
+  // Window length in milliseconds (resetAt - resetStartAt). Optional;
+  // required for the split-arrow logic, falls back to a single arrow when
+  // missing. Kept as a separate field so callers don't have to re-parse the
+  // ISO strings inside hot render paths.
+  resetDurationMs?: number | null;
 };
 
 export type DisplayMode = "remaining" | "used";
@@ -164,9 +175,9 @@ function formatOne(
   const displayedPct = mode === "remaining" ? remainingPct : usedPct;
 
   const bar = splitBar(usedPct, mode, width);
-  const resetSuffix = formatResetSuffix(w.resetAt, nowMs);
+  const resetSuffix = formatResetSuffix(w.resetAt, nowMs, w.resetStartAt, w.resetDurationMs);
 
-  // Layout: "<bar> <coloredDisplayedPct>%<RESET> (<reset>↻ / <windowLabel>)"
+  // Layout: "<bar> <coloredDisplayedPct>%<RESET> (<reset> / <windowLabel>)"
   // Window label sits at the END of each segment, after the reset countdown,
   // separated by ' / '. When reset info is missing we still emit the label
   // (without the parentheses) so the segment isn't orphaned. The mode label
@@ -176,11 +187,23 @@ function formatOne(
   return `${bar.leftChunk}${bar.rightChunk} ${bar.color}${displayedPct}%${RESET}${tail}`;
 }
 
-// Compact "remaining time until reset" formatter. Returns e.g. "2h3m↻"
+// Compact "remaining time until reset" formatter. Returns e.g. "2h3m⏳"
 // (no surrounding parens — the caller wraps the broader context) or "" when
 // reset info is missing or already past. Drops the leading unit when it is
 // zero; minimum unit is minutes.
-export function formatResetSuffix(resetAt: string | null | undefined, nowMs: number = Date.now()): string {
+//
+// The appended arrow reflects how full the window still is — ⏳ when more
+// than half the window remains, ⌛ when at most half remains. The ratio
+// comes from (nowMs - resetStartAt) / resetDurationMs; when either side is
+// missing (DeepSeek, legacy providers) we fall back to the More glyph to
+// avoid silently swapping the icon on data that's already in the user's
+// expectations from earlier versions.
+export function formatResetSuffix(
+  resetAt: string | null | undefined,
+  nowMs: number = Date.now(),
+  resetStartAt?: string | null | undefined,
+  resetDurationMs?: number | null | undefined,
+): string {
   if (!resetAt) return "";
   const t = Date.parse(resetAt);
   if (!Number.isFinite(t)) return "";
@@ -202,7 +225,35 @@ export function formatResetSuffix(resetAt: string | null | undefined, nowMs: num
   const nonZero = units.filter(([v]) => v > 0);
   if (nonZero.length === 0) return "";
   const shown = nonZero.slice(0, 2);
-  return shown.map(([v, u]) => `${v}${u}`).join("") + cfg().stale.resetArrow;
+  const label = shown.map(([v, u]) => `${v}${u}`).join("");
+
+  const arrow = pickResetArrow(nowMs, resetStartAt, resetDurationMs);
+  return label + arrow;
+}
+
+// Choose between the two reset arrows based on how full the window is.
+// Boundary: elapsed/total > 0.5 → reset is closer than the midpoint →
+// the window is mostly consumed → use the "Less" (⌛) glyph. At-or-below
+// the midpoint → use the "More" (⏳) glyph. When the interval data is
+// missing (DeepSeek, legacy shape) we fall back to the More glyph to
+// preserve the prior behavior for callers that never set these fields.
+function pickResetArrow(
+  nowMs: number,
+  resetStartAt: string | null | undefined,
+  resetDurationMs: number | null | undefined,
+): string {
+  const s = cfg().stale;
+  if (resetStartAt == null || resetDurationMs == null) return s.resetArrowMore;
+  const startMs = Date.parse(resetStartAt);
+  if (!Number.isFinite(startMs) || !Number.isFinite(resetDurationMs) || resetDurationMs <= 0) {
+    return s.resetArrowMore;
+  }
+  const elapsed = nowMs - startMs;
+  // Ratio in (0, ∞); we only split on > 0.5. Negative elapsed (clock skew)
+  // counts as "fully remaining" → More.
+  const ratio = elapsed / resetDurationMs;
+  if (ratio > 0.5) return s.resetArrowLess;
+  return s.resetArrowMore;
 }
 
 // Compact "age of cached value" formatter for the stale-on-error annotation.

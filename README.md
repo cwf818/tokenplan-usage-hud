@@ -1,7 +1,7 @@
 <pre>
 [upstream statusline lines]
-Usage: ▓▓▓▓░░░░ 40% (1h27m↻⏳⌛ / 5h) · ▓▓░░░░░░ 20% (4d3h↻ / wk)    # Tokeplan
-Balance: ￥110.00 · $3.5                                          # Balance
+Usage: ▓▓▓▓░░░░ 40% (1h27m⌛ / 5h) · ▓▓░░░░░░ 20% (4d3h⏳ / wk)    # Tokeplan
+Balance: ￥110.00 · $3.5                                            # Balance
 </pre>
 
 # tokenplan-usage-hud
@@ -133,8 +133,8 @@ Both endpoints are called with `Authorization: Bearer $ANTHROPIC_AUTH_TOKEN` —
 ### MiniMax token-plan line
 
 <pre>
- Usage: 5h ▓▓▓▓▓░░░ 38% (47m↻ / 5h) · wk ▓▓▓░░░░░ 39% (4d47m↻ / wk)
-Remain: 5h ░░░░░▓▓▓ 62% (47m↻ / 5h) · wk ░░░▓▓▓▓▓ 61% (4d47m↻ / wk)
+ Usage: 5h ▓▓▓▓▓░░░ 38% (47m⌛ / 5h) · wk ▓▓▓░░░░░ 39% (4d47m⏳ / wk)
+Remain: 5h ░░░░░▓▓▓ 62% (47m⌛ / 5h) · wk ░░░▓▓▓▓▓ 61% (4d47m⏳ / wk)
 </pre>
 
 Two windows (5-hour + weekly), split-bar with colored percentage, reset countdown in parentheses, window label after the slash.
@@ -188,7 +188,7 @@ A single JSON file parameterizes every hardcoded tunable (color thresholds, cach
 - **Unix**: `~/.claude/plugins/tokenplan-usage-hud/config.json`
 - **Windows**: `%USERPROFILE%\.claude\plugins\tokenplan-usage-hud\config.json`
 
-Loaded once at startup. **Missing file** → all defaults (today's behavior, bit-for-bit identical). **Malformed JSON** or a **single bad field** → one stderr line (`tokenplan-usage-hud: config <reason>; using defaults`) and the default for *that* field only — the rest of your config is still honored. The plugin never blanks the statusline on bad config.
+Loaded once at startup. **Missing file** → all defaults (today's behavior, bit-for-bit identical). **Malformed JSON** or a **single bad field** → one stderr line (`tokenplan-usage-hud: config <reason>; using defaults`) and the default for _that_ field only — the rest of your config is still honored. The plugin never blanks the statusline on bad config.
 
 A reference with every field is at [config.example.json](./config.example.json). Copy it to the path above and edit.
 
@@ -196,40 +196,51 @@ A reference with every field is at [config.example.json](./config.example.json).
 
 ```jsonc
 {
-  "cacheTtlMs": 60000,          // > 0; success-cache TTL in ms
-  "fetchTimeoutMs": 5000,       // > 0; per-request HTTP timeout
-  "display": "used",            // "used" | "remaining"
-  "modeLabels": {               // line prefix per mode
+  "cacheTtlMs": 60000, // > 0; success-cache TTL in ms
+  "fetchTimeoutMs": 5000, // > 0; per-request HTTP timeout
+  "display": "used", // "used" | "remaining"
+  "modeLabels": {
+    // line prefix per mode
     "used": "Usage:",
-    "remaining": "Remain:"
+    "remaining": "Remain:",
   },
-  "colors": {                   // 256-color ANSI palette
+  "colors": {
+    // 256-color ANSI palette
     "brightGreen": "brightGreen",
-    "darkGreen":   "darkGreen",
-    "yellow":      "yellow",
-    "orange":      "orange",
-    "red":         "red",
-    "stale":       "brightBlack"  // dim-gray for " · Xm ago"
+    "darkGreen": "darkGreen",
+    "yellow": "yellow",
+    "orange": "orange",
+    "red": "red",
+    "stale": "brightBlack", // dim-gray for " · Xm ago"
   },
-  "thresholds": {               // band cutoffs (4 ascending numbers each)
-    "minimaxPercent":   [20, 40, 60, 80],
-    "deepseekBalance":  [5, 10, 20, 50]
+  "thresholds": {
+    // band cutoffs (4 ascending numbers each)
+    "minimaxPercent": [20, 40, 60, 80],
+    "deepseekBalance": [5, 10, 20, 50],
   },
-  "currency": {                 // DeepSeek per-currency rendering
+  "currency": {
+    // DeepSeek per-currency rendering
     "prefixes": { "USD": "$", "CNY": "￥", "RMB": "￥" },
-    "fallback": "￥",           // prefix for unknown currency codes
-    "default":  "CNY"           // assumed currency when API omits one
+    "fallback": "￥", // prefix for unknown currency codes
+    "default": "CNY", // assumed currency when API omits one
   },
-  "stale": {                    // stale-on-error annotation
+  "stale": {
+    // stale-on-error annotation + reset arrow
     "separator": " · ",
-    "minMinutes": 1,            // sub-minute ages round UP to this
-    "resetArrow": "↻"
+    "minMinutes": 1, // sub-minute ages round UP to this
+    // Appended to the reset countdown (e.g. "2h3m⏳"). Chosen by elapsed /
+    // total ratio of the window: ⏳ when more than half the window remains,
+    // ⌛ when at most half remains. Providers without start_time (DeepSeek,
+    // legacy) fall back to resetArrowMore.
+    "resetArrowMore": "⏳",
+    "resetArrowLess": "⌛",
   },
-  "bar": {                      // bar geometry
-    "width": 8,                 // 3..64
+  "bar": {
+    // bar geometry
+    "width": 8, // 3..64
     "filled": "▓",
-    "empty": "░"
-  }
+    "empty": "░",
+  },
 }
 ```
 
@@ -240,24 +251,29 @@ Each `colors.*` value is either a **symbolic shortcut** (`brightGreen`, `darkGre
 ### Recipes
 
 **Lower cache TTL** (re-fetch more often):
+
 ```json
 { "cacheTtlMs": 15000 }
 ```
 
 **Switch to remaining mode**:
+
 ```json
 { "display": "remaining" }
 ```
 
 **Custom palette** (e.g. cyan-only):
+
 ```json
-{ "colors": {
+{
+  "colors": {
     "brightGreen": "\x1b[38;5;51m",
-    "darkGreen":   "\x1b[38;5;45m",
-    "yellow":      "\x1b[38;5;81m",
-    "orange":      "\x1b[38;5;75m",
-    "red":         "\x1b[38;5;69m"
-}}
+    "darkGreen": "\x1b[38;5;45m",
+    "yellow": "\x1b[38;5;81m",
+    "orange": "\x1b[38;5;75m",
+    "red": "\x1b[38;5;69m"
+  }
+}
 ```
 
 ### Migration from `TOKENPLAN_DISPLAY`
