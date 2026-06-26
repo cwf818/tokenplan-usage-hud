@@ -56,6 +56,55 @@ function writeJson(p, obj) {
   writeFileSync(p, body);
 }
 
+// Build the bash -c command that install.sh writes into statusLine.command.
+//
+// Hardcoding the version-specific cache path (e.g. 0.2.5/scripts/wrapper.sh)
+// in settings.json breaks the moment the cache rolls forward to a new
+// version — settings still points at the old version's directory and the
+// wrapper is missing. This helper produces a command that, at invocation
+// time, resolves the highest-version directory under the plugin cache
+// and execs scripts/wrapper.sh from there. Same pattern claude-hud uses
+// for its own statusline.
+//
+// On bare systems where the cache hasn't been populated yet (e.g. the
+// user ran :install before /plugin install ever finished copying files),
+// the `ls … 2>/dev/null` returns empty, the chain yields plugin_dir="",
+// the `[ -d "" ]` check fails, and we exit 1 with a stderr line —
+// fail-fast rather than silently rendering nothing.
+function buildLatestCacheCommand(_upstreamCmdFileUnused) {
+  // Single-quoted bash -c body. We need literal single quotes inside
+  // (for awk's '{ … }'), so we splice the standard '"'"' escape:
+  //   close the outer '...',
+  //   emit a literal ' via the 4-char sequence  '"'"'  ,
+  //   reopen '...' for the rest.
+  // The resulting command, when written into settings.json, will be one
+  // line — bash sees it as a single argument to bash -c.
+  //
+  // Pattern, broken across lines for readability (NOT what's written):
+  //   bash -c '
+  //     plugin_dir=$(ls -d …/tokenplan-usage-hud/*/ | awk -F/ '\''{…}'\'' | sort … | tail -1 | cut -f2-)
+  //     [ -d "$plugin_dir" ] || { echo … >&2; exit 1; }
+  //     export TOKENPLAN_UPSTREAM_CMD="${plugin_dir}state/upstream-cmd.sh"
+  //     exec bash "${plugin_dir}scripts/wrapper.sh"
+  //   '
+  //
+  // We don't pre-resolve upstream-cmd.sh: it lives in ${plugin_dir}state/
+  // and gets (re)written by install.sh every install, so following the
+  // latest-cache pointer keeps both wrapper and upstream in lockstep.
+  // The upstreamCmdFile arg is kept for API stability with the caller
+  // (install.sh forwards both wrapper + upstream); it's intentionally
+  // unused here.
+  void _upstreamCmdFileUnused;
+  return [
+    "bash -c '",
+    "plugin_dir=$(ls -d \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}\"/plugins/cache/tokenplan-usage-hud/tokenplan-usage-hud/*/ 2>/dev/null | awk -F/ '\"'\"'{ print $(NF-1) \"\\t\" $(0) }'\"'\"' | sort -t. -k1,1n -k2,2n -k3,3n -k4,4n | tail -1 | cut -f2-); ",
+    "[ -d \"$plugin_dir\" ] || { echo \"tokenplan-usage-hud: no installed version found under cache\" >&2; exit 1; }; ",
+    "export TOKENPLAN_UPSTREAM_CMD=\"${plugin_dir}state/upstream-cmd.sh\"; ",
+    "exec bash \"${plugin_dir}scripts/wrapper.sh\"",
+    "'",
+  ].join("");
+}
+
 // Fingerprint for the wrapper command install.sh writes. Two-part check:
 //   1. The command path lives inside our plugin cache (the only place
 //      install.sh points the wrapper at). Match either separator since
@@ -111,20 +160,22 @@ switch (op) {
   case "write-managed": {
     const [wrapper, upstreamCmdFile] = rest;
     const data = readJson(target);
-    const upstream = upstreamCmdFile && upstreamCmdFile.length > 0 ? upstreamCmdFile : "";
-    const upstreamPart = upstream
-      ? `export TOKENPLAN_UPSTREAM_CMD="${upstream}"; `
-      : "";
-    // Preserve user-set fields on the existing statusLine (notably
-    // refreshInterval) — only overwrite the keys we own (type, command,
-    // _tokenplan_managed). The earlier "data.statusLine = {…}" form
-    // nuked every other field on install.
+    // The wrapper path coming in is the version-specific path install.sh
+    // resolved at install time (e.g. C:\…\0.2.5\scripts\wrapper.sh).
+    // That's not what we want in settings.json — hardcoding the version
+    // means a subsequent /plugin install that bumps 0.2.5 → 0.2.6 leaves
+    // the statusline pointing at a now-orphan path. Mirror claude-hud's
+    // "ls + sort + tail" pattern instead: at invocation time the
+    // wrapper resolves the highest-version directory under the plugin
+    // cache, then execs scripts/wrapper.sh from there. Install-time
+    // changes (bump version, copy a new dir into cache) become
+    // automatically picked up.
     const prev = (data.statusLine && typeof data.statusLine === "object")
       ? data.statusLine
       : {};
     const next = { ...prev };
     next.type = "command";
-    next.command = `bash -c '${upstreamPart}exec bash "${wrapper}"'`;
+    next.command = buildLatestCacheCommand(upstreamCmdFile || "");
     next._tokenplan_managed = true;
     data.statusLine = next;
     writeJson(target, data);
