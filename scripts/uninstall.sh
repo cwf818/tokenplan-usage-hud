@@ -107,10 +107,22 @@ if [ -f "$TARGET" ]; then
   MANAGED=$(node -e '
     const fs = require("fs");
     const p = process.argv[1];
+    // The marker is not enough: another plugin or a human may have
+    // overwritten statusLine.command after install. Trust the command
+    // shape (cache path + wrapper.sh suffix), not just the marker.
+    // See scripts/lib/edit-settings.mjs#isOurWrapperCommand for the
+    // matching logic — duplicated here only because we cannot easily
+    // `require` an mjs from inside a node -e heredoc.
+    const isOurs = (cmd) => {
+      if (typeof cmd !== "string" || cmd.length === 0) return false;
+      const re = /plugins[\/\\]cache[\/\\]tokenplan-usage-hud[\/\\]tokenplan-usage-hud[\/\\]/;
+      return re.test(cmd) && /wrapper\.sh"\x27\s*$/.test(cmd);
+    };
     try {
       const d = JSON.parse(fs.readFileSync(p, "utf8"));
       const sl = d && d.statusLine;
-      process.stdout.write(sl && sl._tokenplan_managed === true ? "1" : "0");
+      const m = sl && sl._tokenplan_managed === true && isOurs(sl.command);
+      process.stdout.write(m ? "1" : "0");
     } catch (e) { process.stdout.write("0"); }
   ' "$WIN_TARGET" 2>/dev/null || echo "0")
   if [ "$MANAGED" = "1" ]; then
@@ -286,17 +298,37 @@ if [ -n "$SL_PLAN" ]; then
     restore-from-file:*)
       SRC="${SL_PLAN#restore-from-file:}"
       # Inline the restore-from-file op (mirrors edit-settings.mjs).
+      # Hardened: only restore if the CURRENT command is actually ours.
+      # If marker is set but command is foreign (another plugin / human
+      # overwrote it), we still want to wipe the cache dirs, but the
+      # statusLine is the user's now — don't touch it.
       node -e '
         const fs = require("fs");
         const target = process.argv[1];
         const src = process.argv[2];
         const original = fs.readFileSync(src, "utf8").trim();
+        // Same fingerprint as the planning step above. Use a runtime
+        // regex (matching `[\/\\]` for the separator) so single-backslash
+        // Windows paths match — a String.includes needle built from
+        // "[/\\\\]" requires 4 backslashes between segments and silently
+        // misses every real Windows path. (Earlier buggy form, kept the
+        // isOurs name for symmetry.)
+        const isOurs = (cmd) => {
+          if (typeof cmd !== "string" || cmd.length === 0) return false;
+          const re = /plugins[\/\\]cache[\/\\]tokenplan-usage-hud[\/\\]tokenplan-usage-hud[\/\\]/;
+          return re.test(cmd) && /wrapper\.sh"\x27\s*$/.test(cmd);
+        };
         const data = JSON.parse(fs.readFileSync(target, "utf8"));
-        if (data.statusLine && data.statusLine._tokenplan_managed === true) {
-          delete data.statusLine._tokenplan_managed;
-          data.statusLine.command = original;
+        if (data.statusLine && isOurs(data.statusLine.command)) {
+          // Replace the entire statusLine with the pre-managed shape so
+          // we drop any post-install fields Claude Code added.
+          data.statusLine = { type: "command", command: original };
         } else if (!data.statusLine) {
           data.statusLine = { type: "command", command: original };
+        } else {
+          process.stderr.write(
+            "uninstall.sh: restore-from-file skipped — current statusLine.command is not the tokenplan wrapper\n"
+          );
         }
         let eol = "\n";
         const size = fs.statSync(target).size;
