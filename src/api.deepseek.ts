@@ -17,6 +17,7 @@
 // the most-urgent currency is the one that pops visually.
 
 const ENDPOINT = "https://api.deepseek.com/user/balance";
+import { configStore } from "./config.ts";
 
 export type BalanceEntry = {
   currency: string;
@@ -46,7 +47,7 @@ function normalizeEntry(raw: unknown): BalanceEntry | null {
   if (totalBalance == null) return null;
   const currency = typeof r.currency === "string" && r.currency !== ""
     ? r.currency
-    : "CNY";
+    : configStore.get().currency.default;
   return { currency, totalBalance };
 }
 

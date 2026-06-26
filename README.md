@@ -1,6 +1,6 @@
 <pre>
 [upstream statusline lines]
-Usage: ▓▓▓▓░░░░ 40% (1h27m↻ / 5h) · ▓▓░░░░░░ 20% (4d3h↻ / wk)    # Tokeplan
+Usage: ▓▓▓▓░░░░ 40% (1h27m↻⏳⌛ / 5h) · ▓▓░░░░░░ 20% (4d3h↻ / wk)    # Tokeplan
 Balance: ￥110.00 · $3.5                                          # Balance
 </pre>
 
@@ -169,16 +169,107 @@ currency code is rendered as itself, uppercased (e.g. `EUR42.50`).
 
 Default mode is **`used`** — the line begins with `Usage:` and the percentage shown is the percentage of the window you've consumed. The colored bar segment represents the consumed portion.
 
-Switch to `remaining` mode by setting `TOKENPLAN_DISPLAY=remaining` in the shell environment that runs Claude Code:
+Switch to `remaining` mode via the config file:
 
-```bash
-export TOKENPLAN_DISPLAY=remaining
-claude
+```json
+{ "display": "remaining" }
 ```
+
+See [Configuration](#configuration) below for the full schema. The earlier `TOKENPLAN_DISPLAY` env var is gone as of v0.2.0 — anyone who used it must move the value to `config.json`.
 
 In remaining mode the line begins with `Remain:` and the percentage is what's left; the colored bar segment represents the remaining portion.
 
-`TOKENPLAN_DISPLAY` is MiniMax-only — DeepSeek's `Balance:` line doesn't have a percentage to flip.
+`display` is MiniMax-only — DeepSeek's `Balance:` line doesn't have a percentage to flip.
+
+## Configuration
+
+A single JSON file parameterizes every hardcoded tunable (color thresholds, cache TTL, fetch timeout, currency prefixes, bar geometry, stale-annotation formatting, display-mode label). Path:
+
+- **Unix**: `~/.claude/plugins/tokenplan-usage-hud/config.json`
+- **Windows**: `%USERPROFILE%\.claude\plugins\tokenplan-usage-hud\config.json`
+
+Loaded once at startup. **Missing file** → all defaults (today's behavior, bit-for-bit identical). **Malformed JSON** or a **single bad field** → one stderr line (`tokenplan-usage-hud: config <reason>; using defaults`) and the default for *that* field only — the rest of your config is still honored. The plugin never blanks the statusline on bad config.
+
+A reference with every field is at [config.example.json](./config.example.json). Copy it to the path above and edit.
+
+### Schema (v1)
+
+```jsonc
+{
+  "cacheTtlMs": 60000,          // > 0; success-cache TTL in ms
+  "fetchTimeoutMs": 5000,       // > 0; per-request HTTP timeout
+  "display": "used",            // "used" | "remaining"
+  "modeLabels": {               // line prefix per mode
+    "used": "Usage:",
+    "remaining": "Remain:"
+  },
+  "colors": {                   // 256-color ANSI palette
+    "brightGreen": "brightGreen",
+    "darkGreen":   "darkGreen",
+    "yellow":      "yellow",
+    "orange":      "orange",
+    "red":         "red",
+    "stale":       "brightBlack"  // dim-gray for " · Xm ago"
+  },
+  "thresholds": {               // band cutoffs (4 ascending numbers each)
+    "minimaxPercent":   [20, 40, 60, 80],
+    "deepseekBalance":  [5, 10, 20, 50]
+  },
+  "currency": {                 // DeepSeek per-currency rendering
+    "prefixes": { "USD": "$", "CNY": "￥", "RMB": "￥" },
+    "fallback": "￥",           // prefix for unknown currency codes
+    "default":  "CNY"           // assumed currency when API omits one
+  },
+  "stale": {                    // stale-on-error annotation
+    "separator": " · ",
+    "minMinutes": 1,            // sub-minute ages round UP to this
+    "resetArrow": "↻"
+  },
+  "bar": {                      // bar geometry
+    "width": 8,                 // 3..64
+    "filled": "▓",
+    "empty": "░"
+  }
+}
+```
+
+Each `colors.*` value is either a **symbolic shortcut** (`brightGreen`, `darkGreen`, `yellow`, `orange`, `red`, `brightBlack`) or a **literal ANSI SGR string** matching `^\x1b\[[0-9;]*m$`. Strings containing newlines are rejected (statusline-injection guard).
+
+`thresholds.*` must be exactly 4 finite ascending numbers. `bar.width` must be in `[3, 64]`. Numeric fields must be finite and (where relevant) positive.
+
+### Recipes
+
+**Lower cache TTL** (re-fetch more often):
+```json
+{ "cacheTtlMs": 15000 }
+```
+
+**Switch to remaining mode**:
+```json
+{ "display": "remaining" }
+```
+
+**Custom palette** (e.g. cyan-only):
+```json
+{ "colors": {
+    "brightGreen": "\x1b[38;5;51m",
+    "darkGreen":   "\x1b[38;5;45m",
+    "yellow":      "\x1b[38;5;81m",
+    "orange":      "\x1b[38;5;75m",
+    "red":         "\x1b[38;5;69m"
+}}
+```
+
+### Migration from `TOKENPLAN_DISPLAY`
+
+If you previously set `TOKENPLAN_DISPLAY=remaining` in your shell, move that value into `config.json`:
+
+```bash
+mkdir -p ~/.claude/plugins/tokenplan-usage-hud
+echo '{ "display": "remaining" }' > ~/.claude/plugins/tokenplan-usage-hud/config.json
+```
+
+Restart Claude Code (or run `/reload-plugins`) for the change to take effect.
 
 ## Auth
 
@@ -211,11 +302,11 @@ DeepSeek balance uses a separate cache key (`"balance"`) so the two providers do
 
 Three outcomes when the provider API is called:
 
-| Outcome          | What you see on the statusline                                   |
-|------------------|------------------------------------------------------------------|
-| Fresh fetch      | The normal `Usage: …` / `Balance: …` line, no suffix.            |
+| Outcome                    | What you see on the statusline                                                                                                                                       |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Fresh fetch                | The normal `Usage: …` / `Balance: …` line, no suffix.                                                                                                                |
 | Fetch failed, cache exists | The last good value, **with a dim ` · Xm ago` suffix** at the end (e.g. `Balance: ￥110 · 5m ago`). Color is dim gray so it doesn't compete with the 5-band palette. |
-| Fetch failed, no cache | `Usage: not available!` (MiniMax) or `Balance: not available!` (DeepSeek) in red. Plugin is alive but the provider is unreachable. |
+| Fetch failed, no cache     | `Usage: not available!` (MiniMax) or `Balance: not available!` (DeepSeek) in red. Plugin is alive but the provider is unreachable.                                   |
 
 The `Xm` / `Xh` / `Xd` units follow the same convention as the reset suffix elsewhere on the line — `30s` rounds up to `1m ago` (never shows `0m ago`), `90m` collapses to `1h ago`, `25h` to `1d ago`. The hard-fail `not available!` line intentionally has no age suffix because there is no cached value to be stale-OF.
 

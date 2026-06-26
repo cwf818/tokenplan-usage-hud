@@ -6,13 +6,13 @@ const { clear, get, peek, peekWithAge, set } = cache;
 describe("cache", () => {
   it("returns null on miss", () => {
     clear("k1");
-    assert.equal(get("k1"), null);
+    assert.equal(get("k1", 60_000), null);
   });
 
   it("returns the value within TTL", () => {
     clear("k2");
     set("k2", { foo: 1 });
-    assert.deepEqual(get("k2"), { foo: 1 });
+    assert.deepEqual(get("k2", 60_000), { foo: 1 });
   });
 
   it("returns null after TTL expires", async () => {
@@ -37,7 +37,7 @@ describe("cache", () => {
   it("clear removes a key", () => {
     set("k5", "x");
     clear("k5");
-    assert.equal(get("k5"), null);
+    assert.equal(get("k5", 60_000), null);
     assert.equal(peek("k5"), null);
   });
 });
