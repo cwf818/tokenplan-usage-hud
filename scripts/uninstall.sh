@@ -320,9 +320,18 @@ if [ -n "$SL_PLAN" ]; then
         };
         const data = JSON.parse(fs.readFileSync(target, "utf8"));
         if (data.statusLine && isOurs(data.statusLine.command)) {
-          // Replace the entire statusLine with the pre-managed shape so
-          // we drop any post-install fields Claude Code added.
-          data.statusLine = { type: "command", command: original };
+          // Mirror write-managed read-modify-write: shallow-copy the
+          // CURRENT statusLine (which may carry user-set fields the user
+          // added AFTER our install — most notably refreshInterval), then
+          // overwrite only the keys we own. The earlier
+          // "data.statusLine = {…}" form nuked every other field on
+          // uninstall, silently dropping refreshInterval. See commit
+          // 89e9e10 (v0.1.23) for the matching install-side fix.
+          const next = Object.assign({}, data.statusLine);
+          next.type = "command";
+          next.command = original;
+          delete next._tokenplan_managed;
+          data.statusLine = next;
         } else if (!data.statusLine) {
           data.statusLine = { type: "command", command: original };
         } else {
