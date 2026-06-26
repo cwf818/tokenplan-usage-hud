@@ -10,17 +10,23 @@ export type Window = {
 
 export type DisplayMode = "remaining" | "used";
 
-const RESET = "\x1b[0m";
+// Exported so sibling modules (src/dispatch.ts) can compose colored output
+// without duplicating these literal strings.
+export const RESET = "\x1b[0m";
 
 // 256-color SGR sequences.
 // "Dark green" is intentionally not too dark — closer to a forest/jade tone
 // so it stays distinguishable from bright green but still readable on dark
 // terminals.
-const BRIGHT_GREEN = "\x1b[38;5;41m"; // #00d787
-const DARK_GREEN = "\x1b[38;5;29m"; // #00af5f — forest/jade, not muddy
-const YELLOW = "\x1b[38;5;220m"; // #ffd75f
-const ORANGE = "\x1b[38;5;208m"; // #ff8700
-const RED = "\x1b[38;5;196m"; // #ff5f5f
+export const BRIGHT_GREEN = "\x1b[38;5;41m"; // #00d787
+export const DARK_GREEN = "\x1b[38;5;29m"; // #00af5f — forest/jade, not muddy
+export const YELLOW = "\x1b[38;5;220m"; // #ffd75f
+export const ORANGE = "\x1b[38;5;208m"; // #ff8700
+export const RED = "\x1b[38;5;196m"; // #ff5f5f
+// Used for the stale-on-error annotation (" · 5m ago"). ANSI bright black
+// (\x1b[90m) reads as "dim gray" on both light and dark terminals without
+// competing with the 5-band palette above.
+export const STALE_COLOR = "\x1b[90m"; // #808080
 
 // 5-band thresholds applied to the **displayed** value (so remaining/used
 // modes share the same numeric thresholds — only the meaning flips).
@@ -181,6 +187,30 @@ export function formatResetSuffix(resetAt: string | null | undefined, nowMs: num
   return shown.map(([v, u]) => `${v}${u}`).join("") + "↻";
 }
 
+// Compact "age of cached value" formatter for the stale-on-error annotation.
+// Returns e.g. " · 5m ago" / " · 1h ago" / " · 1d ago", already SGR-wrapped
+// in STALE_COLOR and RESET-terminated. Returns "" when ageMs is not positive.
+// Min unit is 1m (a sub-minute remainder rounds UP — we never show "0m ago"
+// because that looks like the cache hasn't actually moved).
+export function formatStaleSuffix(ageMs: number): string {
+  if (!Number.isFinite(ageMs) || ageMs <= 0) return "";
+  const totalMinutes = Math.floor(ageMs / 60_000);
+  // Sub-minute remainder → bump to 1m so the user sees "1m ago", not "0m ago".
+  const minutes = ageMs % 60_000 > 0 ? totalMinutes + 1 : totalMinutes;
+  const hours = Math.floor(minutes / 60);
+  const days = Math.floor(hours / 24);
+
+  let label: string;
+  if (days >= 1) {
+    label = `${days}d ago`;
+  } else if (hours >= 1) {
+    label = `${hours}h ago`;
+  } else {
+    label = `${Math.max(1, minutes)}m ago`;
+  }
+  return ` · ${STALE_COLOR}${label}${RESET}`;
+}
+
 // Parse the TOKENPLAN_DISPLAY env var (or any caller-provided string) into a
 // DisplayMode. Defaults to "used" on anything unrecognized. Pass
 // TOKENPLAN_DISPLAY=remaining to opt into remaining-mode.
@@ -193,10 +223,12 @@ export function formatLine(
   fiveHour: Window,
   weekly: Window,
   mode: DisplayMode = "used",
-  nowMs: number = Date.now()
+  nowMs: number = Date.now(),
+  staleMs?: number
 ): string {
   const modeLabel = MODE_LABELS[mode];
-  return `${modeLabel} ${formatOne("5h", fiveHour, mode, 8, nowMs)} · ${formatOne("wk", weekly, mode, 8, nowMs)}`;
+  const base = `${modeLabel} ${formatOne("5h", fiveHour, mode, 8, nowMs)} · ${formatOne("wk", weekly, mode, 8, nowMs)}`;
+  return base + (staleMs ? formatStaleSuffix(staleMs) : "");
 }
 
 // ----- DeepSeek balance line -------------------------------------------------
@@ -257,12 +289,17 @@ export type BalanceLike = {
   minValue: number | null;
 };
 
-export function formatBalanceLine(b: BalanceLike): string {
+export function formatBalanceLine(b: BalanceLike, staleMs?: number): string {
   if (!b.isAvailable || b.entries.length === 0 || b.minValue == null) {
+    // "not available!" is rendered for BOTH the original "API said no" branch
+    // (is_available: false) and the "fetch failed and we have no cache" branch
+    // upstream. Neither carries an age to report, so the stale suffix is
+    // intentionally NOT appended here.
     return `Balance: ${RED}not available!${RESET}`;
   }
   const chunks = b.entries.map((e) => formatBalanceChunk(e.currency, e.totalBalance));
   // Color follows the LOWEST entry — most urgent currency drives the hue.
   const color = colorForBalance(b.minValue);
-  return `Balance: ${color}${chunks.join(" · ")}${RESET}`;
+  const base = `Balance: ${color}${chunks.join(" · ")}${RESET}`;
+  return base + (staleMs ? formatStaleSuffix(staleMs) : "");
 }
