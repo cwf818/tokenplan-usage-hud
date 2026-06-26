@@ -1,6 +1,6 @@
 <pre>
 [upstream statusline lines]
-Usage: ▓▓▓▓░░░░ 40% (1h27m🕗 5h) · ▓▓░░░░░░ 20% (4d3h🕔 wk)    # Tokeplan
+Usage: ▓▓▓▓░░░░ 40% (1h27m🕗 5h) · ▓▓░░░░░░ 20% (4d3h🕔 7d)    # Tokeplan
 Balance: ￥110.00 · $3.5                                        # Balance
 </pre>
 
@@ -133,8 +133,8 @@ Both endpoints are called with `Authorization: Bearer $ANTHROPIC_AUTH_TOKEN` —
 ### MiniMax token-plan line
 
 <pre>
- Usage: ▓▓▓▓▓░░░ 38% (47m🕖 5h) · ▓▓▓░░░░░ 39% (4d47m🕓 wk)
-Remain: ░░░░░▓▓▓ 62% (47m🕖 5h) · ░░░▓▓▓▓▓ 61% (4d47m🕓 wk)
+ Usage: ▓▓▓▓▓░░░ 38% (47m🕖 5h) · ▓▓▓░░░░░ 39% (4d47m🕓 7d)
+Remain: ░░░░░▓▓▓ 62% (47m🕖 5h) · ░░░▓▓▓▓▓ 61% (4d47m🕓 7d)
 </pre>
 
 Two windows (5-hour + weekly), split-bar with colored percentage, reset countdown in parentheses, window label after the slash.
@@ -236,24 +236,28 @@ A reference with every field is at [config.example.json](./config.example.json).
     //   "s":           sub-minute shows as actual seconds (e.g. "47s").
     "minUnit": "m",
     // Glyphs appended to the reset countdown (e.g. "2h3m🕛"). The picker
-    // indexes by `remainingMs / resetDurationMs` so the array reads
-    // left-to-right as "fresh → about to reset". Twelve clock-face emoji
-    // give a smooth visual ramp; two glyphs give a binary hourglass
-    // (full/empty); one glyph is static. Providers without start_time
-    // (DeepSeek, legacy) fall back to index 0.
+    // indexes by `remainingMs / resetDurationMs`, so the array reads
+    // left-to-right as "few remaining → many remaining" (i.e. ascending
+    // by remaining-time ratio). Index 0 is shown when remaining ≈ 0
+    // (about to reset); the last entry is shown when remaining ≈ total
+    // (fresh). Twelve clock-face emoji give a smooth visual ramp from
+    // 12 o'clock (🕛, least remaining) around to 1 o'clock (🕐, most
+    // remaining); two glyphs give a binary hourglass (full/empty);
+    // one glyph is static. Providers without start_time (DeepSeek,
+    // legacy) fall back to index 0.
     "resetArrows": [
       "🕛",
-      "🕐",
-      "🕑",
-      "🕒",
-      "🕓",
-      "🕔",
-      "🕕",
-      "🕖",
-      "🕗",
-      "🕘",
-      "🕙",
       "🕚",
+      "🕙",
+      "🕘",
+      "🕗",
+      "🕖",
+      "🕕",
+      "🕔",
+      "🕓",
+      "🕒",
+      "🕑",
+      "🕐",
     ],
   },
   "bar": {

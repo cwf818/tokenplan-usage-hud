@@ -320,7 +320,7 @@ export function formatLine(
   staleMs?: number,
 ): string {
   const modeLabel = cfg().modeLabels[mode];
-  const base = `${modeLabel} ${formatOne("5h", fiveHour, mode, undefined, nowMs)} · ${formatOne("wk", weekly, mode, undefined, nowMs)}`;
+  const base = `${modeLabel} ${formatOne("5h", fiveHour, mode, undefined, nowMs)} · ${formatOne("7d", weekly, mode, undefined, nowMs)}`;
   return base + (staleMs ? formatStaleSuffix(staleMs) : "");
 }
 

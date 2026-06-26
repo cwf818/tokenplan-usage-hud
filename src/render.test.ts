@@ -262,9 +262,9 @@ describe("formatLine — mode='used'", () => {
       line.includes(`${ORANGE}▓▓▓▓▓${RESET}░░░ ${ORANGE}62%${RESET} (38m🕛 5h)`),
       `got: ${line}`
     );
-    // wk: used=42 → 3 colored ▓ (LEFT) + 5 plain ░ (RIGHT), YELLOW.
+    // 7d (was wk): used=42 → 3 colored ▓ (LEFT) + 5 plain ░ (RIGHT), YELLOW.
     assert.ok(
-      line.includes(`${YELLOW}▓▓▓${RESET}░░░░░ ${YELLOW}42%${RESET} (4d16h🕛 wk)`),
+      line.includes(`${YELLOW}▓▓▓${RESET}░░░░░ ${YELLOW}42%${RESET} (4d16h🕛 7d)`),
       `got: ${line}`
     );
     // Mode label once at the front, ' · ' between windows.
@@ -287,15 +287,15 @@ describe("formatLine — reset suffix integration", () => {
       now
     );
     assert.ok(line.includes("(2h3m🕛 5h)"));
-    assert.ok(line.includes("(3d5h🕛 wk)"));
+    assert.ok(line.includes("(3d5h🕛 7d)"));
   });
 
-  it("no resetAt → bare ' 5h' / ' wk' with no parens and no arrow", () => {
+  it("no resetAt → bare ' 5h' / ' 7d' with no parens and no arrow", () => {
     const line = formatLine({ pct: 30 }, { pct: 40 });
     assert.ok(!line.includes("🕛"));
     assert.ok(!line.includes("("));
     assert.ok(line.includes(" 5h"));
-    assert.ok(line.includes(" wk"));
+    assert.ok(line.includes(" 7d"));
   });
 
   it("sub-minute remaining → '<1m' (still wrapped in parens, arrow preserved)", () => {
@@ -370,7 +370,7 @@ describe("formatResetSuffix", () => {
 
   describe("minUnit='s' (second granularity)", () => {
     beforeEach(() => {
-      __resetForTest({ stale: { minUnit: "s", minMinutes: 1, resetArrows: ["🕛","🕐","🕑","🕒","🕓","🕔","🕕","🕖","🕗","🕘","🕙","🕚"], separator: " · " } });
+      __resetForTest({ stale: { minUnit: "s", minMinutes: 1, resetArrows: ["🕛","🕚","🕙","🕘","🕗","🕖","🕕","🕔","🕓","🕒","🕑","🕐"], separator: " · " } });
     });
     afterEach(() => {
       __resetForTest();
@@ -394,9 +394,12 @@ describe("formatResetSuffix", () => {
 
 describe("pickResetArrow (stale.resetArrows[] by remaining/total)", () => {
   // index = floor(remainingMs / resetDurationMs * length), clamped to
-  // [0, length-1]. Defaults are 12 clock-face emoji (🕛 at 12 o'clock,
-  // 🕚 just before midnight). When the interval data is missing
-  // (DeepSeek, legacy, clock skew), falls back to index 0.
+  // [0, length-1]. Defaults are 12 clock-face emoji ordered by REMAINING
+  // TIME, ascending (few → many): 🕛(0), 🕚(1), 🕙(2), …, 🕐(11). So
+  // index 0 (🕛) is shown when the window is about to reset / just reset;
+  // the last index (🕐) is shown when the window is fresh. When the
+  // interval data is missing (DeepSeek, legacy, clock skew), falls back
+  // to index 0.
   const NOW = Date.parse("2026-06-24T12:00:00Z");
 
   // Helper: call formatLine so the rendered glyph is what the user sees.
@@ -422,21 +425,21 @@ describe("pickResetArrow (stale.resetArrows[] by remaining/total)", () => {
     return m?.[1] ?? "";
   };
 
-  it("ratio≈0 → 🕛", () => {
+  it("ratio≈0 → 🕛 (index 0, least remaining)", () => {
     // ~1 minute remaining out of 5h
     assert.equal(arrow(1 / 300), "🕛");
   });
 
-  it("ratio≈1/12 → 🕐", () => {
-    assert.equal(arrow(1 / 12), "🕐");
+  it("ratio≈1/12 → 🕚 (index 1)", () => {
+    assert.equal(arrow(1 / 12), "🕚");
   });
 
   it("ratio≈0.5 → 🕕 (index 6)", () => {
     assert.equal(arrow(0.5), "🕕");
   });
 
-  it("ratio=1 → 🕚 (clamped, not out-of-bounds)", () => {
-    assert.equal(arrow(1), "🕚");
+  it("ratio=1 → 🕐 (index 11, clamped, not out-of-bounds)", () => {
+    assert.equal(arrow(1), "🕐");
   });
 
   it("two-glyph hourglass pair: full→empty", () => {
@@ -497,7 +500,7 @@ describe("pickResetArrow (stale.resetArrows[] by remaining/total)", () => {
 
   it("ignores clock skew — clamps to last index", () => {
     // startAt slightly in the future. elapsed negative → ratio > 1
-    // → clamped to 1 → last index 🕚.
+    // → clamped to 1 → last index 🕐.
     const startAt = new Date(NOW + 5_000).toISOString();
     const dur = 5 * 3_600_000;
     const line = formatLine(
@@ -511,7 +514,7 @@ describe("pickResetArrow (stale.resetArrows[] by remaining/total)", () => {
       "used",
       NOW
     );
-    assert.ok(line.includes("🕚 5h"), `got: ${line}`);
+    assert.ok(line.includes("🕐 5h"), `got: ${line}`);
   });
 });
 

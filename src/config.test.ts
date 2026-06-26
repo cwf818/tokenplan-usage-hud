@@ -214,7 +214,7 @@ describe("loadConfig — stale.resetArrows", () => {
     const cfg = __testing.DEFAULT_CONFIG;
     assert.equal(cfg.stale.resetArrows.length, 12);
     assert.equal(cfg.stale.resetArrows[0], "🕛");
-    assert.equal(cfg.stale.resetArrows[11], "🕚");
+    assert.equal(cfg.stale.resetArrows[11], "🕐");
   });
 
   it("accepts a custom array of single-line strings", async () => {
