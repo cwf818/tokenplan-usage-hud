@@ -207,6 +207,18 @@ In-memory TTL of **60 s**, with stale-on-error fallback. Two scopes of "refresh 
 
 DeepSeek balance uses a separate cache key (`"balance"`) so the two providers don't invalidate each other.
 
+### Failure handling
+
+Three outcomes when the provider API is called:
+
+| Outcome          | What you see on the statusline                                   |
+|------------------|------------------------------------------------------------------|
+| Fresh fetch      | The normal `Usage: …` / `Balance: …` line, no suffix.            |
+| Fetch failed, cache exists | The last good value, **with a dim ` · Xm ago` suffix** at the end (e.g. `Balance: ￥110 · 5m ago`). Color is dim gray so it doesn't compete with the 5-band palette. |
+| Fetch failed, no cache | `Usage: not available!` (MiniMax) or `Balance: not available!` (DeepSeek) in red. Plugin is alive but the provider is unreachable. |
+
+The `Xm` / `Xh` / `Xd` units follow the same convention as the reset suffix elsewhere on the line — `30s` rounds up to `1m ago` (never shows `0m ago`), `90m` collapses to `1h ago`, `25h` to `1d ago`. The hard-fail `not available!` line intentionally has no age suffix because there is no cached value to be stale-OF.
+
 ## Develop
 
 ```bash
