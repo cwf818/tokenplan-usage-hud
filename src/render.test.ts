@@ -24,7 +24,7 @@ const STALE_COLOR = "\x1b[90m";
 // Strip ANSI escape codes so we can inspect content cleanly.
 const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
 
-describe("splitBar — unified layout (LEFT = used ▓, RIGHT = remaining ░)", () => {
+describe("splitBar — unified layout (left=used, right=remaining, glyphs flip by mode)", () => {
   it("used mode: left = used ▓ (colored), right = remaining ░ (plain)", () => {
     // used=80 → displayed=80 → 8/10 colored → RED (band 4)
     const bar = splitBar(80, "used", 10);
@@ -38,14 +38,16 @@ describe("splitBar — unified layout (LEFT = used ▓, RIGHT = remaining ░)",
     assert.equal(bar.color, RED);
   });
 
-  it("remaining mode: left = used ▓ (plain), right = remaining ░ (colored)", () => {
+  it("remaining mode: left = used ░ (plain), right = remaining ▓ (colored)", () => {
     // used=80 → remaining=20 → displayed=20 → 2/10 colored → ORANGE (band 1)
+    // Per v0.2.11: glyphs flip in remaining mode so the bar reads
+    // left-to-right as "what's spent ░░ what's left ▓▓".
     const bar = splitBar(80, "remaining", 10);
-    // LEFT chunk: 8 ▓ plain (no color wrapping)
-    assert.equal(bar.leftChunk, "▓▓▓▓▓▓▓▓");
+    // LEFT chunk: 8 ░ plain (no color wrapping)
+    assert.equal(bar.leftChunk, "░░░░░░░░");
     assert.ok(!bar.leftChunk.includes("\x1b["), "left must be plain in remaining mode");
-    // RIGHT chunk: 2 ░ colored ORANGE
-    assert.equal(strip(bar.rightChunk), "░░");
+    // RIGHT chunk: 2 ▓ colored ORANGE
+    assert.equal(strip(bar.rightChunk), "▓▓");
     assert.ok(bar.rightChunk.startsWith(ORANGE), `right should start with ORANGE: ${JSON.stringify(bar.rightChunk)}`);
     assert.ok(bar.rightChunk.endsWith(RESET), `right should end with RESET: ${JSON.stringify(bar.rightChunk)}`);
     assert.equal(bar.color, ORANGE);
@@ -63,8 +65,8 @@ describe("splitBar — unified layout (LEFT = used ▓, RIGHT = remaining ░)",
   it("remaining mode at high remaining (75%) — colored chunk is on RIGHT, big", () => {
     // used=25 → remaining=75 → displayed=75 → 6/8 colored (band 3 = DARK_GREEN)
     const bar = splitBar(25, "remaining", 8);
-    assert.equal(bar.leftChunk, "▓▓"); // plain ▓ = used 25%
-    assert.equal(strip(bar.rightChunk), "░░░░░░"); // 6 colored ░ = remaining 75%
+    assert.equal(bar.leftChunk, "░░"); // plain ░ = used 25%
+    assert.equal(strip(bar.rightChunk), "▓▓▓▓▓▓"); // 6 colored ▓ = remaining 75%
     assert.ok(bar.rightChunk.startsWith(DARK_GREEN));
     assert.equal(bar.color, DARK_GREEN);
   });
@@ -78,9 +80,9 @@ describe("splitBar — unified layout (LEFT = used ▓, RIGHT = remaining ░)",
   });
 
   it("full usage: remaining mode emits no colored chunk", () => {
-    // used=100 → remaining=0 → displayed=0 → 0 colored ░ → bar.color is RED
+    // used=100 → remaining=0 → displayed=0 → 0 colored ▓ → bar.color is RED
     const bar = splitBar(100, "remaining", 8);
-    assert.equal(bar.leftChunk, "▓▓▓▓▓▓▓▓");
+    assert.equal(bar.leftChunk, "░░░░░░░░");
     assert.equal(bar.rightChunk, "");
     assert.equal(bar.color, RED);
   });
@@ -210,11 +212,13 @@ describe("formatLine — mode='used' (default)", () => {
     assert.ok(line.includes(`${YELLOW}40%${RESET}`));
   });
 
-  it("remaining mode: colored ░ on RIGHT represents remaining", () => {
+  it("remaining mode: colored ▓ on RIGHT represents remaining", () => {
     // used=75 → remaining=25 → displayed=25 (band 1 = ORANGE) → 2/8 right cells colored
+    // Per v0.2.11: glyphs flip in remaining mode — left=░ (used),
+    // right=▓ (remaining).
     const line = formatLine({ pct: 75 }, { pct: 0 }, "remaining");
-    // Bar: 6 plain ▓ + 2 colored ░
-    assert.ok(line.includes(`▓▓▓▓▓▓${ORANGE}░░${RESET} ${ORANGE}25%${RESET}`),
+    // Bar: 6 plain ░ + 2 colored ▓
+    assert.ok(line.includes(`░░░░░░${ORANGE}▓▓${RESET} ${ORANGE}25%${RESET}`),
       `got: ${line}`);
     // No resetAt → bare " 5h" with no parens and no slash.
     assert.ok(line.includes(" 5h "), `got: ${line}`);
@@ -324,8 +328,10 @@ describe("formatResetSuffix", () => {
     assert.equal(formatResetSuffix("not-a-date", NOW), "");
   });
 
-  it("returns '<1m' when reset is in the past (default minUnit='m')", () => {
-    assert.equal(formatResetSuffix(at(-60_000), NOW), "<1m");
+  it("returns '0m' when reset is in the past (default minUnit='m')", () => {
+    // v0.2.11: past-due renders as "0m" — explicit "this window has
+    // reset" signal, distinct from "<1m" which means "about to reset".
+    assert.equal(formatResetSuffix(at(-60_000), NOW), "0m");
   });
 
   it("formats hours and minutes (drops zero days), no arrow", () => {
@@ -353,8 +359,19 @@ describe("formatResetSuffix", () => {
 
   it("formats a single unit when only one is non-zero", () => {
     assert.equal(formatResetSuffix(at(1 * 60_000), NOW), "1m");
-    assert.equal(formatResetSuffix(at(2 * 3_600_000), NOW), "2h");
-    assert.equal(formatResetSuffix(at(2 * 24 * 3_600_000), NOW), "2d");
+    // 2h exactly → 2h0m (internal zero preserved per v0.2.11 rule)
+    assert.equal(formatResetSuffix(at(2 * 3_600_000), NOW), "2h0m");
+    // 2d exactly → 2d0h
+    assert.equal(formatResetSuffix(at(2 * 24 * 3_600_000), NOW), "2d0h");
+  });
+
+  it("keeps internal/trailing zero units (e.g. 1h0m stays '1h0m')", () => {
+    // v0.2.11: only LEADING zeros are dropped. Internal/trailing zeros
+    // within the maxUnitCount window are preserved — "2h0m" stays
+    // "2h0m" so the user can see "the window is 2 hours wide and
+    // happens to be 0m into it" rather than the lossy "2h".
+    assert.equal(formatResetSuffix(at(60 * 60_000), NOW), "1h0m");
+    assert.equal(formatResetSuffix(at(2 * 60 * 60_000), NOW), "2h0m");
   });
 
   it("does not show seconds by default — sub-minute returns '<1m'", () => {
@@ -370,7 +387,7 @@ describe("formatResetSuffix", () => {
 
   describe("minUnit='s' (second granularity)", () => {
     beforeEach(() => {
-      __resetForTest({ stale: { minUnit: "s", minMinutes: 1, resetArrows: ["🕛","🕚","🕙","🕘","🕗","🕖","🕕","🕔","🕓","🕒","🕑","🕐"], separator: " · " } });
+      __resetForTest({ stale: { minUnit: "s", minMinutes: 1, maxUnitCount: 2, ageEmoji: { healthy: "🔗", broken: "⛓️‍💥" }, resetArrows: ["🕛","🕚","🕙","🕘","🕗","🕖","🕕","🕔","🕓","🕒","🕑","🕐"], separator: " · " } });
     });
     afterEach(() => {
       __resetForTest();
@@ -386,8 +403,8 @@ describe("formatResetSuffix", () => {
       assert.equal(formatResetSuffix(at(60_000), NOW), "1m");
     });
 
-    it("past-due → '<0s'", () => {
-      assert.equal(formatResetSuffix(at(-1_000), NOW), "<0s");
+    it("past-due → '0s' (v0.2.11: explicit past-due signal)", () => {
+      assert.equal(formatResetSuffix(at(-1_000), NOW), "0s");
     });
   });
 });
@@ -443,7 +460,7 @@ describe("pickResetArrow (stale.resetArrows[] by remaining/total)", () => {
   });
 
   it("two-glyph hourglass pair: full→empty", () => {
-    __resetForTest({ stale: { resetArrows: ["⏳", "⌛"], minUnit: "m", minMinutes: 1, separator: " · " } });
+    __resetForTest({ stale: { resetArrows: ["⏳", "⌛"], minUnit: "m", minMinutes: 1, maxUnitCount: 2, ageEmoji: { healthy: "🔗", broken: "⛓️‍💥" }, separator: " · " } });
     try {
       // Use a small but non-trivial remaining so the countdown is non-empty.
       const arrowAt = (ratio: number) => {
@@ -664,39 +681,42 @@ describe("formatStaleSuffix", () => {
 
   it("rounds sub-minute remainder UP to 1m ago", () => {
     // 30 seconds is well under a minute but we never want to show "0m ago".
-    assert.equal(strip(formatStaleSuffix(30_000)), " · 1m ago");
+    // v0.2.11: broken emoji IS the indicator (no leading "· " separator).
+    assert.equal(strip(formatStaleSuffix(30_000)), "⛓️‍💥 1m ago");
     // Exactly 1s short of 1m — round up to 1m, not down to 0.
-    assert.equal(strip(formatStaleSuffix(59_000)), " · 1m ago");
+    assert.equal(strip(formatStaleSuffix(59_000)), "⛓️‍💥 1m ago");
   });
 
   it("sub-minute → 'Xm ago' (X >= 1)", () => {
-    assert.equal(strip(formatStaleSuffix(60_000)), " · 1m ago");
-    assert.equal(strip(formatStaleSuffix(5 * 60_000)), " · 5m ago");
-    assert.equal(strip(formatStaleSuffix(59 * 60_000)), " · 59m ago");
+    assert.equal(strip(formatStaleSuffix(60_000)), "⛓️‍💥 1m ago");
+    assert.equal(strip(formatStaleSuffix(5 * 60_000)), "⛓️‍💥 5m ago");
+    assert.equal(strip(formatStaleSuffix(59 * 60_000)), "⛓️‍💥 59m ago");
   });
 
-  it(">= 1h → 'Xh ago' (drops minutes)", () => {
-    assert.equal(strip(formatStaleSuffix(60 * 60_000)), " · 1h ago");
-    assert.equal(strip(formatStaleSuffix(90 * 60_000)), " · 1h ago");
-    assert.equal(strip(formatStaleSuffix(4 * 60 * 60_000)), " · 4h ago");
-    assert.equal(strip(formatStaleSuffix(23 * 60 * 60_000)), " · 23h ago");
+  it(">= 1h shows up to 2 non-zero units (1h30m ago, not just '1h ago')", () => {
+    // v0.2.11: maxUnitCount=2 → keep up to 2 non-zero units including
+    // internal zeros. 1h30m stays "1h30m", NOT "1h". 1h0m (i.e. exactly
+    // 60 minutes) stays "1h0m" — only LEADING zeros are dropped.
+    assert.equal(strip(formatStaleSuffix(60 * 60_000)), "⛓️‍💥 1h0m ago");
+    assert.equal(strip(formatStaleSuffix(90 * 60_000)), "⛓️‍💥 1h30m ago");
+    assert.equal(strip(formatStaleSuffix(4 * 60 * 60_000 + 23 * 60_000)), "⛓️‍💥 4h23m ago");
+    // 23h exactly → 23h0m (internal zero preserved per v0.2.11 rule)
+    assert.equal(strip(formatStaleSuffix(23 * 60 * 60_000)), "⛓️‍💥 23h0m ago");
   });
 
-  it(">= 24h → 'Xd ago' (drops hours)", () => {
-    assert.equal(strip(formatStaleSuffix(24 * 60 * 60_000)), " · 1d ago");
-    assert.equal(strip(formatStaleSuffix(25 * 60 * 60_000)), " · 1d ago");
-    assert.equal(strip(formatStaleSuffix(3 * 24 * 60 * 60_000)), " · 3d ago");
+  it(">= 24h shows up to 2 non-zero units (1d5h ago, not just '1d ago')", () => {
+    // 24h exactly → 1d0h (internal zero preserved per v0.2.11 rule)
+    assert.equal(strip(formatStaleSuffix(24 * 60 * 60_000)), "⛓️‍💥 1d0h ago");
+    // 25h = 1d1h
+    assert.equal(strip(formatStaleSuffix(25 * 60 * 60_000)), "⛓️‍💥 1d1h ago");
+    assert.equal(strip(formatStaleSuffix(29 * 60 * 60_000)), "⛓️‍💥 1d5h ago");
+    // 3d exactly → 3d0h (internal zero preserved per v0.2.11 rule)
+    assert.equal(strip(formatStaleSuffix(3 * 24 * 60 * 60_000)), "⛓️‍💥 3d0h ago");
   });
 
   it("is wrapped in STALE_COLOR and ends with RESET", () => {
     const suffix = formatStaleSuffix(5 * 60_000);
-    assert.equal(suffix, ` · ${STALE_COLOR}5m ago${RESET}`);
-  });
-
-  it("separator is ' · ' (with leading space and middot)", () => {
-    const suffix = formatStaleSuffix(60_000);
-    assert.ok(suffix.startsWith(" · "));
-    assert.ok(suffix.includes("·"));
+    assert.equal(suffix, `${STALE_COLOR}⛓️‍💥 5m ago${RESET}`);
   });
 });
 
@@ -709,9 +729,10 @@ describe("formatLine — stale suffix integration", () => {
       Date.now(),
       5 * 60_000
     );
-    // Stale suffix should be at the END of the line.
-    assert.ok(line.endsWith(`${STALE_COLOR}5m ago${RESET}`), `unexpected tail: ${JSON.stringify(line)}`);
-    assert.ok(strip(line).endsWith(" · 5m ago"), `stripped: ${strip(line)}`);
+    // Stale suffix should be at the END of the line. v0.2.11: broken
+    // emoji IS the indicator, no leading " · " separator.
+    assert.ok(line.endsWith(`${STALE_COLOR}⛓️‍💥 5m ago${RESET}`), `unexpected tail: ${JSON.stringify(line)}`);
+    assert.ok(strip(line).endsWith("⛓️‍💥 5m ago"), `stripped: ${strip(line)}`);
   });
 
   it("does NOT append the stale suffix when staleMs is omitted", () => {
@@ -738,8 +759,8 @@ describe("formatBalanceLine — stale suffix integration", () => {
       { isAvailable: true, entries: [{ currency: "CNY", totalBalance: 110 }], minValue: 110 },
       5 * 60_000
     );
-    assert.ok(line.endsWith(`${STALE_COLOR}5m ago${RESET}`));
-    assert.ok(strip(line).endsWith(" · 5m ago"));
+    assert.ok(line.endsWith(`${STALE_COLOR}⛓️‍💥 5m ago${RESET}`));
+    assert.ok(strip(line).endsWith("⛓️‍💥 5m ago"));
   });
 
   it("appends the stale suffix on a multi-currency line", () => {
@@ -754,8 +775,8 @@ describe("formatBalanceLine — stale suffix integration", () => {
       },
       90 * 60_000
     );
-    // 1h30m → drops minutes, shows "1h ago".
-    assert.ok(strip(line).endsWith(" · 1h ago"));
+    // 90m → 1h30m ago (v0.2.11: maxUnitCount=2 keeps internal non-zero units)
+    assert.ok(strip(line).endsWith("⛓️‍💥 1h30m ago"));
   });
 
   it("does NOT append the stale suffix on the 'not available!' branch", () => {

@@ -130,8 +130,12 @@ export function splitBar(
   const filled = cfg().bar.filled;
   const empty = cfg().bar.empty;
 
-  // Fixed layout: left = used cells (filled), right = remaining cells (empty).
-  // Which side gets the color is decided by mode.
+  // Layout: left = used cells, right = remaining cells. The side that
+  // gets color wraps is the "metric of concern" (used in "used" mode,
+  // remaining in "remaining" mode). Glyphs flip in remaining mode so
+  // the bar reads left-to-right as "what's spent ▓▓▓░░░ what's left":
+  //   used      : left=used▓ (colored),  right=remaining░ (plain)
+  //   remaining : left=used░ (plain),    right=remaining▓ (colored)
   if (mode === "used") {
     const left = filled.repeat(coloredSize);
     const right = empty.repeat(plainSize);
@@ -142,8 +146,8 @@ export function splitBar(
     };
   }
   // mode === "remaining"
-  const left = filled.repeat(plainSize);
-  const right = empty.repeat(coloredSize);
+  const left = empty.repeat(plainSize);
+  const right = filled.repeat(coloredSize);
   return {
     leftChunk: left,
     rightChunk: coloredSize > 0 ? `${color}${right}${RESET}` : "",
@@ -192,19 +196,25 @@ function formatOne(
 }
 
 // Compact "remaining time until reset" formatter. Returns the countdown
-// portion of the reset annotation (no arrow, no parens) — e.g. "2h3m" or
-// "<1m" for sub-minute. The caller (`formatOne`) appends the window
-// label and the fill-state arrow glyph picked by `pickResetArrow`.
+// portion of the reset annotation (no arrow, no parens) — e.g. "2h3m",
+// "<1m" for sub-minute, or "0m" for past-due. The caller (`formatOne`)
+// appends the window label and the fill-state arrow glyph picked by
+// `pickResetArrow`.
 //
-// Never returns "" when `resetAt` is present — the smallest unit is
-// configurable via `stale.minUnit`:
-//   "m" (default): sub-minute → "<1m" so the user can tell that a
-//                  window is about to reset (not just sitting at "0m"
-//                  for an unknown amount of time).
-//   "s":           sub-minute → actual seconds (e.g. "47s").
-//
-// The label drops leading zero units and keeps at most 2 non-zero ones
-// to stay compact: 0d 0h 5m → "5m"; 1d 2h 3m → "1d2h"; 3d 5h 0m → "3d5h".
+// Rules (per the v0.2.11 design):
+//   - Past-due (remainingMs <= 0): "0m" / "0s" depending on minUnit, so
+//     the user sees an explicit "this window has reset" signal.
+//   - Sub-minUnit (>0 but < 1 unit): "<1m" / "<1s" — visually distinct
+//     from "0m" so a window about to reset isn't confused with one
+//     already reset.
+//   - ≥ 1 unit: drop LEADING zero units, keep up to maxUnitCount units
+//     from the start (including any internal/trailing zeros —
+//     "2h0m" stays "2h0m", NOT "2h"). maxUnitCount default = 2.
+//     Examples:
+//       1d2h3m4s maxUnitCount=2 → "1d2h"
+//       2h3m4s   maxUnitCount=2 → "2h3m"
+//       2h0m4s   maxUnitCount=2 → "2h0m"
+//       0d0h5m   maxUnitCount=2 → "5m"
 export function formatResetSuffix(
   resetAt: string | null | undefined,
   nowMs: number = Date.now(),
@@ -213,11 +223,28 @@ export function formatResetSuffix(
   const t = Date.parse(resetAt);
   if (!Number.isFinite(t)) return "";
   const remainingMs = t - nowMs;
-  if (remainingMs <= 0) {
-    // Window is past-due. The caller still wants the parens to show, so
-    // emit a "<0s" / "<1m" placeholder rather than "".
-    return cfg().stale.minUnit === "s" ? "<0s" : "<1m";
-  }
+
+  return formatRemainingMs(remainingMs);
+}
+
+// Pure helper: format a non-negative number of milliseconds as a
+// `1d2h3m4s` style countdown, respecting `stale.minUnit` for the
+// sub-unit threshold and `stale.maxUnitCount` for the slice length.
+// Clamped to a non-negative result — callers that need past-due
+// handling should special-case `remainingMs <= 0` themselves.
+export function formatRemainingMs(remainingMs: number): string {
+  if (!Number.isFinite(remainingMs)) return "";
+
+  const minUnit = cfg().stale.minUnit;
+  const maxUnitCount = Math.max(
+    1,
+    Math.min(4, Math.floor(cfg().stale.maxUnitCount)),
+  );
+
+  // Past-due: explicit "0m" / "0s" so the user sees a clear "this
+  // window has reset" signal — distinct from "<1m" which means
+  // "less than 1 minute left" (i.e. about to reset).
+  if (remainingMs <= 0) return minUnit === "s" ? "0s" : "0m";
 
   const totalSeconds = Math.floor(remainingMs / 1000);
   const totalMinutes = Math.floor(totalSeconds / 60);
@@ -226,26 +253,31 @@ export function formatResetSuffix(
   const minutes = totalMinutes % 60;
   const seconds = totalSeconds % 60;
 
-  const minUnit = cfg().stale.minUnit;
-
-  // Sub-minute in 'm' mode: "<1m" — visually unambiguous, can't be
-  // confused with "0m" (which would imply a definite wait). The "<"
-  // mirrors the "<" used in many countdown UIs for "less than 1".
+  // Sub-minUnit handling: > 0 but less than 1 unit of minUnit →
+  // "<1unit" floor. Wins over maxUnitCount — "<1unit" is the truth.
   if (minUnit === "m" && totalMinutes === 0) return "<1m";
-
-  // Sub-minute in 's' mode: round to the nearest second. "<60s" → e.g.
-  // "47s". We do not pad to two digits ("47s", not "47.0s").
   if (minUnit === "s" && totalMinutes === 0) return `${seconds}s`;
 
-  // ≥1 minute: drop leading zero units, keep up to 2 non-zero ones.
-  const units: Array<[number, string]> = [
+  // ≥ 1 unit: drop leading zero units (so `0d0h5m` → `5m`, not `0d0h5m`),
+  // keep up to maxUnitCount units from the start (including internal /
+  // trailing zeros — `2h0m` stays `2h0m`). The countdown always uses
+  // d/h/m granularity; minUnit only affects the sub-unit floor above.
+  const allUnits: Array<[number, string]> = [
     [days, "d"],
     [hours, "h"],
     [minutes, "m"],
   ];
-  const nonZero = units.filter(([v]) => v > 0);
-  if (nonZero.length === 0) return "<1m";
-  const shown = nonZero.slice(0, 2);
+  let leadingZeroCount = 0;
+  while (
+    leadingZeroCount < allUnits.length &&
+    allUnits[leadingZeroCount][0] === 0
+  ) {
+    leadingZeroCount++;
+  }
+  const shown = allUnits.slice(leadingZeroCount, leadingZeroCount + maxUnitCount);
+  // Unreachable: the <= 0 branch above already returned for past-due,
+  // and we just verified totalMinutes > 0 in the sub-minute floor above.
+  // The slice will always have at least one element.
   return shown.map(([v, u]) => `${v}${u}`).join("");
 }
 
@@ -281,28 +313,51 @@ function pickResetArrow(
 }
 
 // Compact "age of cached value" formatter for the stale-on-error annotation.
-// Returns e.g. " · 5m ago" / " · 1h ago" / " · 1d ago", already SGR-wrapped
-// in STALE_COLOR and RESET-terminated. Returns "" when ageMs is not positive.
-// Min unit is configurable (default 1m — sub-minute remainder rounds UP so
-// we never show "0m ago", which looks like the cache hasn't actually moved).
+// Returns e.g. "⛓️‍💥 5m ago" / "⛓️‍💥 1h30m ago" / "⛓️‍💥 1d5h ago",
+// already SGR-wrapped in STALE_COLOR and RESET-terminated. Returns ""
+// when ageMs is not positive.
+//
+// Per the v0.2.11 design, the broken-chain emoji IS the indicator
+// (no leading "· " separator) — it visually announces the network
+// failure. The X time itself uses minutes as the smallest unit
+// (seconds never appear) and the same maxUnitCount rules as the
+// reset countdown: drop leading zeros, keep internal/trailing zeros
+// up to the configured count.
+//
+// Sub-minute remainder rounds UP to 1m so we never see "0m ago",
+// which would look like the cache hasn't actually moved.
 export function formatStaleSuffix(ageMs: number): string {
   if (!Number.isFinite(ageMs) || ageMs <= 0) return "";
-  const minMin = cfg().stale.minMinutes;
-  const totalMinutes = Math.floor(ageMs / 60_000);
-  // Sub-minute remainder → bump to minMinutes so the user never sees "0m ago".
-  const minutes = ageMs % 60_000 > 0 ? totalMinutes + 1 : totalMinutes;
-  const hours = Math.floor(minutes / 60);
-  const days = Math.floor(hours / 24);
+  const emoji = cfg().stale.ageEmoji.broken;
 
-  let label: string;
-  if (days >= 1) {
-    label = `${days}d ago`;
-  } else if (hours >= 1) {
-    label = `${hours}h ago`;
-  } else {
-    label = `${Math.max(minMin, minutes)}m ago`;
+  // Sub-minute: round up to 1 minute so we never see "0m ago".
+  let totalMinutes = Math.floor(ageMs / 60_000);
+  if (ageMs % 60_000 > 0) totalMinutes += 1;
+
+  const days = Math.floor(totalMinutes / (60 * 24));
+  const hours = Math.floor((totalMinutes % (60 * 24)) / 60);
+  const minutes = totalMinutes % 60;
+
+  // Build units in d/h/m order, drop leading zeros, take maxUnitCount.
+  const maxUnitCount = Math.max(
+    1,
+    Math.min(4, Math.floor(cfg().stale.maxUnitCount)),
+  );
+  const allUnits: Array<[number, string]> = [
+    [days, "d"],
+    [hours, "h"],
+    [minutes, "m"],
+  ];
+  let leadingZeroCount = 0;
+  while (
+    leadingZeroCount < allUnits.length &&
+    allUnits[leadingZeroCount][0] === 0
+  ) {
+    leadingZeroCount++;
   }
-  return `${cfg().stale.separator}${STALE_COLOR}${label}${RESET}`;
+  const shown = allUnits.slice(leadingZeroCount, leadingZeroCount + maxUnitCount);
+  const label = `${shown.map(([v, u]) => `${v}${u}`).join("")} ago`;
+  return `${STALE_COLOR}${emoji} ${label}${RESET}`;
 }
 
 // Read the configured display mode. The earlier TOKENPLAN_DISPLAY env
