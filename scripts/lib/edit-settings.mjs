@@ -139,11 +139,18 @@ switch (op) {
     // actually ours. Otherwise the user (or another plugin) replaced the
     // command after install; touching it would clobber their intent.
     if (data.statusLine && isOurWrapperCommand(data.statusLine.command)) {
-      // Replace the entire statusLine with the pre-managed shape
-      // (type + command). This drops any fields that Claude Code added
-      // after install (e.g. refreshInterval) — they are not part of the
-      // user-authored state we are restoring.
-      data.statusLine = { type: "command", command: original };
+      // Mirror write-managed's read-modify-write: shallow-copy the
+      // CURRENT statusLine (which may carry user-set fields the user
+      // added AFTER our install — most notably refreshInterval), then
+      // overwrite only the keys we own. Previously this op nuked every
+      // other field by replacing the whole object, silently dropping
+      // refreshInterval on every uninstall. See commit 89e9e10
+      // (v0.1.23) for the matching install-side fix.
+      const next = { ...data.statusLine };
+      next.type = "command";
+      next.command = original;
+      delete next._tokenplan_managed;
+      data.statusLine = next;
     } else if (!data.statusLine) {
       data.statusLine = { type: "command", command: original };
     } else {
