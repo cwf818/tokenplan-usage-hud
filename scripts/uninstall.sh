@@ -79,6 +79,17 @@ INSTALLED_JSON="${PLUGINS_DIR}/installed_plugins.json"
 KNOWN_JSON="${PLUGINS_DIR}/known_marketplaces.json"
 SETTINGS_PLUGIN_KEY="tokenplan-usage-hud@tokenplan-usage-hud"
 
+# Resolve SCRIPT_DIR ONCE, at the top, before any rm -rf. Later in this
+# script we wipe CACHE_DIR (the very directory this file lives in) — if
+# we re-resolve SCRIPT_DIR after the wipe, the `cd "$(dirname "$0")"`
+# fails with "No such file or directory" because the path no longer
+# exists. The cached value still lets us locate clean.sh if it's
+# somewhere else (rare but possible — e.g. when uninstall.sh is run
+# from a copy outside the cache). If the directory is gone, the
+# clean.sh invocation is silently skipped (clean is a nice-to-have,
+# not a correctness requirement).
+SCRIPT_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd || true)"
+
 # --- Resolve settings target --------------------------------------------------
 if [ "$PROJECT_LEVEL" = 1 ]; then
   TARGET=".claude/settings.json"
@@ -532,8 +543,12 @@ echo "uninstall.sh: done. tokenplan-usage-hud is fully removed."
 # --- Final: trim old backup files (keep only the most recent per file) -------
 # This runs scripts/clean.sh so uninstall leaves a tidy filesystem. It is
 # always safe — clean is a no-op when at most one backup per file exists.
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-if [ -x "${SCRIPT_DIR}/clean.sh" ] || [ -f "${SCRIPT_DIR}/clean.sh" ]; then
+# SCRIPT_DIR was resolved at the top of the script, before we wiped
+# CACHE_DIR, so it still points at a valid location here even though
+# this file is now gone. If the directory was gone at top-of-script
+# time too (script run from a copy outside the cache), SCRIPT_DIR is
+# empty and we just skip the final clean step.
+if [ -n "${SCRIPT_DIR:-}" ] && [ -f "${SCRIPT_DIR}/clean.sh" ]; then
   PROJECT_FLAG=""
   [ "$PROJECT_LEVEL" = 1 ] && PROJECT_FLAG="--project"
   bash "${SCRIPT_DIR}/clean.sh" $PROJECT_FLAG || true
