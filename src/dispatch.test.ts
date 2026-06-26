@@ -48,15 +48,16 @@ describe("buildProviderLine — fresh", () => {
 });
 
 describe("buildProviderLine — stale", () => {
-  it("MiniMax: appends dim ' · 5m ago' suffix", () => {
+  it("MiniMax: appends dim '⛓️‍💥 5m ago' suffix", () => {
     const result: FetchResult<Remains> = { kind: "stale", data: MINI_DATA, ageMs: 5 * 60_000 };
     const line = buildProviderLine("minimax", result);
     assert.ok(line);
-    assert.ok(strip(line!).endsWith(" · 5m ago"));
-    assert.ok(line!.endsWith(`${STALE_COLOR}5m ago${RESET}`));
+    // v0.2.11: broken emoji IS the indicator (no leading " · " separator).
+    assert.ok(strip(line!).endsWith("⛓️‍💥 5m ago"));
+    assert.ok(line!.endsWith(`${STALE_COLOR}⛓️‍💥 5m ago${RESET}`));
   });
 
-  it("DeepSeek: appends dim ' · 1h ago' suffix (drops minutes)", () => {
+  it("DeepSeek: appends dim '⛓️‍💥 1h30m ago' suffix (maxUnitCount=2, keeps minutes)", () => {
     const result: FetchResult<Balance> = {
       kind: "stale",
       data: DEEP_DATA,
@@ -64,7 +65,9 @@ describe("buildProviderLine — stale", () => {
     };
     const line = buildProviderLine("deepseek", result);
     assert.ok(line);
-    assert.ok(strip(line!).endsWith(" · 1h ago"));
+    // v0.2.11: maxUnitCount=2 default keeps internal non-zero units.
+    // 90 minutes = 1h30m, NOT "1h" (the old behavior).
+    assert.ok(strip(line!).endsWith("⛓️‍💥 1h30m ago"));
   });
 
   it("stale line still renders the actual cached data (not 'not available!')", () => {

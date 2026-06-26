@@ -53,10 +53,25 @@ const DEFAULT_CURRENCY: {
 };
 
 const DEFAULT_STALE = {
-  // Separator between the data line and the " · Xm ago" suffix.
+  // Separator between the data line and the " · Xm ago" suffix. (Legacy:
+  // the v0.2.11 design drops this — the broken-chain emoji IS the
+  // separator. Kept in DEFAULT_STALE in case a user re-introduces a
+  // custom separator.)
   separator: " · ",
   // Sub-minute ages round UP to this many minutes ("0m ago" looks broken).
   minMinutes: 1,
+  // Number of units to display in time countdowns (reset countdown AND
+  // stale suffix). Drops leading zero units first, then takes up to
+  // maxUnitCount from the start — including any internal/trailing zero
+  // units. Examples with default maxUnitCount=2:
+  //   1d2h3m4s → "1d2h"
+  //   2h3m4s   → "2h3m"
+  //   2h0m     → "2h0m"   (NOT "2h" — internal zeros preserved)
+  //   0d0h5m   → "5m"     (leading zeros dropped)
+  maxUnitCount: 2,
+  // Emoji pair for the "X ago" suffix. Healthy never appears in
+  // v0.2.11 — the broken emoji IS the indicator.
+  ageEmoji: { healthy: "🔗", broken: "⛓️‍💥" },
   // Smallest unit shown on the reset countdown.
   //   "m" (default): sub-minute shows as "<1m<arrow>" — the "<" prefix
   //                  signals "less than" so a window about to reset is
