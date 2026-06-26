@@ -26,7 +26,8 @@
   "stale": {
     "separator": " · ",
     "minMinutes": 1,
-    "resetArrow": "↻"
+    "resetArrowMore": "⏳",
+    "resetArrowLess": "⌛"
   },
   "bar": {
     "width": 8,
