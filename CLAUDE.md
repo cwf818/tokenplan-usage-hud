@@ -38,8 +38,9 @@ src/
   plugin.json         # plugin manifest (name, version, commands, homepage)
   marketplace.json    # single-plugin marketplace wiring
 commands/
-  install.md          # /tokenplan-usage-hud:install slash command (referenced by plugin.json)
-  uninstall.md        # /tokenplan-usage-hud:uninstall slash command (referenced by plugin.json)
+  install.md          # /tokenplan-usage-hud:install slash command (Pattern B2 — loader-executes-script via `!`-fenced block + ${CLAUDE_PLUGIN_ROOT}; scoped allowed-tools)
+  uninstall.md        # /tokenplan-usage-hud:uninstall slash command (Pattern B2)
+  clean.md            # /tokenplan-usage-hud:clean slash command (Pattern B2)
 scripts/
   wrapper.sh          # bash wrapper: TOKENPLAN_UPSTREAM_CMD → TOKENPLAN_UPSTREAM → us
   install.sh          # settings.json patcher (install/restore/dry-run; --uninstall is a thin shim)
@@ -64,6 +65,10 @@ Claude Code's `statusLine.command` spawns a child process that reads a session J
 4. Cache: `src/cache.ts` holds a single 60-second TTL entry. On fetch failure it returns the stale value so the statusline doesn't blank.
 5. Render: `src/render.ts` emits a single compact line `Usage: ▓░░░░░░░ 9% (4h47m🕔 5h) · ▓▓░░░░░░ 25% (2d8h🕔 7d)`. Layout: a single mode label prefix (`Usage:` or `Remain:`), then per-window `<bar> <coloredN%><RESET> (<countdown><glyph> <windowLabel>)` segments joined with ` · `. When the window has no reset time (DeepSeek, legacy), the segment renders as ` <windowLabel>` (no parens, no arrow). Sub-minute remaining renders as `<1m` by default (so a window about to reset is distinguishable from one with a full minute left) — set `stale.minUnit: "s"` to opt into second precision (`47s` instead). Default mode is **`used`** (line begins with `Usage:`); set `display: "remaining"` in `config.json` to switch. 5-band colors (256-color SGR): bright green / dark green / yellow / orange / red, applied to the displayed value at 0/20/40/60/80 boundaries. The colored chunk is always on the right side of the bar, sized by the displayed value. The reset arrow glyph comes from `stale.resetArrows` (default 12 clock-face emoji `🕛,🕚,🕙,…,🕐`), indexed by `remainingMs / resetDurationMs` so the array reads left-to-right as "few remaining → many remaining" (i.e. ascending by remaining-time ratio). Two glyphs (`["⏳","⌛"]`) reproduce the v0.2.1 hourglass pair; one glyph is static. Providers without start data (DeepSeek, legacy) fall back to index 0.
 6. Compose: `src/composition.ts` emits upstream (whatever `TOKENPLAN_UPSTREAM` contains — possibly multi-line, possibly ANSI-colored) on the leading lines and our line last. It strips only trailing whitespace, injects `\x1b[0m` if upstream ends with an unclosed SGR, and otherwise preserves upstream verbatim.
+
+### How `:install` / `:uninstall` / `:clean` run
+
+`commands/*.md` are **Pattern B2** slash commands (same shape as `claude-plugins-official/ralph-loop`): the body is a ` ```! ` fenced block that the loader executes directly with the framework-provided `CLAUDE_PLUGIN_ROOT` env var pointing at the installed cache dir, scoped via `allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/scripts/<name>.sh:*)`. Arguments typed after the slash command are appended via `$ARGUMENTS`. The LLM sees the script's stdout but does not need to act — this eliminates the "LLM received the prompt but chose to describe instead of executing" failure mode that affected the older Pattern A `commands/install.md` (v0.1.0–v0.2.6, where the markdown was a prose instruction to the LLM). For these three commands there is no LLM reasoning to do — `install.sh` / `uninstall.sh` / `clean.sh` are already idempotent, parameter-complete, and self-verifying.
 
 ### How `install.sh` patches `settings.json`
 
