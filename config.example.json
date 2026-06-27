@@ -48,5 +48,19 @@
       "m_window7d", "s_0", "m_countdown7d"
     ],
     "balance": ["m_label", "s_0", "m_balance"]
+  },
+  "providers": {
+    "minimax": {
+      "TYPE": "TOKEN_PLAN",
+      "BASE_URL_COMPARED_TO": "https://api.minimaxi.com/anthropic",
+      "COMPARE_METHOD": "EXACT",
+      "ENDPOINT": "https://www.minimaxi.com/v1/token_plan/remains"
+    },
+    "deepseek": {
+      "TYPE": "BALANCE",
+      "BASE_URL_COMPARED_TO": "https://api.deepseek.com/anthropic",
+      "COMPARE_METHOD": "EXACT",
+      "ENDPOINT": "https://api.deepseek.com/user/balance"
+    }
   }
 }

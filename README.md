@@ -150,11 +150,11 @@ The plugin picks a **provider** from `ANTHROPIC_BASE_URL` and renders exactly on
 
 | `ANTHROPIC_BASE_URL`                    | Line                     | API                                                  |
 | --------------------------------------- | ------------------------ | ---------------------------------------------------- |
-| `https://api.minimaxi.com/...`          | `Usage: …` / `Remain: …` | `GET https://www.minimaxi.com/v1/token_plan/remains` |
-| `https://api.deepseek.com/...`          | `Balance: …`             | `GET https://api.deepseek.com/user/balance`          |
+| `https://api.minimaxi.com/anthropic`    | `Usage: …` / `Remain: …` | `GET https://www.minimaxi.com/v1/token_plan/remains` |
+| `https://api.deepseek.com/anthropic`    | `Balance: …`             | `GET https://api.deepseek.com/user/balance`          |
 | anything else (vanilla Anthropic, etc.) | (hidden)                 | —                                                    |
 
-Both endpoints are called with `Authorization: Bearer $ANTHROPIC_AUTH_TOKEN` — the same token, no new env vars. The gates are strict prefix matches (case-insensitive), and `isDeepSeekBaseUrl` rejects suffix attacks like `https://api.deepseek.com.evil.example`. On vanilla Anthropic, OpenRouter, or any other provider, the line is hidden and any upstream output passes through unchanged.
+Both endpoints are called with `Authorization: Bearer $ANTHROPIC_AUTH_TOKEN` — the same token, no new env vars. The provider table lives in the [`providers`](#providers) config block; the defaults reproduce the v0.2.20 behavior (exact match against the `/anthropic` base URL). Other URL forms can be matched via `COMPARE_METHOD: "INCLUDE"` (substring) or `"STARTWITH"` (prefix with suffix-attack guard, so `https://api.deepseek.com.evil.example` is rejected). On vanilla Anthropic, OpenRouter, or any other provider the plugin doesn't recognize, the line is hidden and any upstream output passes through unchanged.
 
 ### MiniMax token-plan line
 
@@ -189,7 +189,7 @@ config schema for the full set of options.
 
 ### DeepSeek balance line
 
-When `ANTHROPIC_BASE_URL` starts with `https://api.deepseek.com`, the plugin fetches the user's account balance and renders:
+When `ANTHROPIC_BASE_URL` matches the configured `providers.deepseek` entry (default: exact match against `https://api.deepseek.com/anthropic`), the plugin fetches the user's account balance and renders:
 
 ```
 Balance: ￥110.00             # is_available=true, single CNY entry
@@ -365,6 +365,30 @@ A reference with every field is at [config.example.json](./config.example.json).
     ],
     "balance": ["m_label", "s_0", "m_balance"],
   },
+  "providers": {
+    // v0.2.21: declarative provider registry. The plugin picks a
+    // provider by matching ANTHROPIC_BASE_URL against each entry's
+    // BASE_URL_COMPARED_TO using the entry's COMPARE_METHOD. The
+    // first match wins; iteration order = insertion order. The TYPE
+    // field ("TOKEN_PLAN" | "BALANCE") is the dispatcher — it picks
+    // the fetcher, the lineTemplate key, and the fail-line label.
+    //
+    // Defaults reproduce the v0.2.20 hardcoded behavior bit-for-bit.
+    // Adding a new provider is a config-only change; partial overrides
+    // inherit missing fields from the default.
+    "minimax": {
+      "TYPE": "TOKEN_PLAN",
+      "BASE_URL_COMPARED_TO": "https://api.minimaxi.com/anthropic",
+      "COMPARE_METHOD": "EXACT",
+      "ENDPOINT": "https://www.minimaxi.com/v1/token_plan/remains",
+    },
+    "deepseek": {
+      "TYPE": "BALANCE",
+      "BASE_URL_COMPARED_TO": "https://api.deepseek.com/anthropic",
+      "COMPARE_METHOD": "EXACT",
+      "ENDPOINT": "https://api.deepseek.com/user/balance",
+    },
+  },
   // Plugin version is loaded automatically at startup from
   // .claude-plugin/plugin.json and surfaced via the m_version
   // module. No config field — just add "m_version" to your
@@ -375,6 +399,35 @@ A reference with every field is at [config.example.json](./config.example.json).
 Each `colors.*` value is either a **symbolic shortcut** (`brightGreen`, `darkGreen`, `yellow`, `orange`, `red`, `brightBlack`) or a **literal ANSI SGR string** matching `^\x1b\[[0-9;]*m$`. Strings containing newlines are rejected (statusline-injection guard).
 
 `thresholds.*` must be exactly 4 finite ascending numbers. `bar.width` must be in `[3, 64]`. Numeric fields must be finite and (where relevant) positive. `separators` entries must be single-line strings; an entry containing `\n` is dropped (the rest of the array is preserved). `lineTemplate.<key>` must be a non-empty array of strings.
+
+### Providers
+
+The `providers` block is a `Record<string, ProviderEntry>`. Each entry declares:
+
+- **`TYPE`** — `"TOKEN_PLAN"` (5h + 7d two-window line) or `"BALANCE"` (account-balance line). Drives the fetcher, the lineTemplate key, and the fail-line label.
+- **`BASE_URL_COMPARED_TO`** — the URL pattern to match `ANTHROPIC_BASE_URL` against.
+- **`COMPARE_METHOD`** — one of three modes, all case-insensitive:
+  - `"EXACT"` (default) — `baseUrl === pattern`. Safest; rejects URLs that aren't exactly the configured value.
+  - `"INCLUDE"` — `baseUrl.includes(pattern)`. Fuzzy host match; useful when `ANTHROPIC_BASE_URL` adds a path you don't care about.
+  - `"STARTWITH"` — `baseUrl.startsWith(pattern)` with a suffix-attack guard: the character right after the prefix must be `undefined`, `/`, `?`, or `#`. This rejects `https://api.deepseek.com.evil.example` even though it `startsWith("https://api.deepseek.com")`. The `deepseek` matcher in earlier versions used this scheme; the v0.2.21 default is `EXACT` (a stricter choice), so users who relied on the old prefix behavior should set `COMPARE_METHOD: "STARTWITH"`.
+- **`ENDPOINT`** — the provider's API URL. Must start with `http://` or `https://`.
+
+A user can override any subset of fields on a known provider; missing fields inherit from the default. To add a new provider, append a new key:
+
+```jsonc
+{
+  "providers": {
+    "moonshot": {
+      "TYPE": "BALANCE",
+      "BASE_URL_COMPARED_TO": "https://api.moonshot.cn/anthropic",
+      "COMPARE_METHOD": "EXACT",
+      "ENDPOINT": "https://api.moonshot.cn/v1/users/me/balance",
+    },
+  },
+}
+```
+
+The cache key for a provider's response is its name (so two TOKEN_PLAN providers get separate cache slots). The matcher's iteration order = insertion order of the `providers` object — the first matching entry wins on a tie.
 
 ### Module tokens
 
@@ -507,7 +560,7 @@ The Claude Code statusline is updated in response to interaction events by defau
 
   This plugin follows the **minimum-change principle**: it does not write `refreshInterval` into `settings.json`. Set it yourself if you want a non-default cadence.
 
-DeepSeek balance uses a separate cache key (`"balance"`) so the two providers don't invalidate each other.
+DeepSeek balance uses a separate cache key (`"balance"`) so the two providers don't invalidate each other. (v0.2.21: the cache key is actually the provider's name in the `providers` map — `"minimax"` / `"deepseek"` by default. Adding a third provider gets its own slot automatically.)
 
 ### Failure handling
 
@@ -612,11 +665,12 @@ If the loader still says "EPERM" after `dev:uninstall`, the most common cause is
 ```
 src/
   index.ts            # entry — stdin drain, provider dispatch, cache, render, compose
-  types.ts            # Provider union: 'minimax' | 'deepseek' | null
+  types.ts            # Provider = string | null; ProviderType / CompareMethod / ProviderEntry
+  providers.ts        # URL matching, fetcher / template / fail-label dispatch (v0.2.21)
   api.ts              # MiniMax fetch + tolerant parser for /v1/token_plan/remains
-  api.deepseek.ts     # DeepSeek fetch + parser for /user/balance + URL gate
+  api.deepseek.ts     # DeepSeek fetch + parser for /user/balance
   render.ts           # pure: pctBar + ANSI color thresholds + formatLine + formatBalanceLine
-  cache.ts            # 60s TTL + stale-on-error
+  cache.ts            # 60s TTL + stale-on-error; getWithAge returns cache age on within-TTL hit
   composition.ts      # reads TOKENPLAN_UPSTREAM, prepends (preserving ANSI/multi-line) and appends line
   __fixtures__/       # remains.real.json, balance.real.json, balance.multi.json, …
   *.test.ts           # node:test unit tests
