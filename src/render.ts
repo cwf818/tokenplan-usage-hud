@@ -15,6 +15,7 @@
 // `renderProviderLine` directly.
 
 import { configStore } from "./config.ts";
+import { templateKeyForProvider } from "./providers.ts";
 
 export type Window = {
   // Percentage USED in [0, 100]. May be fractional; we'll round.
@@ -658,7 +659,7 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
 // broken-chain indicator, regardless of what the user put in their
 // lineTemplate.
 export function renderProviderLine(
-  provider: "minimax" | "deepseek",
+  provider: import("./types.ts").Provider,
   ctx: Omit<RenderContext, "fiveHour" | "weekly" | "balance"> & {
     fiveHour?: Window | null;
     weekly?: Window | null;
@@ -675,8 +676,12 @@ export function renderProviderLine(
     stale: ctx.stale,
     version: ctx.version,
   };
-  const template =
-    provider === "minimax" ? cfg().lineTemplate.plan : cfg().lineTemplate.balance;
+  // v0.2.21: template picked by provider TYPE via providers.ts, not
+  // by provider-name literal. Same outward behavior — defaults put
+  // TOKEN_PLAN at "plan" and BALANCE at "balance" — but the
+  // indirection lets a third provider slot in without code changes.
+  const templateKey = templateKeyForProvider(provider);
+  const template = cfg().lineTemplate[templateKey];
   const base = renderTemplate(template, fullCtx);
   // Forced visibility for the age annotation: append whenever
   // ageMs > 0 AND the template didn't already emit it. This matches

@@ -507,3 +507,234 @@ describe("configStore.setVersion (v0.2.17)", () => {
     assert.equal(configStore.get().version, "");
   });
 });
+
+// ----- providers (v0.2.21) -----
+//
+// The providers block is a Record<string, ProviderEntry>. The defaults
+// reproduce v0.2.20's hardcoded behavior; user config deep-merges on
+// top. A partial user entry inherits the missing fields from the
+// default; an invalid field on an otherwise-OK entry drops the whole
+// entry (no partial-apply — a half-configured provider could fetch
+// from the wrong endpoint).
+describe("loadConfig — providers (defaults)", () => {
+  it("reproduces the v0.2.20 hardcoded values", () => {
+    const cfg = __testing.DEFAULT_CONFIG;
+    assert.equal(cfg.providers.minimax.TYPE, "TOKEN_PLAN");
+    assert.equal(cfg.providers.minimax.BASE_URL_COMPARED_TO,
+      "https://api.minimaxi.com/anthropic");
+    assert.equal(cfg.providers.minimax.COMPARE_METHOD, "EXACT");
+    assert.equal(cfg.providers.minimax.ENDPOINT,
+      "https://www.minimaxi.com/v1/token_plan/remains");
+    assert.equal(cfg.providers.deepseek.TYPE, "BALANCE");
+    assert.equal(cfg.providers.deepseek.BASE_URL_COMPARED_TO,
+      "https://api.deepseek.com/anthropic");
+    assert.equal(cfg.providers.deepseek.COMPARE_METHOD, "EXACT");
+    assert.equal(cfg.providers.deepseek.ENDPOINT,
+      "https://api.deepseek.com/user/balance");
+  });
+
+  it("is included in the merged config when the user has no providers key", async () => {
+    writeFileSync(
+      join(tmpDir, "config.json"),
+      JSON.stringify({ cacheTtlMs: 30_000 }),
+    );
+    const cfg = await loadConfig();
+    assert.deepEqual(cfg.providers, __testing.DEFAULT_CONFIG.providers);
+    assert.equal(capturedStderr, "");
+  });
+});
+
+describe("loadConfig — providers (full override)", () => {
+  it("replaces a provider's fields when the user provides the full entry", async () => {
+    writeFileSync(
+      join(tmpDir, "config.json"),
+      JSON.stringify({
+        providers: {
+          minimax: {
+            TYPE: "TOKEN_PLAN",
+            BASE_URL_COMPARED_TO: "https://staging.minimaxi.com/anthropic",
+            COMPARE_METHOD: "INCLUDE",
+            ENDPOINT: "https://staging.minimaxi.com/v1/token_plan/remains",
+          },
+        },
+      }),
+    );
+    const cfg = await loadConfig();
+    assert.equal(cfg.providers.minimax.BASE_URL_COMPARED_TO,
+      "https://staging.minimaxi.com/anthropic");
+    assert.equal(cfg.providers.minimax.COMPARE_METHOD, "INCLUDE");
+    // deepseek entry stays at its default (deep-merge, not replace).
+    assert.equal(cfg.providers.deepseek.BASE_URL_COMPARED_TO,
+      "https://api.deepseek.com/anthropic");
+  });
+});
+
+describe("loadConfig — providers (partial override)", () => {
+  it("fills missing fields from the default when the user provides only one", async () => {
+    // The user just wants to swap the ENDPOINT — they shouldn't have
+    // to restate TYPE / BASE_URL_COMPARED_TO / COMPARE_METHOD.
+    writeFileSync(
+      join(tmpDir, "config.json"),
+      JSON.stringify({
+        providers: {
+          minimax: {
+            ENDPOINT: "https://internal.proxy.example/token_plan/remains",
+          },
+        },
+      }),
+    );
+    const cfg = await loadConfig();
+    assert.equal(cfg.providers.minimax.TYPE, "TOKEN_PLAN");
+    assert.equal(cfg.providers.minimax.BASE_URL_COMPARED_TO,
+      "https://api.minimaxi.com/anthropic");
+    assert.equal(cfg.providers.minimax.COMPARE_METHOD, "EXACT");
+    assert.equal(cfg.providers.minimax.ENDPOINT,
+      "https://internal.proxy.example/token_plan/remains");
+    // No stderr noise — partial override is the documented happy path.
+    assert.equal(capturedStderr, "");
+  });
+
+  it("merges each provided field independently (e.g. just COMPARE_METHOD)", async () => {
+    writeFileSync(
+      join(tmpDir, "config.json"),
+      JSON.stringify({
+        providers: {
+          deepseek: { COMPARE_METHOD: "STARTWITH" },
+        },
+      }),
+    );
+    const cfg = await loadConfig();
+    assert.equal(cfg.providers.deepseek.COMPARE_METHOD, "STARTWITH");
+    assert.equal(cfg.providers.deepseek.TYPE, "BALANCE");
+    assert.equal(cfg.providers.deepseek.ENDPOINT,
+      "https://api.deepseek.com/user/balance");
+    assert.equal(capturedStderr, "");
+  });
+});
+
+describe("loadConfig — providers (new key)", () => {
+  it("appends a user-defined provider not in DEFAULT_PROVIDERS", async () => {
+    writeFileSync(
+      join(tmpDir, "config.json"),
+      JSON.stringify({
+        providers: {
+          moonshot: {
+            TYPE: "BALANCE",
+            BASE_URL_COMPARED_TO: "https://api.moonshot.cn/anthropic",
+            COMPARE_METHOD: "EXACT",
+            ENDPOINT: "https://api.moonshot.cn/v1/users/me/balance",
+          },
+        },
+      }),
+    );
+    const cfg = await loadConfig();
+    assert.ok(cfg.providers.moonshot);
+    assert.equal(cfg.providers.moonshot.ENDPOINT,
+      "https://api.moonshot.cn/v1/users/me/balance");
+    // Existing defaults still present.
+    assert.ok(cfg.providers.minimax);
+    assert.ok(cfg.providers.deepseek);
+    assert.equal(capturedStderr, "");
+  });
+});
+
+describe("loadConfig — providers (validation)", () => {
+  it("drops an entry with an invalid TYPE and warns", async () => {
+    writeFileSync(
+      join(tmpDir, "config.json"),
+      JSON.stringify({
+        providers: {
+          minimax: { TYPE: "WHATEVER", BASE_URL_COMPARED_TO: "x",
+            COMPARE_METHOD: "EXACT", ENDPOINT: "https://x.example/foo" },
+        },
+      }),
+    );
+    const cfg = await loadConfig();
+    // The malformed minimax entry is dropped; deepseek is preserved.
+    assert.equal(cfg.providers.minimax, undefined);
+    assert.ok(cfg.providers.deepseek);
+    assert.match(capturedStderr, /provider TYPE/);
+  });
+
+  it("drops an entry with an empty BASE_URL_COMPARED_TO and warns", async () => {
+    writeFileSync(
+      join(tmpDir, "config.json"),
+      JSON.stringify({
+        providers: {
+          minimax: { TYPE: "TOKEN_PLAN", BASE_URL_COMPARED_TO: "",
+            COMPARE_METHOD: "EXACT", ENDPOINT: "https://x.example/foo" },
+        },
+      }),
+    );
+    const cfg = await loadConfig();
+    assert.equal(cfg.providers.minimax, undefined);
+    assert.match(capturedStderr, /BASE_URL_COMPARED_TO/);
+  });
+
+  it("drops an entry with an out-of-enum COMPARE_METHOD and warns", async () => {
+    writeFileSync(
+      join(tmpDir, "config.json"),
+      JSON.stringify({
+        providers: {
+          minimax: { TYPE: "TOKEN_PLAN", BASE_URL_COMPARED_TO: "x",
+            COMPARE_METHOD: "REGEX", ENDPOINT: "https://x.example/foo" },
+        },
+      }),
+    );
+    const cfg = await loadConfig();
+    assert.equal(cfg.providers.minimax, undefined);
+    assert.match(capturedStderr, /COMPARE_METHOD/);
+  });
+
+  it("drops an entry with a non-http(s) ENDPOINT and warns", async () => {
+    writeFileSync(
+      join(tmpDir, "config.json"),
+      JSON.stringify({
+        providers: {
+          minimax: { TYPE: "TOKEN_PLAN", BASE_URL_COMPARED_TO: "x",
+            COMPARE_METHOD: "EXACT", ENDPOINT: "file:///etc/passwd" },
+        },
+      }),
+    );
+    const cfg = await loadConfig();
+    assert.equal(cfg.providers.minimax, undefined);
+    assert.match(capturedStderr, /ENDPOINT/);
+  });
+
+  it("drops a non-object provider entry and warns", async () => {
+    writeFileSync(
+      join(tmpDir, "config.json"),
+      JSON.stringify({ providers: { minimax: "not-an-object" } }),
+    );
+    const cfg = await loadConfig();
+    assert.equal(cfg.providers.minimax, undefined);
+    assert.match(capturedStderr, /provider entry must be an object/);
+  });
+
+  it("falls back to all defaults when the providers block is not an object", async () => {
+    writeFileSync(
+      join(tmpDir, "config.json"),
+      JSON.stringify({ providers: "nope" }),
+    );
+    const cfg = await loadConfig();
+    assert.deepEqual(cfg.providers, __testing.DEFAULT_CONFIG.providers);
+    assert.match(capturedStderr, /providers must be an object/);
+  });
+
+  it("isolates a bad entry: deepseek stays valid even if minimax is malformed", async () => {
+    writeFileSync(
+      join(tmpDir, "config.json"),
+      JSON.stringify({
+        providers: {
+          minimax: { TYPE: "BOGUS", BASE_URL_COMPARED_TO: "x",
+            COMPARE_METHOD: "EXACT", ENDPOINT: "https://x.example/foo" },
+          // deepseek: untouched → defaults apply.
+        },
+      }),
+    );
+    const cfg = await loadConfig();
+    assert.equal(cfg.providers.minimax, undefined);
+    assert.deepEqual(cfg.providers.deepseek,
+      __testing.DEFAULT_CONFIG.providers.deepseek);
+  });
+});

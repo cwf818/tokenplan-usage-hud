@@ -1,38 +1,36 @@
 // Entry point. Runs as the Claude Code statusline child process:
 //   - Reads the session JSON from stdin (we don't use it; we drain it so the
 //     child doesn't block on the parent).
-//   - Gates on ANTHROPIC_BASE_URL: only when pointing at a supported
-//     provider (MiniMax or DeepSeek) does it fetch and render a line.
-//     Otherwise the line is hidden and upstream output passes through.
+//   - Gates on ANTHROPIC_BASE_URL via the providers config block
+//     (src/providers.ts): only when pointing at a configured provider
+//     does it fetch and render a line. Otherwise the line is hidden and
+//     upstream output passes through.
 //   - Composes with upstream claude-hud output (passed via TOKENPLAN_UPSTREAM
 //     by the bash wrapper in scripts/wrapper.sh).
 //   - Loads ~/.claude/plugins/tokenplan-usage-hud/config.json once at
 //     startup; every tunable (cache TTL, fetch timeout, colors, display
 //     mode, …) reads from there via the configStore singleton.
+//
+// v0.2.21: provider dispatch is data-driven via the providers config
+// block. The hardcoded `getRemainsData` / `getBalanceData` split is
+// replaced by a single `fetchProviderData(provider, …)` that picks
+// the right fetcher based on the matched provider's `TYPE`.
 
 import * as cache from "./cache.ts";
-import { fetchRemains, isMiniMaxBaseUrl, type Remains } from "./api.ts";
-import { fetchBalance, isDeepSeekBaseUrl, type Balance } from "./api.deepseek.ts";
+import { type Remains } from "./api.ts";
+import { type Balance } from "./api.deepseek.ts";
 import type { Provider } from "./types.ts";
 import { compose } from "./composition.ts";
 import { type FetchResult, buildProviderLine } from "./dispatch.ts";
 import { configStore, loadConfig } from "./config.ts";
+import { fetchForProvider, getProviderEntry, matchProvider } from "./providers.ts";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const CACHE_KEY_REMAINS = "remains";
-const CACHE_KEY_BALANCE = "balance";
-
 // Read the upstream statusline output once at startup so the main flow and the
 // crash handler can't drift apart on env-var reads.
 const UPSTREAM = process.env.TOKENPLAN_UPSTREAM;
-
-function resolveProvider(baseUrl: string | undefined | null): Provider {
-  if (isMiniMaxBaseUrl(baseUrl)) return "minimax";
-  if (isDeepSeekBaseUrl(baseUrl)) return "deepseek";
-  return null;
-}
 
 async function readStdin(): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -47,13 +45,17 @@ async function readStdin(): Promise<string> {
 }
 
 // Three outcomes the provider data layer can report:
-//   fresh — we just successfully fetched the data
-//   stale — fetch failed but a cached value exists; `ageMs` is how old it is
+//   fresh — we successfully obtained the data (from network or from a
+//           within-TTL cache hit); `ageMs` is the time since the entry
+//           was cached. The renderer short-circuits when ageMs <= 0, so
+//           a brand-new fetch (ageMs ≈ 0) suppresses the X-ago suffix
+//           entirely. A within-TTL cache hit (e.g. ageMs = 30_000) is
+//           semantically fresh but still carries an age that the
+//           lineTemplate's m_age module may surface.
+//   stale — fetch failed but a cached value exists; `ageMs` is how long
+//           it's been since the last successful fetch (from cache.Entry.at).
+//           `stale=true` flips the suffix emoji from 🔗 to ⛓️‍💥.
 //   fail  — fetch failed AND no cached value; caller renders "not available!"
-//
-// The renderer uses the distinction to decide whether to append the dim
-// " · Xm ago" annotation (stale only) or to render a hard-fail placeholder
-// (fail only). Fresh renders are unchanged.
 //
 // FetchResult and buildProviderLine live in src/dispatch.ts so tests can
 // import them without dragging in index.ts's stdin side effects.
@@ -68,57 +70,71 @@ async function readStdin(): Promise<string> {
 // user sees a meaningful value on every successful tick without any
 // disk state.
 
-async function getRemainsData(token: string): Promise<FetchResult<Remains>> {
+// v0.2.21: the cache key is now the provider NAME (was a constant
+// string per TYPE in v0.2.20). Two TOKEN_PLAN providers would share
+// a key today — that's fine since they have identical data shapes,
+// but if a future provider of the same TYPE returns a different
+// shape, this becomes a real distinction to make.
+//
+// The data generic is `unknown` because the dispatcher narrows
+// based on entry.TYPE. We do a runtime check below to pick the right
+// `getWithAge<T>` overload.
+async function fetchProviderData(
+  provider: Provider,
+  token: string,
+): Promise<FetchResult<unknown>> {
+  const entry = getProviderEntry(provider);
+  if (!entry) return { kind: "fail" };
+  // We've verified the provider has a registered entry above, so the
+  // `null` case in `Provider = string | null` is impossible. The
+  // non-null assertion is localized to this function — callers can
+  // still pass null safely because we early-return.
+  const cacheKey = provider!;
   const ttlMs = configStore.get().cacheTtlMs;
-  // Within-TTL cache hit: the data is fresh BY DEFINITION (age < ttlMs),
-  // but the age itself is still useful information — it tells the user
-  // how stale "fresh" really is. Surface it on the FetchResult so a
-  // downstream consumer (e.g. a custom lineTemplate with m_age) can
-  // render "🔗 30s ago" on a within-TTL cache hit. The default
-  // templates don't put m_age between data modules, so the visible
-  // output stays byte-identical to v0.2.16 on a brand-new fetch
-  // (ageMs ≈ 0 → m_age returns null → no suffix).
-  const cached = cache.getWithAge<Remains>(CACHE_KEY_REMAINS, ttlMs);
-  if (cached) return { kind: "fresh", data: cached.value, ageMs: cached.ageMs };
+  const timeoutMs = configStore.get().fetchTimeoutMs;
+
+  // cache.getWithAge is generic on the data shape. We dispatch on
+  // TYPE for the concrete type; unknown is the cross-type union.
+  // (noinspection is needed because TS can't narrow `unknown` to
+  // Remains/Balance purely from entry.TYPE.)
+  const readCache = <T>(): { value: T; ageMs: number } | null => {
+    const hit = cache.getWithAge<T>(cacheKey, ttlMs);
+    return hit ? { value: hit.value, ageMs: hit.ageMs } : null;
+  };
+
+  const peekCache = <T>(): { value: T; ageMs: number } | null => {
+    const hit = cache.peekWithAge<T>(cacheKey);
+    return hit ? { value: hit.value, ageMs: hit.ageMs } : null;
+  };
+
+  if (entry.TYPE === "TOKEN_PLAN") {
+    const cached = readCache<Remains>();
+    if (cached) return { kind: "fresh", data: cached.value, ageMs: cached.ageMs };
+  } else if (entry.TYPE === "BALANCE") {
+    const cached = readCache<Balance>();
+    if (cached) return { kind: "fresh", data: cached.value, ageMs: cached.ageMs };
+  }
 
   try {
-    const data = await fetchRemains(token, AbortSignal.timeout(configStore.get().fetchTimeoutMs));
+    const data = await fetchForProvider(
+      provider,
+      token,
+      AbortSignal.timeout(timeoutMs),
+    );
     if (data) {
-      cache.set(CACHE_KEY_REMAINS, data);
+      cache.set(cacheKey, data);
       // ageMs=0 on a brand-new fetch — the renderer's m_age module
       // short-circuits on ageMs <= 0, so the suffix is suppressed.
       return { kind: "fresh", data, ageMs: 0 };
     }
-    // Fetcher returned null (e.g. base_resp.status_code != 0). Treat as a
-    // hard fail, but still try the stale cache.
-    const stale = cache.peekWithAge<Remains>(CACHE_KEY_REMAINS);
+    // Fetcher returned null (e.g. base_resp.status_code != 0). Treat
+    // as a hard fail, but still try the stale cache.
+    const stale = entry.TYPE === "TOKEN_PLAN" ? peekCache<Remains>() : peekCache<Balance>();
     if (stale) return { kind: "stale", data: stale.value, ageMs: stale.ageMs };
     return { kind: "fail" };
   } catch {
     // Network / HTTP error. Stale-on-error: keep showing the last good value.
-    const stale = cache.peekWithAge<Remains>(CACHE_KEY_REMAINS);
-    if (stale) return { kind: "stale", data: stale.value, ageMs: stale.ageMs };
-    return { kind: "fail" };
-  }
-}
-
-async function getBalanceData(token: string): Promise<FetchResult<Balance>> {
-  const ttlMs = configStore.get().cacheTtlMs;
-  // Same age-threading rationale as getRemainsData above.
-  const cached = cache.getWithAge<Balance>(CACHE_KEY_BALANCE, ttlMs);
-  if (cached) return { kind: "fresh", data: cached.value, ageMs: cached.ageMs };
-
-  try {
-    const data = await fetchBalance(token, AbortSignal.timeout(configStore.get().fetchTimeoutMs));
-    if (data) {
-      cache.set(CACHE_KEY_BALANCE, data);
-      return { kind: "fresh", data, ageMs: 0 };
-    }
-    const stale = cache.peekWithAge<Balance>(CACHE_KEY_BALANCE);
-    if (stale) return { kind: "stale", data: stale.value, ageMs: stale.ageMs };
-    return { kind: "fail" };
-  } catch {
-    const stale = cache.peekWithAge<Balance>(CACHE_KEY_BALANCE);
+    const stale = entry.TYPE === "TOKEN_PLAN" ? peekCache<Remains>() : peekCache<Balance>();
     if (stale) return { kind: "stale", data: stale.value, ageMs: stale.ageMs };
     return { kind: "fail" };
   }
@@ -131,7 +147,7 @@ async function main(): Promise<void> {
 
   const baseUrl = process.env.ANTHROPIC_BASE_URL;
   const upstream = UPSTREAM;
-  const provider = resolveProvider(baseUrl);
+  const provider = matchProvider(baseUrl);
 
   if (provider === null) {
     process.stdout.write(compose(upstream, null));
@@ -144,14 +160,8 @@ async function main(): Promise<void> {
     return;
   }
 
-  let line: string | null = null;
-  if (provider === "minimax") {
-    const result = await getRemainsData(token);
-    line = buildProviderLine("minimax", result);
-  } else if (provider === "deepseek") {
-    const result = await getBalanceData(token);
-    line = buildProviderLine("deepseek", result);
-  }
+  const result = await fetchProviderData(provider, token);
+  const line = buildProviderLine(provider, result);
 
   process.stdout.write(compose(upstream, line));
 }

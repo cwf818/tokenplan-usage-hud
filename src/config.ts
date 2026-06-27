@@ -14,6 +14,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import type { CompareMethod, ProviderEntry, ProviderType } from "./types.ts";
 
 // ----- Defaults — must match today's hardcoded values exactly -----
 
@@ -179,6 +180,39 @@ const DEFAULT_COUNTDOWN: Countdown = {
 };
 
 
+// v0.2.21: declarative provider list. Each entry is a self-contained
+// provider spec: how to recognize its base URL, how to talk to its API,
+// and how to dispatch the rendering. The defaults below reproduce the
+// v0.2.20 hardcoded behavior exactly — same base URLs, same endpoints.
+// Adding a new provider is a config-only change: drop a new entry into
+// `providers` and the dispatcher / fetcher / template picker all pick
+// it up automatically.
+const DEFAULT_PROVIDERS: Record<string, ProviderEntry> = {
+  minimax: {
+    TYPE: "TOKEN_PLAN",
+    BASE_URL_COMPARED_TO: "https://api.minimaxi.com/anthropic",
+    COMPARE_METHOD: "EXACT",
+    ENDPOINT: "https://www.minimaxi.com/v1/token_plan/remains",
+  },
+  deepseek: {
+    TYPE: "BALANCE",
+    BASE_URL_COMPARED_TO: "https://api.deepseek.com/anthropic",
+    COMPARE_METHOD: "EXACT",
+    ENDPOINT: "https://api.deepseek.com/user/balance",
+  },
+};
+
+const VALID_PROVIDER_TYPES: ReadonlySet<ProviderType> = new Set([
+  "TOKEN_PLAN",
+  "BALANCE",
+]);
+
+const VALID_COMPARE_METHODS: ReadonlySet<CompareMethod> = new Set([
+  "EXACT",
+  "INCLUDE",
+  "STARTWITH",
+]);
+
 const DEFAULT_CONFIG: {
   cacheTtlMs: number;
   fetchTimeoutMs: number;
@@ -197,6 +231,9 @@ const DEFAULT_CONFIG: {
   // .claude-plugin/plugin.json. The m_version display module reads
   // this field; tests inject values via __resetForTest.
   version: string;
+  // v0.2.21: declarative provider registry. See DEFAULT_PROVIDERS
+  // above and src/providers.ts for the matcher / dispatcher.
+  providers: Record<string, ProviderEntry>;
 } = {
   cacheTtlMs: 60_000,
   fetchTimeoutMs: 5_000,
@@ -215,6 +252,7 @@ const DEFAULT_CONFIG: {
   separators: DEFAULT_SEPARATORS,
   lineTemplate: DEFAULT_LINE_TEMPLATE,
   version: "",
+  providers: DEFAULT_PROVIDERS,
 };
 
 export type Config = typeof DEFAULT_CONFIG;
@@ -651,7 +689,106 @@ function mergeConfig(raw: Record<string, unknown>): Config {
     }
   }
 
+  // providers — Record<string, ProviderEntry>. User config is
+  // deep-merged on top of DEFAULT_PROVIDERS: existing keys have
+  // their fields overridden; new keys are appended. Per-entry
+  // validation drops malformed entries with a stderr warn rather
+  // than auto-filling (so a typo can't silently produce a half-
+  // configured provider that fetches from the wrong endpoint).
+  //
+  // The "missing `providers` key in user config" case falls back
+  // to DEFAULT_PROVIDERS via the deep-clone at the top of
+  // mergeConfig — so existing users without a `providers` block
+  // keep working unchanged.
+  if ("providers" in raw) {
+    const p = raw.providers;
+    if (!p || typeof p !== "object" || Array.isArray(p)) {
+      warn("providers must be an object; using default");
+    } else {
+      const pm = p as Record<string, unknown>;
+      const merged: Record<string, ProviderEntry> = {};
+      for (const [name, defaultEntry] of Object.entries(DEFAULT_PROVIDERS)) {
+        // Start with the default for known keys; user overrides
+        // fields on top below. A partial user entry (e.g. only
+        // `ENDPOINT`) inherits the other three fields from the
+        // default — so the user can change just one knob without
+        // restating the whole entry. A non-object user value (string,
+        // array, null) is a user error — drop the entry and warn.
+        let seed: Record<string, unknown> | null = null;
+        if (name in pm) {
+          if (pm[name] && typeof pm[name] === "object" && !Array.isArray(pm[name])) {
+            seed = { ...defaultEntry };
+            for (const [k, v] of Object.entries(pm[name] as Record<string, unknown>)) {
+              if (v !== undefined) seed[k] = v;
+            }
+          } else {
+            warn(`providers.${name} must be an object; dropping`);
+          }
+        } else {
+          // User did not mention this default key → keep it as-is.
+          seed = { ...defaultEntry };
+        }
+        if (seed) {
+          const validated = validateProviderEntry(seed);
+          if (validated) merged[name] = validated;
+        }
+      }
+      // Append any user-defined provider keys NOT in DEFAULT_PROVIDERS.
+      for (const [name, value] of Object.entries(pm)) {
+        if (name in merged) continue;
+        const entry = validateProviderEntry(value);
+        if (entry) merged[name] = entry;
+      }
+      out.providers = merged;
+    }
+  }
+
   return out;
+}
+
+// Validate one ProviderEntry. Returns the validated entry or null if
+// the entry is fatally malformed. The caller (`mergeConfig`) is
+// responsible for filling missing fields from the default entry
+// before calling this — we validate the merged result, not the raw
+// user input. A partial user entry (e.g. only `ENDPOINT`) thus
+// preserves the other three fields from the default; an invalid
+// `TYPE` on an otherwise-OK entry drops the whole thing.
+function validateProviderEntry(v: unknown): ProviderEntry | null {
+  if (!v || typeof v !== "object" || Array.isArray(v)) {
+    warn("provider entry must be an object; dropping");
+    return null;
+  }
+  const e = v as Record<string, unknown>;
+  // TYPE
+  const t = e.TYPE;
+  if (typeof t !== "string" || !VALID_PROVIDER_TYPES.has(t as ProviderType)) {
+    warn(`provider TYPE must be "TOKEN_PLAN" or "BALANCE" (got ${JSON.stringify(t)}); dropping`);
+    return null;
+  }
+  // BASE_URL_COMPARED_TO
+  const base = e.BASE_URL_COMPARED_TO;
+  if (typeof base !== "string" || base.length === 0) {
+    warn("provider BASE_URL_COMPARED_TO must be a non-empty string; dropping");
+    return null;
+  }
+  // COMPARE_METHOD
+  const cm = e.COMPARE_METHOD;
+  if (typeof cm !== "string" || !VALID_COMPARE_METHODS.has(cm as CompareMethod)) {
+    warn(`provider COMPARE_METHOD must be one of "EXACT", "INCLUDE", "STARTWITH" (got ${JSON.stringify(cm)}); dropping`);
+    return null;
+  }
+  // ENDPOINT — must be a string starting with http:// or https://.
+  const ep = e.ENDPOINT;
+  if (typeof ep !== "string" || !/^https?:\/\//.test(ep)) {
+    warn("provider ENDPOINT must be an http(s) URL; dropping");
+    return null;
+  }
+  return {
+    TYPE: t as ProviderType,
+    BASE_URL_COMPARED_TO: base,
+    COMPARE_METHOD: cm as CompareMethod,
+    ENDPOINT: ep,
+  };
 }
 
 // ----- Test-only -----
