@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import * as cache from "./cache.ts";
-const { clear, get, peek, peekWithAge, set } = cache;
+const { clear, get, getWithAge, peek, peekWithAge, set } = cache;
 
 describe("cache", () => {
   it("returns null on miss", () => {
@@ -72,5 +72,76 @@ describe("peekWithAge", () => {
     assert.ok(r);
     assert.equal(r!.value, "stale");
     assert.ok(r!.ageMs >= 10 * 60_000);
+  });
+});
+
+describe("getWithAge", () => {
+  it("returns null on miss", () => {
+    clear("g1");
+    assert.equal(getWithAge("g1", 60_000), null);
+  });
+
+  it("returns { value, ageMs } on within-TTL hit", () => {
+    clear("g2");
+    set("g2", { foo: 1 });
+    const r = getWithAge<{ foo: number }>("g2", 60_000);
+    assert.ok(r);
+    assert.deepEqual(r!.value, { foo: 1 });
+    // Just-set entry: ageMs is tiny (sub-second on a fast machine).
+    assert.ok(r!.ageMs >= 0, `expected ageMs >= 0, got ${r!.ageMs}`);
+    assert.ok(r!.ageMs < 1_000, `expected ageMs < 1000, got ${r!.ageMs}`);
+  });
+
+  it("returns { value, ageMs } reflecting actual cache age (not 0)", async () => {
+    // v0.2.20: getWithAge is what index.ts uses to surface the cache
+    // hit's age — the whole point of this helper is that the returned
+    // ageMs is the cache's true age, not zero. Without this property
+    // the fix to "thread ageMs on fresh cache hit" would be a no-op.
+    clear("g3");
+    set("g3", "hello");
+    // Backdate so the entry has a known age of 5s.
+    (cache as any).store.set("g3", { at: Date.now() - 5_000, value: "hello" });
+    const r = getWithAge<string>("g3", 60_000);
+    assert.ok(r);
+    assert.equal(r!.value, "hello");
+    assert.ok(r!.ageMs >= 5_000, `expected ageMs >= 5000, got ${r!.ageMs}`);
+    assert.ok(r!.ageMs < 6_000, `expected ageMs < 6000, got ${r!.ageMs}`);
+  });
+
+  it("returns null when entry is past TTL (age > ttlMs)", () => {
+    clear("g4");
+    set("g4", "old");
+    // Backdate past TTL: entry is 10s old, ttl is 1s.
+    (cache as any).store.set("g4", { at: Date.now() - 10_000, value: "old" });
+    assert.equal(getWithAge("g4", 1_000), null);
+  });
+
+  it("respects TTL boundary: age just over ttlMs returns null", () => {
+    clear("g5");
+    set("g5", "edge");
+    // Age comfortably past ttlMs — the comparison is strict `>`, but
+    // we use a generous margin to dodge wall-clock drift between the
+    // backdate call and the getWithAge call (mirrors the existing
+    // ttl-expired test's tolerance approach).
+    (cache as any).store.set("g5", {
+      at: Date.now() - 10_000,
+      value: "edge",
+    });
+    assert.equal(getWithAge("g5", 1_000), null);
+  });
+
+  it("matches get() on hit/miss semantics (within TTL only)", () => {
+    // getWithAge is the TTL-respecting sibling of peekWithAge. The
+    // hit/miss decisions should be identical to get(); the only
+    // difference is that getWithAge also returns the age.
+    clear("g6");
+    set("g6", "v");
+    assert.equal(get("g6", 60_000), "v");
+    assert.equal(getWithAge("g6", 60_000)?.value, "v");
+
+    // After backdating past TTL, both report a miss.
+    (cache as any).store.set("g6", { at: Date.now() - 10_000, value: "v" });
+    assert.equal(get("g6", 1_000), null);
+    assert.equal(getWithAge("g6", 1_000), null);
   });
 });
