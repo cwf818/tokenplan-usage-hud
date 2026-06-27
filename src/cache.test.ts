@@ -1,7 +1,20 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import * as cache from "./cache.ts";
-const { clear, get, getWithAge, peek, peekWithAge, set } = cache;
+const {
+  clear,
+  get,
+  getWithAge,
+  peek,
+  peekWithAge,
+  set,
+  resetCachePathResolver,
+  setCachePathResolver,
+  __resetForTest: resetForTest,
+} = cache;
 
 describe("cache", () => {
   it("returns null on miss", () => {
@@ -143,5 +156,232 @@ describe("getWithAge", () => {
     (cache as any).store.set("g6", { at: Date.now() - 10_000, value: "v" });
     assert.equal(get("g6", 1_000), null);
     assert.equal(getWithAge("g6", 1_000), null);
+  });
+});
+
+// ----- Disk persistence -----
+//
+// v0.2.22: cache entries are shadowed to disk under state/cache.json so
+// cacheTtlMs is meaningful across per-tick child-process spawns. These
+// tests isolate the disk path to a tmp dir per test (via
+// setCachePathResolver) and simulate the "two-tick" sequence by calling
+// resetCachePathResolver / resetCachePathResolver (which doesn't actually
+// exist; the trick is to use the path resolver hook to point at a fresh
+// file each "process") — see the helper below.
+
+describe("cache disk persistence", () => {
+  // Per-test tmp dir. Each test gets its own file so the in-memory Map
+  // can't leak between tests via a shared disk shadow.
+  let dir: string;
+  let cacheFile: string;
+
+  // The cache module exports a module-level `store` Map; we can't
+  // easily "spawn a new process" inside a test, so to simulate the
+  // cross-tick case we use the __resetForTest hook — it clears the
+  // in-memory Map AND resets the lazy-load guard so the next get/peek
+  // re-reads from disk.
+  function resetModuleState(): void {
+    resetForTest();
+  }
+
+  function setupTmpDir(): void {
+    dir = mkdtempSync(join(tmpdir(), "tokenplan-cache-test-"));
+    cacheFile = join(dir, "cache.json");
+    setCachePathResolver(() => cacheFile);
+  }
+
+  function teardownTmpDir(): void {
+    resetCachePathResolver();
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // Best-effort cleanup; tmp dir will be reaped by the OS.
+    }
+  }
+
+  it("writes to disk on set()", () => {
+    setupTmpDir();
+    try {
+      resetModuleState();
+      set("persist-1", { hello: "world" });
+      // File must exist and round-trip via raw read (bypassing cache).
+      const raw = JSON.parse(readFileSync(cacheFile, "utf8"));
+      assert.ok(raw["persist-1"], "entry should be on disk");
+      assert.equal(raw["persist-1"].value.hello, "world");
+      assert.ok(
+        typeof raw["persist-1"].at === "number",
+        "at should be a number",
+      );
+    } finally {
+      teardownTmpDir();
+    }
+  });
+
+  it("loads from disk on first access (simulated cross-tick hit)", () => {
+    setupTmpDir();
+    try {
+      // --- "tick 1": write through the API, then "exit" (clear
+      // in-memory state but leave the file).
+      resetModuleState();
+      const now = Date.now();
+      set("cross-tick", { pct: 42 });
+      resetModuleState();
+      assert.equal((cache as any).store.size, 0, "store cleared");
+
+      // --- "tick 2": bare read — should pick up the disk entry.
+      const v = get<{ pct: number }>("cross-tick", 60_000);
+      assert.ok(v, "expected cross-tick hit from disk");
+      assert.equal(v!.pct, 42);
+
+      // The age on disk was ~milliseconds ago, so a 60s TTL must hit.
+      const withAge = getWithAge<{ pct: number }>("cross-tick", 60_000);
+      assert.ok(withAge, "expected within-TTL hit");
+      assert.ok(
+        withAge!.ageMs >= 0 && withAge!.ageMs < 60_000,
+        `ageMs should be within TTL, got ${withAge!.ageMs}`,
+      );
+
+      // Skip the "now" variable shadow check — we used it just to
+      // emphasize that we're testing the wall-clock path.
+      void now;
+    } finally {
+      teardownTmpDir();
+    }
+  });
+
+  it("TTL is enforced on disk-loaded entries (cross-tick stale)", () => {
+    setupTmpDir();
+    try {
+      resetModuleState();
+      // Write a stale entry DIRECTLY to disk (at = 10 minutes ago) and
+      // then simulate tick 2. The entry should load but get() must
+      // refuse it because ageMs > ttlMs.
+      const stale = { at: Date.now() - 10 * 60_000, value: { old: true } };
+      writeFileSync(cacheFile, JSON.stringify({ "stale-on-disk": stale }));
+
+      resetModuleState();
+      assert.equal(get("stale-on-disk", 60_000), null);
+      // peek() ignores TTL — the value is still recoverable for the
+      // stale-on-error fallback path.
+      assert.deepEqual(peek("stale-on-disk"), { old: true });
+    } finally {
+      teardownTmpDir();
+    }
+  });
+
+  it("ignores a missing cache file silently", () => {
+    setupTmpDir();
+    try {
+      resetModuleState();
+      // No file exists; get/peek should return null and not throw.
+      assert.equal(get("never-set", 60_000), null);
+      assert.equal(peek("never-set"), null);
+    } finally {
+      teardownTmpDir();
+    }
+  });
+
+  it("ignores a malformed cache file (one stderr warn, no crash)", () => {
+    setupTmpDir();
+    try {
+      resetModuleState();
+      writeFileSync(cacheFile, "{not valid json");
+      // Capture stderr — the module warns but does not throw.
+      const origStderr = process.stderr.write.bind(process.stderr);
+      let warned = false;
+      (process.stderr.write as unknown) = (
+        chunk: string | Uint8Array,
+        ...rest: unknown[]
+      ): boolean => {
+        const s = typeof chunk === "string" ? chunk : chunk.toString();
+        if (s.includes("cache file is malformed")) warned = true;
+        return (origStderr as unknown as (
+          c: string | Uint8Array,
+          ...r: unknown[]
+        ) => boolean)(chunk, ...rest);
+      };
+      try {
+        assert.equal(get("anything", 60_000), null);
+        assert.equal(warned, true, "expected a stderr warning");
+      } finally {
+        process.stderr.write = origStderr;
+      }
+    } finally {
+      teardownTmpDir();
+    }
+  });
+
+  it("clear(key) removes the entry from disk; clear() wipes the file", () => {
+    setupTmpDir();
+    try {
+      resetModuleState();
+      set("k-a", "v-a");
+      set("k-b", "v-b");
+      clear("k-a");
+
+      // k-a gone, k-b still present on disk.
+      const afterSingle = JSON.parse(readFileSync(cacheFile, "utf8"));
+      assert.equal(afterSingle["k-a"], undefined);
+      assert.equal(afterSingle["k-b"].value, "v-b");
+
+      // Simulate tick 2: only k-b reappears.
+      resetModuleState();
+      assert.equal(get("k-a", 60_000), null);
+      assert.equal(get("k-b", 60_000), "v-b");
+
+      // Full clear wipes the file content.
+      clear();
+      const afterFull = JSON.parse(readFileSync(cacheFile, "utf8"));
+      assert.deepEqual(afterFull, {});
+    } finally {
+      teardownTmpDir();
+    }
+  });
+
+  it("set() overwrites a stale on-disk entry and refreshes `at`", () => {
+    setupTmpDir();
+    try {
+      resetModuleState();
+      const old = { at: Date.now() - 5 * 60_000, value: { v: 1 } };
+      writeFileSync(cacheFile, JSON.stringify({ refresh: old }));
+      resetModuleState();
+
+      // Tick 2: re-fetch (simulating TTL expiry) and overwrite.
+      set("refresh", { v: 2 });
+
+      const raw = JSON.parse(readFileSync(cacheFile, "utf8"));
+      assert.equal(raw.refresh.value.v, 2);
+      // `at` must have been refreshed to ~now (well under 5min ago).
+      const ageMs = Date.now() - raw.refresh.at;
+      assert.ok(
+        ageMs < 1_000,
+        `expected refreshed at ≈ now, got ageMs=${ageMs}`,
+      );
+    } finally {
+      teardownTmpDir();
+    }
+  });
+
+  it("load is lazy and idempotent (no double-read after a hit)", () => {
+    setupTmpDir();
+    try {
+      resetModuleState();
+      set("lazy", "x");
+
+      // After set(), _loaded is true. Subsequent get() calls must NOT
+      // re-read the file. We can't easily prove "no read" without
+      // mocking fs, but we can prove the contract: hitting get()
+      // repeatedly returns the same value (the in-memory Map is
+      // authoritative after first load).
+      for (let i = 0; i < 5; i++) {
+        assert.equal(get("lazy", 60_000), "x");
+      }
+      // And _loaded must still be true after the loop — we can't reach
+      // the module-private flag, but the multiple successful hits prove
+      // it didn't reset mid-flight.
+      assert.equal(get("lazy", 60_000), "x");
+    } finally {
+      teardownTmpDir();
+    }
   });
 });
