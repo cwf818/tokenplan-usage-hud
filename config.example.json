@@ -25,13 +25,16 @@
   },
   "stale": {
     "separator": " · ",
-    "minMinutes": 1,
-    "minUnit": "m",
+    "ageEmoji": { "healthy": "🔗", "broken": "⛓️‍💥" },
     "resetArrows": ["🕛", "🕚", "🕙", "🕘", "🕗", "🕖", "🕕", "🕔", "🕓", "🕒", "🕑", "🕐"]
   },
   "bar": {
     "width": 8,
     "filled": "▓",
     "empty": "░"
+  },
+  "timeFormat": {
+    "minUnit": "m",
+    "maxUnitCount": 2
   }
 }

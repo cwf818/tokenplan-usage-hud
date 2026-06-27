@@ -228,17 +228,19 @@ export function formatResetSuffix(
 }
 
 // Pure helper: format a non-negative number of milliseconds as a
-// `1d2h3m4s` style countdown, respecting `stale.minUnit` for the
-// sub-unit threshold and `stale.maxUnitCount` for the slice length.
+// `1d2h3m4s` style countdown, respecting `timeFormat.minUnit` for the
+// sub-unit threshold and `timeFormat.maxUnitCount` for the slice length.
+// Top-level config so the formatting is consistent across reset
+// countdowns and stale-age suffixes.
 // Clamped to a non-negative result — callers that need past-due
 // handling should special-case `remainingMs <= 0` themselves.
 export function formatRemainingMs(remainingMs: number): string {
   if (!Number.isFinite(remainingMs)) return "";
 
-  const minUnit = cfg().stale.minUnit;
+  const minUnit = cfg().timeFormat.minUnit;
   const maxUnitCount = Math.max(
     1,
-    Math.min(4, Math.floor(cfg().stale.maxUnitCount)),
+    Math.min(4, Math.floor(cfg().timeFormat.maxUnitCount)),
   );
 
   // Past-due: explicit "0m" / "0s" so the user sees a clear "this
@@ -320,14 +322,12 @@ function pickResetArrow(
 // Per the v0.2.11 design, the broken-chain emoji IS the indicator
 // (no leading "· " separator) — it visually announces the network
 // failure. The X time itself uses minutes as the smallest unit
-// (seconds never appear) and the same maxUnitCount rules as the
-// reset countdown: drop leading zeros, keep internal/trailing zeros
-// up to the configured count.
+// (seconds never appear) and the same `timeFormat.maxUnitCount` rules
+// as the reset countdown: drop leading zeros, keep internal/trailing
+// zeros up to the configured count.
 //
 // Sub-minute remainder rounds UP to 1m so we never see "0m ago",
 // which would look like the cache hasn't actually moved.
-// Compact "age of cached value" formatter for the stale-on-error annotation.
-// Returns e.g. "⛓️‍💥 5m ago" / "⛓️‍💥 1h30m ago" / "⛓️‍💥 1d5h ago",
 // already SGR-wrapped in STALE_COLOR and RESET-terminated. Returns ""
 // when ageMs is not positive.
 //

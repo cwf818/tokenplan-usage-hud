@@ -287,3 +287,60 @@ describe("configStore singleton", () => {
     assert.equal(configStore.get().cacheTtlMs, 60_000);
   });
 });
+
+describe("loadConfig — timeFormat (top-level)", () => {
+  it("defaults: minUnit='m', maxUnitCount=2", () => {
+    const cfg = __testing.DEFAULT_CONFIG;
+    assert.equal(cfg.timeFormat.minUnit, "m");
+    assert.equal(cfg.timeFormat.maxUnitCount, 2);
+  });
+
+  it("accepts minUnit='s' override", async () => {
+    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
+      timeFormat: { minUnit: "s" },
+    }));
+    const cfg = await loadConfig();
+    assert.equal(cfg.timeFormat.minUnit, "s");
+    // maxUnitCount keeps its default when only minUnit is overridden.
+    assert.equal(cfg.timeFormat.maxUnitCount, 2);
+  });
+
+  it("accepts maxUnitCount override", async () => {
+    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
+      timeFormat: { maxUnitCount: 4 },
+    }));
+    const cfg = await loadConfig();
+    assert.equal(cfg.timeFormat.maxUnitCount, 4);
+  });
+
+  it("clamps maxUnitCount to [1, 4]", async () => {
+    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
+      timeFormat: { maxUnitCount: 99 },
+    }));
+    let cfg = await loadConfig();
+    assert.equal(cfg.timeFormat.maxUnitCount, 4);
+    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
+      timeFormat: { maxUnitCount: 0 },
+    }));
+    cfg = await loadConfig();
+    assert.equal(cfg.timeFormat.maxUnitCount, 1);
+  });
+
+  it("rejects out-of-enum minUnit and warns", async () => {
+    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
+      timeFormat: { minUnit: "h" },
+    }));
+    const cfg = await loadConfig();
+    assert.equal(cfg.timeFormat.minUnit, "m");
+    assert.match(capturedStderr, /timeFormat\.minUnit/);
+  });
+
+  it("rejects non-numeric maxUnitCount and warns", async () => {
+    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
+      timeFormat: { maxUnitCount: "two" },
+    }));
+    const cfg = await loadConfig();
+    assert.equal(cfg.timeFormat.maxUnitCount, 2);
+    assert.match(capturedStderr, /timeFormat\.maxUnitCount/);
+  });
+});
