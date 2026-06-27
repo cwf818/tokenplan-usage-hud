@@ -63,6 +63,20 @@ const DEFAULT_COLORS = {
   stale: "\x1b[90m",
 };
 
+// v0.4.0+ — 3-band palette for the m_cacheHitRate module. Higher is
+// better: cache_read / (cache_read + cache_creation) ≥ 80% → green,
+// 50–80% → yellow, <50% → orange. Bands chosen to match the visual
+// vocabulary of the existing 5-band thresholds (green/yellow/orange)
+// so the cache-hit rate reads as "another health indicator" rather
+// than a separate dimension.
+const DEFAULT_CACHE_HIT_COLORS = {
+  good: "\x1b[38;5;41m", // bright green, ≥ 80%
+  warn: "\x1b[38;5;220m", // yellow, 50–80%
+  bad: "\x1b[38;5;208m", // orange, < 50%
+};
+
+const DEFAULT_CACHE_HIT_THRESHOLDS: [number, number] = [50, 80];
+
 const DEFAULT_THRESHOLDS: {
   minimaxPercent: [number, number, number, number];
   deepseekBalance: [number, number, number, number];
@@ -110,6 +124,26 @@ const DEFAULT_BAR = {
   width: 8,
   filled: "▓",
   empty: "░",
+};
+
+// v0.4.0+ — number-format knobs for the m_token* modules. Two layers:
+//   `thresholds` drives the human-compact notation (matches formatRemainingMs:
+//   below the smallest threshold → raw integer; otherwise k / M suffix).
+//   `precision` controls decimal places per tier (currently 1; tests can
+//   bump to 2 if a user wants more granularity).
+//   `speedPrecision` / `cachePctPrecision` independently tune t/s and %.
+//   `cacheHitThresholds` mirrors DEFAULT_CACHE_HIT_THRESHOLDS — exposed
+//   as a config field so a user who wants different bands can override
+//   without touching the colors block.
+const DEFAULT_TOKEN_FORMAT = {
+  // [<1k] → "342", [<1M] → "12.3k", [≥1M] → "1.2M". Aligns with the
+  // readable upper bound of typical session totals (rare to see > 1M
+  // tokens in a single Claude Code session, but possible over a 7d window).
+  thresholds: [1_000, 1_000_000] as [number, number],
+  precision: 1,
+  speedPrecision: 1,
+  cachePctPrecision: 1,
+  cacheHitThresholds: DEFAULT_CACHE_HIT_THRESHOLDS,
 };
 
 type DisplayMode = "used" | "remaining";
@@ -219,6 +253,7 @@ const DEFAULT_CONFIG: {
   display: DisplayMode;
   modeLabels: { used: string; remaining: string; balance: string };
   colors: typeof DEFAULT_COLORS;
+  cacheHitColors: typeof DEFAULT_CACHE_HIT_COLORS;
   thresholds: typeof DEFAULT_THRESHOLDS;
   currency: typeof DEFAULT_CURRENCY;
   stale: typeof DEFAULT_STALE;
@@ -227,6 +262,7 @@ const DEFAULT_CONFIG: {
   timeFormat: TimeFormat;
   separators: string[];
   lineTemplate: typeof DEFAULT_LINE_TEMPLATE;
+  tokenFormat: typeof DEFAULT_TOKEN_FORMAT;
   // Plugin version, populated at startup by index.ts from
   // .claude-plugin/plugin.json. The m_version display module reads
   // this field; tests inject values via __resetForTest.
@@ -243,6 +279,7 @@ const DEFAULT_CONFIG: {
   // to "Balance:" to preserve the v0.2.16 hardcoded literal.
   modeLabels: { used: "Usage:", remaining: "Remain:", balance: "Balance:" },
   colors: DEFAULT_COLORS,
+  cacheHitColors: DEFAULT_CACHE_HIT_COLORS,
   thresholds: DEFAULT_THRESHOLDS,
   currency: DEFAULT_CURRENCY,
   stale: DEFAULT_STALE,
@@ -251,6 +288,7 @@ const DEFAULT_CONFIG: {
   timeFormat: DEFAULT_TIME_FORMAT,
   separators: DEFAULT_SEPARATORS,
   lineTemplate: DEFAULT_LINE_TEMPLATE,
+  tokenFormat: DEFAULT_TOKEN_FORMAT,
   version: "",
   providers: DEFAULT_PROVIDERS,
 };
@@ -466,6 +504,29 @@ function mergeConfig(raw: Record<string, unknown>): Config {
     }
   }
 
+  // v0.4.0+ — cacheHitColors. Same per-field validator as `colors`
+  // (ANSI SGR or a known shortcut). Three bands: good / warn / bad.
+  if ("cacheHitColors" in raw) {
+    const c = raw.cacheHitColors;
+    if (c && typeof c === "object" && !Array.isArray(c)) {
+      const cm = c as Record<string, unknown>;
+      for (const key of ["good", "warn", "bad"] as const) {
+        if (key in cm) {
+          const norm = normalizeColor(cm[key]);
+          if (norm) {
+            out.cacheHitColors[key] = norm;
+          } else {
+            warn(
+              `cacheHitColors.${key} must be an ANSI SGR string or a known shortcut; using default`,
+            );
+          }
+        }
+      }
+    } else {
+      warn("cacheHitColors must be an object; using default");
+    }
+  }
+
   // thresholds
   if ("thresholds" in raw) {
     const t = raw.thresholds;
@@ -588,6 +649,65 @@ function mergeConfig(raw: Record<string, unknown>): Config {
       }
     } else {
       warn("timeFormat must be an object; using default");
+    }
+  }
+
+  // v0.4.0+ — tokenFormat (compact number formatting for m_token* modules).
+  // All sub-keys are optional; missing → keep default.
+  if ("tokenFormat" in raw) {
+    const tf = raw.tokenFormat;
+    if (tf && typeof tf === "object" && !Array.isArray(tf)) {
+      const t = tf as Record<string, unknown>;
+      if ("thresholds" in t) {
+        if (
+          Array.isArray(t.thresholds) &&
+          t.thresholds.length === 2 &&
+          t.thresholds.every(isFinitePositiveNumber)
+        ) {
+          const pair = t.thresholds as [number, number];
+          if (pair[0] < pair[1]) out.tokenFormat.thresholds = pair;
+          else
+            warn(
+              "tokenFormat.thresholds must be 2 ascending positive numbers; using default",
+            );
+        } else {
+          warn(
+            "tokenFormat.thresholds must be [lo, hi] of positive numbers; using default",
+          );
+        }
+      }
+      for (const k of [
+        "precision",
+        "speedPrecision",
+        "cachePctPrecision",
+      ] as const) {
+        if (k in t) {
+          if (isFiniteNumber(t[k]) && (t[k] as number) >= 0 && (t[k] as number) <= 4)
+            out.tokenFormat[k] = Math.floor(t[k] as number);
+          else
+            warn(`tokenFormat.${k} must be an integer in [0, 4]; using default`);
+        }
+      }
+      if ("cacheHitThresholds" in t) {
+        if (
+          Array.isArray(t.cacheHitThresholds) &&
+          t.cacheHitThresholds.length === 2 &&
+          t.cacheHitThresholds.every(isFiniteNumber)
+        ) {
+          const pair = t.cacheHitThresholds as [number, number];
+          if (pair[0] < pair[1]) out.tokenFormat.cacheHitThresholds = pair;
+          else
+            warn(
+              "tokenFormat.cacheHitThresholds must be 2 ascending numbers; using default",
+            );
+        } else {
+          warn(
+            "tokenFormat.cacheHitThresholds must be [lo, hi] numbers; using default",
+          );
+        }
+      }
+    } else {
+      warn("tokenFormat must be an object; using default");
     }
   }
 

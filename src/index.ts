@@ -19,11 +19,17 @@
 import * as cache from "./cache.ts";
 import { type Remains } from "./api.ts";
 import { type Balance } from "./api.deepseek.ts";
-import type { Provider } from "./types.ts";
+import type { Provider, TokenSample } from "./types.ts";
 import { compose } from "./composition.ts";
 import { type FetchResult, buildProviderLine } from "./dispatch.ts";
 import { configStore, loadConfig } from "./config.ts";
-import { fetchForProvider, getProviderEntry, matchProvider } from "./providers.ts";
+import {
+  fetchForProvider,
+  getProviderEntry,
+  matchProvider,
+} from "./providers.ts";
+import { appendSample } from "./token-store.ts";
+import { parseTokenSnapshot } from "./session-parse.ts";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -109,10 +115,12 @@ async function fetchProviderData(
 
   if (entry.TYPE === "TOKEN_PLAN") {
     const cached = readCache<Remains>();
-    if (cached) return { kind: "fresh", data: cached.value, ageMs: cached.ageMs };
+    if (cached)
+      return { kind: "fresh", data: cached.value, ageMs: cached.ageMs };
   } else if (entry.TYPE === "BALANCE") {
     const cached = readCache<Balance>();
-    if (cached) return { kind: "fresh", data: cached.value, ageMs: cached.ageMs };
+    if (cached)
+      return { kind: "fresh", data: cached.value, ageMs: cached.ageMs };
   }
 
   try {
@@ -129,21 +137,51 @@ async function fetchProviderData(
     }
     // Fetcher returned null (e.g. base_resp.status_code != 0). Treat
     // as a hard fail, but still try the stale cache.
-    const stale = entry.TYPE === "TOKEN_PLAN" ? peekCache<Remains>() : peekCache<Balance>();
+    const stale =
+      entry.TYPE === "TOKEN_PLAN" ? peekCache<Remains>() : peekCache<Balance>();
     if (stale) return { kind: "stale", data: stale.value, ageMs: stale.ageMs };
     return { kind: "fail" };
   } catch {
     // Network / HTTP error. Stale-on-error: keep showing the last good value.
-    const stale = entry.TYPE === "TOKEN_PLAN" ? peekCache<Remains>() : peekCache<Balance>();
+    const stale =
+      entry.TYPE === "TOKEN_PLAN" ? peekCache<Remains>() : peekCache<Balance>();
     if (stale) return { kind: "stale", data: stale.value, ageMs: stale.ageMs };
     return { kind: "fail" };
   }
 }
 
 async function main(): Promise<void> {
-  // Drain stdin — Claude Code pipes the session JSON. We don't need it for
-  // token-plan rendering, but we must consume it to avoid blocking.
-  await readStdin().catch(() => "");
+  // Drain stdin ONCE at the top. The raw string is fed to
+  // parseTokenSnapshot, which produces a TokenSnapshot for the
+  // m_token* renderer modules. A previous dev-only runProbe() helper
+  // used to also consume the raw for schema discovery; it was removed
+  // in v0.4.0 once the schema was confirmed.
+  const stdinRaw = await readStdin().catch(() => "");
+  const tokens = parseTokenSnapshot(stdinRaw);
+
+  // Persist one sample row per tick so m_token5h/m_token7d can read
+  // across-tick history. Only do this when the parsed snapshot has
+  // sessionId + cwd + in/out — otherwise we'd be writing empty rows
+  // that pollute the file. appendSample swallows disk errors.
+  if (
+    tokens &&
+    tokens.sessionId &&
+    tokens.cwd &&
+    tokens.totals.input != null &&
+    tokens.totals.output != null
+  ) {
+    const sample: TokenSample = {
+      at: Date.now(),
+      session: tokens.sessionId,
+      cwd: tokens.cwd,
+      in: tokens.totals.input,
+      out: tokens.totals.output,
+      ctx_in: tokens.current.input ?? 0,
+      ctx_creation: tokens.current.cacheCreation ?? 0,
+      ctx_read: tokens.current.cacheRead ?? 0,
+    };
+    appendSample(sample);
+  }
 
   const baseUrl = process.env.ANTHROPIC_BASE_URL;
   const upstream = UPSTREAM;
@@ -161,10 +199,14 @@ async function main(): Promise<void> {
   }
 
   const result = await fetchProviderData(provider, token);
-  const line = buildProviderLine(provider, result);
+  const line = buildProviderLine(provider, result, tokens);
 
   process.stdout.write(compose(upstream, line));
 }
+
+// parseTokenSnapshot lives in ./session-parse.ts so unit tests can
+// import it without dragging in index.ts's top-level main() side
+// effects (which would hang in node:test).
 
 // Handle unexpected throws by emitting upstream output (so claude-hud is
 // never blanked by our crash). Token is never logged.

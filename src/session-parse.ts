@@ -1,0 +1,61 @@
+// Parse the Claude Code session JSON piped to stdin into a
+// TokenSnapshot suitable for the m_token* renderer modules.
+//
+// Extracted from src/index.ts so unit tests can import it without
+// pulling in index.ts's top-level `await main()` and `loadConfig()`
+// side effects (which would hang in node:test). The behavior is
+// identical — same field paths, same null-coercion rules.
+//
+// Tolerates partial input: any field can be missing. The renderer
+// modules each independently null-check their piece.
+import type { TokenSnapshot } from "./types.ts";
+
+export function parseTokenSnapshot(raw: string): TokenSnapshot | null {
+  if (!raw || raw.length === 0) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return null;
+  }
+  const r = parsed as Record<string, unknown>;
+
+  const cw = r.context_window;
+  const cwObj =
+    cw && typeof cw === "object" ? (cw as Record<string, unknown>) : null;
+  const cu = cwObj?.current_usage;
+  const cuObj =
+    cu && typeof cu === "object" ? (cu as Record<string, unknown>) : null;
+
+  const cost = r.cost;
+  const costObj =
+    cost && typeof cost === "object"
+      ? (cost as Record<string, unknown>)
+      : null;
+
+  const numOrNull = (v: unknown): number | null =>
+    typeof v === "number" && Number.isFinite(v) ? v : null;
+  const strOrNull = (v: unknown): string | null =>
+    typeof v === "string" && v.length > 0 ? v : null;
+
+  return {
+    sessionId: strOrNull(r.session_id),
+    cwd: strOrNull(r.cwd),
+    totals: {
+      input: numOrNull(cwObj?.total_input_tokens),
+      output: numOrNull(cwObj?.total_output_tokens),
+    },
+    current: {
+      input: numOrNull(cuObj?.input_tokens),
+      output: numOrNull(cuObj?.output_tokens),
+      cacheCreation: numOrNull(cuObj?.cache_creation_input_tokens),
+      cacheRead: numOrNull(cuObj?.cache_read_input_tokens),
+    },
+    cost: {
+      totalDurationMs: numOrNull(costObj?.total_duration_ms),
+    },
+  };
+}
