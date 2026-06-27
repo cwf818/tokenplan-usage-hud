@@ -1,6 +1,6 @@
 {
   "name": "tokenplan-usage-hud",
-  "version": "0.2.11",
+  "version": "0.2.12",
   "description": "Provider-agnostic Claude Code statusline plugin for token-plan usage and account balance. Picks the provider from ANTHROPIC_BASE_URL (currently MiniMax + DeepSeek); hides itself otherwise. Renders a dim ' · Xm ago' annotation when displaying cached data after a fetch failure, or 'Usage:/Balance: not available!' when no cached data exists. Composes with another statusline via the TOKENPLAN_UPSTREAM_CMD env var.",
   "license": "MIT",
   "commands": [
