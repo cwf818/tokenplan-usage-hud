@@ -248,8 +248,9 @@ A reference with every field is at [config.example.json](./config.example.json).
   "display": "used", // "used" | "remaining"
   "modeLabels": {
     // line prefix per mode
-    "used": "Usage:",
-    "remaining": "Remain:",
+    "used": "Usage:",        // MiniMax plan line
+    "remaining": "Remain:",  // MiniMax plan line in remaining mode
+    "balance": "Balance:",   // DeepSeek balance line
   },
   "colors": {
     // 256-color ANSI palette
@@ -336,12 +337,65 @@ A reference with every field is at [config.example.json](./config.example.json).
       "🕐",
     ],
   },
+  "separators": [
+    // Separator strings referenced from `lineTemplate` as s_0, s_1, ….
+    // s_0 — between adjacent modules within a group (default: " ")
+    // s_1 — between the two window groups / between balance entries
+    //       (default: " · " — note the leading and trailing spaces
+    //       are part of the separator)
+    // Add more entries to reference them as s_2, s_3, … in your
+    // lineTemplate.
+    " ",
+    " · ",
+  ],
+  "lineTemplate": {
+    // Custom line layout. Each entry is either a display module
+    // ("m_<name>") or a separator reference ("s_<n>"). The renderer
+    // walks the array left-to-right and concatenates each module's
+    // output. See "Module tokens" below for the full list. Modules
+    // that return no content (e.g. a window with no data) cause
+    // their surrounding s_N tokens to disappear too, so a hidden
+    // window doesn't leave orphan separators in the output.
+    "plan": [
+      "m_label", "s_0",
+      "m_window5h", "s_0", "m_countdown5h",
+      "s_0", "s_1", "s_0",
+      "m_window7d", "s_0", "m_countdown7d",
+    ],
+    "balance": ["m_label", "s_0", "m_balance"],
+  },
+  // Plugin version is loaded automatically at startup from
+  // .claude-plugin/plugin.json and surfaced via the m_version
+  // module. No config field — just add "m_version" to your
+  // lineTemplate to render "v0.2.17"-style annotations.
 }
 ```
 
 Each `colors.*` value is either a **symbolic shortcut** (`brightGreen`, `darkGreen`, `yellow`, `orange`, `red`, `brightBlack`) or a **literal ANSI SGR string** matching `^\x1b\[[0-9;]*m$`. Strings containing newlines are rejected (statusline-injection guard).
 
-`thresholds.*` must be exactly 4 finite ascending numbers. `bar.width` must be in `[3, 64]`. Numeric fields must be finite and (where relevant) positive.
+`thresholds.*` must be exactly 4 finite ascending numbers. `bar.width` must be in `[3, 64]`. Numeric fields must be finite and (where relevant) positive. `separators` entries must be single-line strings; an entry containing `\n` is dropped (the rest of the array is preserved). `lineTemplate.<key>` must be a non-empty array of strings.
+
+### Module tokens
+
+The line layout is declared as an ordered list of tokens in `lineTemplate.plan` (MiniMax) and `lineTemplate.balance` (DeepSeek). Two token kinds:
+
+- **`m_<name>`** — a display module, rendered in order. Modules that have no content in the current context (e.g. `m_window7d` when the weekly data is missing) emit nothing, AND their immediately adjacent `s_N` tokens are skipped too — so a hidden window doesn't leave orphan separators in the output.
+- **`s_<n>`** — a separator reference, looked up in `separators[n]`. Out-of-range references expand to `""` and trigger a one-time stderr warning.
+
+Recognized modules:
+
+| Token              | Renders                                                          |
+| ------------------ | ---------------------------------------------------------------- |
+| `m_label`          | The leading prefix: `modeLabels.used` (plan) or `modeLabels.balance` (DeepSeek) |
+| `m_window5h`       | 5-hour bar + colored percentage (e.g. `▓▓▓░░░ 38%`)             |
+| `m_countdown5h`    | 5-hour reset suffix: `(2h3m🕛 5h)` when reset time known, or just `5h` otherwise |
+| `m_window7d`       | 7-day bar + colored percentage                                   |
+| `m_countdown7d`    | 7-day reset suffix: `(4d16h🕛 7d)` or just `7d`                  |
+| `m_balance`        | The DeepSeek balance chunk (e.g. `$25 · ￥110`), single SGR-wrapped block |
+| `m_age`            | The stale-age annotation: `⛓️‍💥 5m ago` (broken) or `🔗 5m ago` (healthy) |
+| `m_version`        | The plugin version: `v0.2.17` (auto-loaded from `.claude-plugin/plugin.json`) |
+
+**Forced visibility of `m_age`:** when the fetch result is **stale** (network failure with a cached value), the broken-chain age annotation is appended to the rendered line **unconditionally** — even if your `lineTemplate` doesn't list `m_age`. This preserves the invariant that a network failure is always visible, no matter what the user puts in their template. On `fresh` ticks, no annotation is shown. The `m_age` module itself only emits when `ageMs > 0`, so a user who *does* include `m_age` in their template gets exactly one annotation, not two.
 
 ### Recipes
 
@@ -367,6 +421,51 @@ Each `colors.*` value is either a **symbolic shortcut** (`brightGreen`, `darkGre
     "yellow": "\x1b[38;5;81m",
     "orange": "\x1b[38;5;75m",
     "red": "\x1b[38;5;69m"
+  }
+}
+```
+
+**Show only the 5-hour window** (drop the 7-day window):
+
+```json
+{
+  "lineTemplate": {
+    "plan": ["m_label", "s_0", "m_window5h", "s_0", "m_countdown5h"],
+    "balance": ["m_label", "s_0", "m_balance"]
+  }
+}
+```
+
+**Custom inter-window separator** (e.g. ` / ` instead of ` · `):
+
+```json
+{
+  "separators": [" ", " / "],
+  "lineTemplate": {
+    "plan": [
+      "m_label", "s_0",
+      "m_window5h", "s_0", "m_countdown5h",
+      "s_0", "s_1", "s_0",
+      "m_window7d", "s_0", "m_countdown7d"
+    ],
+    "balance": ["m_label", "s_0", "m_balance"]
+  }
+}
+```
+
+**Show the plugin version** at the end of the line:
+
+```json
+{
+  "lineTemplate": {
+    "plan": [
+      "m_label", "s_0",
+      "m_window5h", "s_0", "m_countdown5h",
+      "s_0", "s_1", "s_0",
+      "m_window7d", "s_0", "m_countdown7d",
+      "s_0", "m_version"
+    ],
+    "balance": ["m_label", "s_0", "m_balance", "s_0", "m_version"]
   }
 }
 ```

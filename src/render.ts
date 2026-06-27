@@ -5,6 +5,14 @@
 // prefixes, display-mode labels, stale annotation formatting) come
 // from the singleton in ./config.ts. The defaults in config.ts match
 // today's hardcoded values exactly.
+//
+// v0.2.17: the line layout is now driven by a `lineTemplate` config
+// field — an ordered list of display-module tokens (m_label,
+// m_window5h, m_countdown5h, m_window7d, m_countdown7d, m_balance,
+// m_age, m_version) and separator references (s_0, s_1, …).
+// `formatLine` and `formatBalanceLine` are preserved as compatibility
+// shims that expand the default templates; new code should call
+// `renderProviderLine` directly.
 
 import { configStore } from "./config.ts";
 
@@ -167,32 +175,51 @@ export function pctBar(usedPctValue: number, width = configStore.get().bar.width
   };
 }
 
-function formatOne(
-  windowLabel: string,
+// v0.2.17: factor of formatOne() — returns the bar + colored-percent
+// portion only (no reset countdown, no window label). The reset
+// annotation is rendered by the m_countdown5h / m_countdown7d modules
+// independently so the lineTemplate can place them as separate tokens.
+// `formatOne` is kept as the canonical helper that joins these two
+// parts (plus a leading space) for callers that want the old combined
+// form (and for tests that assert on it).
+function formatOneChunk(
   w: Window,
   mode: DisplayMode,
   width = cfg().bar.width,
-  nowMs: number = Date.now(),
 ): string {
   const usedPct = Math.max(0, Math.min(100, Math.round(w.pct)));
   const remainingPct = 100 - usedPct;
   const displayedPct = mode === "remaining" ? remainingPct : usedPct;
-
   const bar = splitBar(usedPct, mode, width);
+  return `${bar.leftChunk}${bar.rightChunk} ${bar.color}${displayedPct}%${RESET}`;
+}
+
+// Reset-suffix portion of a window. Returns the parens-wrapped
+// `(countdown<arrow> label)` when resetAt is present, or just the
+// bare `label` (e.g. "5h") when resetAt is missing. The leading
+// space is intentionally NOT included here — spacing between modules
+// is controlled by the surrounding s_N separator tokens in the
+// lineTemplate. Returns "" when windowLabel is empty (used by
+// tests that build fake windows without a label).
+function formatOneResetSuffix(
+  windowLabel: string,
+  w: Window,
+  nowMs: number = Date.now(),
+): string {
+  if (!windowLabel) return "";
   // Two pieces: the countdown (e.g. "2h3m") and the arrow (e.g. "🕛").
   // Both are derived from the same Window + nowMs; the arrow is the
   // single thing we always have even when the countdown is empty
   // (e.g. "<1m" or just the arrow alone if resetAt is present but
   // remaining is 0). Template:
-  //   resetAt present → " (<countdown><arrow> <windowLabel>)"
-  //   resetAt missing  → " <windowLabel>" (DeepSeek / legacy — no
+  //   resetAt present → "(<countdown><arrow> <windowLabel>)"
+  //   resetAt missing  → "<windowLabel>" (DeepSeek / legacy — no
   //   reset info at all, don't fake it with a default arrow)
   const resetSuffix = formatResetSuffix(w.resetAt, nowMs);
   const arrow = pickResetArrow(nowMs, w.resetStartAt, w.resetDurationMs);
-  const tail = w.resetAt
-    ? ` (${resetSuffix}${arrow} ${windowLabel})`
-    : ` ${windowLabel}`;
-  return `${bar.leftChunk}${bar.rightChunk} ${bar.color}${displayedPct}%${RESET}${tail}`;
+  return w.resetAt
+    ? `(${resetSuffix}${arrow} ${windowLabel})`
+    : windowLabel;
 }
 
 // Compact "remaining time until reset" formatter. Returns the countdown
@@ -370,14 +397,17 @@ export function formatLine(
   ageMs?: number,
   stale: boolean = false,
 ): string {
-  const modeLabel = cfg().modeLabels[mode];
-  const base = `${modeLabel} ${formatOne("5h", fiveHour, mode, undefined, nowMs)} · ${formatOne("7d", weekly, mode, undefined, nowMs)}`;
-  if (ageMs == null || ageMs <= 0) return base;
-  // The caller decides healthy vs broken. Default `stale=true` so we
-  // err on the side of "the user should know this might be old data"
-  // unless explicitly told otherwise — a fresh successful fetch passes
-  // stale=false.
-  return base + formatStaleSuffix(ageMs, !stale);
+  // v0.2.17: delegate to the lineTemplate renderer. The default plan
+  // template reproduces the v0.2.16 byte-for-byte output.
+  return renderProviderLine("minimax", {
+    mode,
+    nowMs,
+    fiveHour,
+    weekly,
+    ageMs: ageMs ?? null,
+    stale,
+    version: cfg().version,
+  });
 }
 
 // ----- DeepSeek balance line -------------------------------------------------
@@ -444,18 +474,220 @@ export type BalanceLike = {
   minValue: number | null;
 };
 
+// v0.2.17: refactor of formatBalanceLine so the m_balance module can
+// produce a complete colored chunk (prefix + " · "-joined entries
+// wrapped in a single SGR block). Returns "" when there's nothing to
+// render so the m_balance module can return null and the template
+// renderer skips the surrounding s_0 separators cleanly.
+function formatBalanceEntriesColored(b: BalanceLike): string {
+  if (!b.isAvailable || b.entries.length === 0 || b.minValue == null) {
+    return "";
+  }
+  const chunks = b.entries.map((e) => formatBalanceChunk(e.currency, e.totalBalance));
+  // Color follows the LOWEST entry — most urgent currency drives the hue.
+  const color = colorForBalance(b.minValue);
+  return `${color}${chunks.join(" · ")}${RESET}`;
+}
+
 export function formatBalanceLine(b: BalanceLike, ageMs?: number, stale: boolean = false): string {
   if (!b.isAvailable || b.entries.length === 0 || b.minValue == null) {
     // "not available!" is rendered for BOTH the original "API said no" branch
     // (is_available: false) and the "fetch failed and we have no cache" branch
     // upstream. Neither carries an age to report, so the stale suffix is
-    // intentionally NOT appended here.
+    // intentionally NOT appended here. v0.2.17: this branch is NOT routed
+    // through the lineTemplate (out of scope for v0.2.17) — it's a hardcoded
+    // sentinel that always wins.
     return `Balance: ${RED}not available!${RESET}`;
   }
-  const chunks = b.entries.map((e) => formatBalanceChunk(e.currency, e.totalBalance));
-  // Color follows the LOWEST entry — most urgent currency drives the hue.
-  const color = colorForBalance(b.minValue);
-  const base = `Balance: ${color}${chunks.join(" · ")}${RESET}`;
-  if (ageMs == null || ageMs <= 0) return base;
-  return base + formatStaleSuffix(ageMs, !stale);
+  // v0.2.17: delegate to the lineTemplate renderer. The default balance
+  // template reproduces the v0.2.16 byte-for-byte output.
+  return renderProviderLine("deepseek", {
+    mode: resolveDisplayMode(),
+    nowMs: Date.now(),
+    balance: b,
+    ageMs: ageMs ?? null,
+    stale,
+    version: cfg().version,
+  });
+}
+
+// ----- lineTemplate / module renderer (v0.2.17) -------------------------
+//
+// A lineTemplate is an ordered list of tokens. Two token kinds:
+//   m_<name>  — a display module (registered in MODULES below)
+//   s_<n>     — a separator reference, looked up in cfg().separators[n]
+//
+// The renderer walks the template left-to-right, concatenating each
+// module's output. Modules return null to signal "hidden in this
+// context" — a null return SKIPS the surrounding separators too, so a
+// hidden window doesn't leave orphan spaces or "·" in the output. This
+// is what makes "drop the 7d window by removing m_window7d from the
+// template" a clean operation rather than producing
+// "Usage: <5h> ·  " with a trailing orphan separator.
+//
+// Unknown module names (typos) expand to "" and emit ONE stderr
+// warning per render — capped at once-per-render to avoid log spam
+// since the renderer runs on every statusline tick.
+type RenderContext = {
+  mode: DisplayMode;
+  nowMs: number;
+  fiveHour: Window | null;
+  weekly: Window | null;
+  balance: BalanceLike | null;
+  ageMs: number | null;
+  stale: boolean;
+  version: string;
+};
+
+type Module = (ctx: RenderContext) => string | null;
+
+const MODULES: Record<string, Module> = {
+  // The leading prefix. For the plan path, picks the mode-aware
+  // label ("Usage:" / "Remain:"). For the balance path, the label
+  // is the dedicated modeLabels.balance entry (default "Balance:").
+  // Returns the label WITHOUT a trailing space — the surrounding
+  // s_0 separator token provides spacing.
+  m_label: (c) => {
+    if (c.balance) return cfg().modeLabels.balance;
+    return cfg().modeLabels[c.mode];
+  },
+  m_window5h: (c) => (c.fiveHour ? formatOneChunk(c.fiveHour, c.mode) : null),
+  m_window7d: (c) => (c.weekly ? formatOneChunk(c.weekly, c.mode) : null),
+  // Reset-suffix portion of a window. Returns null only when the
+  // whole window is missing; when resetAt is missing the helper
+  // still emits " <label>" (e.g. " 5h") so the m_countdown5h token
+  // doubles as the window-label module for legacy/no-reset data.
+  m_countdown5h: (c) =>
+    c.fiveHour ? formatOneResetSuffix("5h", c.fiveHour, c.nowMs) : null,
+  m_countdown7d: (c) =>
+    c.weekly ? formatOneResetSuffix("7d", c.weekly, c.nowMs) : null,
+  // The DeepSeek balance chunk. Returns null when there's nothing
+  // to render (unavailable / empty / no min) so the template can
+  // opt out of showing it.
+  m_balance: (c) => (c.balance ? formatBalanceEntriesColored(c.balance) || null : null),
+  // Stale-age annotation. Hidden when ageMs is missing or non-positive
+  // (fresh tick). The forced-age append path in renderProviderLine
+  // covers the case where the user removed m_age from the template.
+  m_age: (c) =>
+    c.ageMs != null && c.ageMs > 0 ? formatStaleSuffix(c.ageMs, !c.stale) : null,
+  // Plugin version (e.g. "v0.2.17"). Hidden when version is empty
+  // (the configStore never got setVersion()'d — e.g. tests that
+  // don't care about the version).
+  m_version: (c) => (c.version ? `v${c.version}` : null),
+};
+
+// Cap unknown-module warnings to once per process so a template typo
+// doesn't spam stderr on every statusline tick (which is every few
+// seconds in active sessions). A one-shot warn is enough — the user
+// will see it on the first invocation.
+let _unknownModuleWarned = false;
+
+function warnUnknownModuleOnce(name: string): void {
+  if (_unknownModuleWarned) return;
+  _unknownModuleWarned = true;
+  process.stderr.write(`tokenplan-usage-hud: unknown lineTemplate module '${name}'; ignoring\n`);
+}
+
+// Reset the once-per-process warn flag. Exported so tests can clear
+// it between cases and observe the warning on demand.
+export function __resetUnknownModuleWarnForTest(): void {
+  _unknownModuleWarned = false;
+}
+
+// Expand a template into a rendered line. Modules that return null
+// (or "") cause their immediately adjacent s_N tokens to be skipped
+// too — see the comment on RenderContext for the reasoning.
+export function renderTemplate(template: readonly string[], ctx: RenderContext): string {
+  const seps = cfg().separators;
+  const out: string[] = [];
+  for (let i = 0; i < template.length; i++) {
+    const tok = template[i];
+    if (tok == null) continue;
+    if (tok.startsWith("s_")) {
+      // Separator reference: parse the index. Out-of-range and
+      // non-numeric references expand to "" (with a one-shot warn on
+      // the FIRST bad reference, not per-token).
+      const n = Number(tok.slice(2));
+      if (!Number.isInteger(n) || n < 0) {
+        warnUnknownModuleOnce(tok);
+        continue;
+      }
+      if (n >= seps.length) {
+        warnUnknownModuleOnce(tok);
+        continue;
+      }
+      out.push(seps[n]);
+      continue;
+    }
+    if (tok.startsWith("m_")) {
+      const mod = MODULES[tok];
+      if (!mod) {
+        warnUnknownModuleOnce(tok);
+        continue;
+      }
+      const piece = mod(ctx);
+      if (piece == null || piece === "") continue;
+      // Strip a leading separator that was just emitted (in the prior
+      // iteration) if THIS module returns content but the previous
+      // emission was only a separator AND there's no module on the
+      // OTHER side either. Implemented by simply checking the piece
+      // for non-empty — null already skips. We DON'T pop a trailing
+      // separator off the output here, because trailing separators
+      // are also handled by the caller's forced-age append path
+      // (which inserts a stale suffix after the template result).
+      out.push(piece);
+      continue;
+    }
+    // Any other token: ignore with a warn.
+    warnUnknownModuleOnce(tok);
+  }
+  return out.join("");
+}
+
+// Top-level renderer used by dispatch.ts. Selects the right template
+// for the provider, builds the context, and — critically — force-
+// appends the m_age stale suffix when the result is `stale` AND the
+// template didn't already emit it. This preserves the v0.2.16
+// invariant that a stale-on-error tick always carries a visible
+// broken-chain indicator, regardless of what the user put in their
+// lineTemplate.
+export function renderProviderLine(
+  provider: "minimax" | "deepseek",
+  ctx: Omit<RenderContext, "fiveHour" | "weekly" | "balance"> & {
+    fiveHour?: Window | null;
+    weekly?: Window | null;
+    balance?: BalanceLike | null;
+  },
+): string {
+  const fullCtx: RenderContext = {
+    mode: ctx.mode,
+    nowMs: ctx.nowMs,
+    fiveHour: ctx.fiveHour ?? null,
+    weekly: ctx.weekly ?? null,
+    balance: ctx.balance ?? null,
+    ageMs: ctx.ageMs,
+    stale: ctx.stale,
+    version: ctx.version,
+  };
+  const template =
+    provider === "minimax" ? cfg().lineTemplate.plan : cfg().lineTemplate.balance;
+  const base = renderTemplate(template, fullCtx);
+  // Forced visibility for the age annotation: append whenever
+  // ageMs > 0 AND the template didn't already emit it. This matches
+  // v0.2.16 behavior exactly — `formatLine` always called
+  // `formatStaleSuffix(ageMs, !stale)` when ageMs was positive; the
+  // `stale` flag only controlled the emoji (healthy vs broken), not
+  // whether to emit. The marker is the STALE_COLOR SGR opening
+  // followed by the appropriate emoji, which is unique to
+  // formatStaleSuffix output.
+  if (ctx.ageMs != null && ctx.ageMs > 0) {
+    const emoji = ctx.stale
+      ? cfg().stale.ageEmoji.broken
+      : cfg().stale.ageEmoji.healthy;
+    const staleMarker = `${STALE_COLOR}${emoji}`;
+    if (!base.includes(staleMarker)) {
+      return base + formatStaleSuffix(ctx.ageMs, !ctx.stale);
+    }
+  }
+  return base;
 }

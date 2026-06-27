@@ -352,3 +352,158 @@ describe("loadConfig — timeFormat (top-level)", () => {
     assert.match(capturedStderr, /timeFormat\.maxUnitCount/);
   });
 });
+
+describe("loadConfig — separators (top-level)", () => {
+  it("defaults: s_0=' ', s_1=' · '", () => {
+    const cfg = __testing.DEFAULT_CONFIG;
+    assert.equal(cfg.separators.length, 2);
+    assert.equal(cfg.separators[0], " ");
+    assert.equal(cfg.separators[1], " · ");
+  });
+
+  it("accepts a custom array of single-line strings", async () => {
+    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
+      separators: [" | ", " / "],
+    }));
+    const cfg = await loadConfig();
+    assert.deepEqual(cfg.separators, [" | ", " / "]);
+  });
+
+  it("rejects non-string entries (warns and drops them)", async () => {
+    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
+      separators: ["OK", 42, "fine"],
+    }));
+    const cfg = await loadConfig();
+    assert.deepEqual(cfg.separators, ["OK", "fine"]);
+    assert.match(capturedStderr, /separators/);
+  });
+
+  it("rejects multi-line strings (statusline injection guard)", async () => {
+    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
+      separators: [" ", "X\nINJECT"],
+    }));
+    const cfg = await loadConfig();
+    assert.equal(cfg.separators.length, 1);
+    assert.equal(cfg.separators[0], " ");
+    assert.match(capturedStderr, /separators/);
+  });
+
+  it("falls back to defaults when array is empty", async () => {
+    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({ separators: [] }));
+    const cfg = await loadConfig();
+    assert.equal(cfg.separators.length, 2);
+    assert.match(capturedStderr, /separators/);
+  });
+
+  it("rejects non-array separators and falls back to defaults", async () => {
+    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({ separators: " · " }));
+    const cfg = await loadConfig();
+    assert.equal(cfg.separators.length, 2);
+    assert.match(capturedStderr, /separators/);
+  });
+});
+
+describe("loadConfig — lineTemplate (top-level)", () => {
+  it("defaults reproduce the v0.2.16 layout (plan/balance)", () => {
+    const cfg = __testing.DEFAULT_CONFIG;
+    assert.deepEqual(cfg.lineTemplate.plan, [
+      "m_label", "s_0",
+      "m_window5h", "s_0", "m_countdown5h",
+      "s_0", "s_1", "s_0",
+      "m_window7d", "s_0", "m_countdown7d",
+    ]);
+    assert.deepEqual(cfg.lineTemplate.balance, ["m_label", "s_0", "m_balance"]);
+  });
+
+  it("accepts a custom plan/balance pair of string arrays", async () => {
+    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
+      lineTemplate: {
+        plan: ["m_label", "s_0", "m_window5h"],
+        balance: ["m_label", "s_0", "m_balance"],
+      },
+    }));
+    const cfg = await loadConfig();
+    assert.deepEqual(cfg.lineTemplate.plan, ["m_label", "s_0", "m_window5h"]);
+    assert.deepEqual(cfg.lineTemplate.balance, ["m_label", "s_0", "m_balance"]);
+  });
+
+  it("drops non-string entries silently (renderer validates at use time)", async () => {
+    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
+      lineTemplate: {
+        plan: ["m_label", 42, "m_window5h"],
+        balance: ["m_label", "s_0", "m_balance"],
+      },
+    }));
+    const cfg = await loadConfig();
+    assert.deepEqual(cfg.lineTemplate.plan, ["m_label", "m_window5h"]);
+  });
+
+  it("falls back to default when an array is empty", async () => {
+    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
+      lineTemplate: { plan: [], balance: ["m_label", "s_0", "m_balance"] },
+    }));
+    const cfg = await loadConfig();
+    // plan rejected, default restored.
+    assert.equal(cfg.lineTemplate.plan.length, 11);
+    assert.match(capturedStderr, /lineTemplate\.plan/);
+  });
+
+  it("falls back to defaults when lineTemplate is not an object", async () => {
+    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({ lineTemplate: "nope" }));
+    const cfg = await loadConfig();
+    assert.equal(cfg.lineTemplate.plan.length, 11);
+    assert.match(capturedStderr, /lineTemplate/);
+  });
+
+  it("preserves untouched sections when one sub-array is bad", async () => {
+    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
+      lineTemplate: {
+        plan: "broken", // not an array
+        balance: ["m_label", "s_0", "m_balance"],
+      },
+    }));
+    const cfg = await loadConfig();
+    // plan fell back to default, balance was applied.
+    assert.equal(cfg.lineTemplate.plan.length, 11);
+    assert.deepEqual(cfg.lineTemplate.balance, ["m_label", "s_0", "m_balance"]);
+    assert.match(capturedStderr, /lineTemplate\.plan/);
+  });
+});
+
+describe("loadConfig — modeLabels.balance (v0.2.17)", () => {
+  it("defaults to 'Balance:'", () => {
+    assert.equal(__testing.DEFAULT_CONFIG.modeLabels.balance, "Balance:");
+  });
+
+  it("accepts a custom balance label", async () => {
+    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
+      modeLabels: { balance: "Wallet:" },
+    }));
+    const cfg = await loadConfig();
+    assert.equal(cfg.modeLabels.balance, "Wallet:");
+    // used/remaining keep their defaults.
+    assert.equal(cfg.modeLabels.used, "Usage:");
+    assert.equal(cfg.modeLabels.remaining, "Remain:");
+  });
+
+  it("rejects a non-string balance label and warns", async () => {
+    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
+      modeLabels: { balance: 42 },
+    }));
+    const cfg = await loadConfig();
+    assert.equal(cfg.modeLabels.balance, "Balance:");
+    assert.match(capturedStderr, /modeLabels\.balance/);
+  });
+});
+
+describe("configStore.setVersion (v0.2.17)", () => {
+  it("mutates cfg().version", () => {
+    __resetForTest();
+    assert.equal(configStore.get().version, "");
+    configStore.setVersion("0.2.17");
+    assert.equal(configStore.get().version, "0.2.17");
+    __resetForTest();
+    // Re-read the singleton — __resetForTest installs a fresh object.
+    assert.equal(configStore.get().version, "");
+  });
+});
