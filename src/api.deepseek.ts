@@ -1,5 +1,4 @@
-// Fetcher + parser for the DeepSeek /user/balance endpoint, and the URL
-// gate that decides whether this plugin should render a DeepSeek line at all.
+// Fetcher + parser for a DeepSeek-style /user/balance endpoint.
 //
 // Real shape (verified against the user-supplied schema 2026-06-26):
 //   { is_available: true,
@@ -15,8 +14,13 @@
 // return multiple currencies and the user wants them all visible. The line's
 // color band is driven by the LOWEST total_balance across the entries, so
 // the most-urgent currency is the one that pops visually.
+//
+// v0.2.21: endpoint is now passed in by the caller (the providers
+// config block in src/config.ts holds the URL). The hardcoded
+// `const ENDPOINT` is gone. The URL gate that previously lived here
+// is now config-driven via matchProvider() in src/providers.ts; a
+// deprecated shim is kept below for one minor version.
 
-const ENDPOINT = "https://api.deepseek.com/user/balance";
 import { configStore } from "./config.ts";
 
 export type BalanceEntry = {
@@ -86,10 +90,11 @@ export function parseBalance(raw: unknown): Balance | null {
 
 export async function fetchBalance(
   token: string,
+  endpoint: string,
   signal?: AbortSignal
 ): Promise<Balance | null> {
   if (!token) return null;
-  const res = await fetch(ENDPOINT, {
+  const res = await fetch(endpoint, {
     method: "GET",
     headers: {
       Authorization: `Bearer ${token}`,
@@ -110,15 +115,23 @@ export async function fetchBalance(
   return parseBalance(parsed);
 }
 
-// URL gate: must start with `https://api.deepseek.com` (case-insensitive),
-// followed by `/`, end-of-string, `?`, or `#`. This rejects suffix attacks
-// like `https://api.deepseek.com.evil.example`.
+// v0.2.21: kept as a thin shim for one minor version so external
+// callers don't break. Preserves the v0.2.20 prefix-with-suffix-guard
+// behavior so `api.deepseek.com.evil.example` is still rejected; the
+// configured `COMPARE_METHOD` is ignored here, since this shim
+// predates the providers config block.
+const DEEPSEEK_PREFIX = "https://api.deepseek.com";
+
+/**
+ * @deprecated v0.2.21: use `matchProvider(baseUrl) === "deepseek"`
+ * from src/providers.ts.
+ */
 export function isDeepSeekBaseUrl(baseUrl: string | undefined | null): boolean {
   if (!baseUrl) return false;
-  const prefix = "https://api.deepseek.com";
   const lower = baseUrl.toLowerCase();
-  if (!lower.startsWith(prefix)) return false;
-  const tail = baseUrl[prefix.length];
-  // Acceptable tail: nothing (exact match), "/", "?", or "#".
+  if (!lower.startsWith(DEEPSEEK_PREFIX)) return false;
+  // Reject suffix attacks: next char after the prefix must be
+  // undefined, "/", "?", or "#".
+  const tail = baseUrl[DEEPSEEK_PREFIX.length];
   return tail === undefined || tail === "/" || tail === "?" || tail === "#";
 }

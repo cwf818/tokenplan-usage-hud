@@ -16,18 +16,16 @@
 //           `stale=true` flips the suffix emoji from 🔗 to ⛓️‍💥.
 //   fail  — fetch failed AND no cached value; caller renders "not available!"
 //
-// v0.2.16: dropped the v0.2.15 `ageFromRemains` helper. That helper
-// computed "time since the 5h window started" from the API response's
-// resetStartAt — but that's a business-progress signal, not a data-
-// freshness signal, and conflating the two produced wrong emojis (a
-// 1h28m window incorrectly rendered ⛓️‍💥 just because the cache age
-// exceeded TTL). The cache already exposes the right primitive via
-// getWithAge / peekWithAge; fresh ticks carry ageMs=0 and the renderer
-// suppresses the suffix accordingly.
+// v0.2.21: switched from provider-name literals ("minimax" /
+// "deepseek") to TYPE-based dispatch. buildProviderLine now reads
+// the provider's `TYPE` field from the providers config block and
+// routes accordingly. Adding a new TOKEN_PLAN or BALANCE provider
+// is a config-only change.
 
 import type { Remains } from "./api.ts";
 import type { Balance } from "./api.deepseek.ts";
 import { formatBalanceLine, formatLine, RED, RESET, resolveDisplayMode } from "./render.ts";
+import { failLabelForProvider, getProviderEntry } from "./providers.ts";
 import type { Provider } from "./types.ts";
 
 export type FetchResult<T> =
@@ -35,10 +33,16 @@ export type FetchResult<T> =
   | { kind: "stale"; data: T; ageMs: number }
   | { kind: "fail" };
 
-// Render the MiniMax two-window line from a Remains payload. The `stale`
-// flag controls the healthy/broken emoji in the suffix; ageMs <= 0
-// suppresses the suffix entirely (no point telling the user "0s ago" —
-// they can see the line render in real time).
+// Render the MiniMax-style two-window line from a Remains payload.
+// The `stale` flag controls the healthy/broken emoji in the suffix;
+// ageMs <= 0 suppresses the suffix entirely (no point telling the user
+// "0s ago" — they can see the line render in real time).
+//
+// v0.2.21: kept the named helper (rather than inlining) because
+// dispatch.ts:buildProviderLine and the lower-level tests still call
+// it. The body delegates to the renderer's lineTemplate path, which
+// is now driven by templateKeyForProvider rather than a provider-name
+// literal.
 export function renderPlanLine(
   data: Remains,
   mode: ReturnType<typeof resolveDisplayMode>,
@@ -56,32 +60,44 @@ export function renderPlanLine(
 }
 
 // Maps a (provider, FetchResult) pair to the final statusline line.
+// v0.2.21: dispatch is driven by `entry.TYPE` from the providers
+// config, not by provider-name literals. The fail-line prefix is
+// read via `failLabelForProvider(provider)` so a user who overrides
+// `modeLabels.used` / `modeLabels.balance` sees their custom label
+// on the fail branch too.
 export function buildProviderLine(
   provider: Provider,
-  result: FetchResult<Remains> | FetchResult<Balance>
+  result: FetchResult<unknown>
 ): string | null {
+  const entry = getProviderEntry(provider);
+  if (!entry) return null;
   if (result.kind === "fail") {
-    // No cached data + fetch failed. Render a colored "not available!" so the
-    // user sees the plugin is alive but the provider is unreachable. Color
-    // matches the existing "is_available: false" branch in formatBalanceLine
-    // (RED) so the two unavailable states look the same on screen.
-    if (provider === "minimax") return `Usage: ${RED}not available!${RESET}`;
-    if (provider === "deepseek") return `Balance: ${RED}not available!${RESET}`;
-    return null;
+    // No cached data + fetch failed. Render a colored "not available!"
+    // so the user sees the plugin is alive but the provider is
+    // unreachable. Color matches the existing "is_available: false"
+    // branch in formatBalanceLine (RED) so the two unavailable states
+    // look the same on screen.
+    //
+    // v0.2.21: `failLabelForProvider` returns the modeLabel verbatim
+    // (no trailing space — m_label module relies on s_0 separators in
+    // the lineTemplate). The fail-line path doesn't go through the
+    // template, so we re-attach the space here to preserve the
+    // v0.2.20 output ("Usage: not available!" / "Balance: not available!").
+    return `${failLabelForProvider(provider)} ${RED}not available!${RESET}`;
   }
-  if (provider === "minimax") {
-    // Display mode now lives in configStore — the old TOKENPLAN_DISPLAY
+  if (entry.TYPE === "TOKEN_PLAN") {
+    // Display mode lives in configStore — the old TOKENPLAN_DISPLAY
     // env var is gone (see README "Configuration").
     const mode = resolveDisplayMode();
-    // ageMs is now carried on BOTH the fresh and stale variants:
+    // ageMs is carried on BOTH the fresh and stale variants:
     //   fresh.ageMs : 0 for a just-fetched tick; the cache age for a
     //                 within-TTL cache hit (so a user template can opt
     //                 into showing "🔗 30s ago" via the m_age module).
     //   stale.ageMs : how long since the last successful fetch.
-    // The renderer's m_age module returns null when ageMs <= 0, so the
-    // suffix is auto-suppressed on a brand-new fetch — preserving the
-    // v0.2.16 "fresh ticks skip suffix" behavior. The stale boolean
-    // continues to flip the emoji (healthy ↔ broken).
+    // The renderer's m_age module returns null when ageMs <= 0, so
+    // the suffix is auto-suppressed on a brand-new fetch — preserving
+    // the v0.2.16 "fresh ticks skip suffix" behavior. The stale
+    // boolean continues to flip the emoji (healthy ↔ broken).
     return renderPlanLine(
       result.data as Remains,
       mode,
@@ -89,10 +105,10 @@ export function buildProviderLine(
       result.kind === "stale",
     );
   }
-  if (provider === "deepseek") {
-    // DeepSeek has no window concept; same ageMs contract as the
-    // MiniMax path above. Fresh cache hits carry the cache age; fresh
-    // network fetches carry 0 (auto-suppressed by the renderer).
+  if (entry.TYPE === "BALANCE") {
+    // BALANCE providers have no window concept; same ageMs contract
+    // as the TOKEN_PLAN path. Fresh cache hits carry the cache age;
+    // fresh network fetches carry 0 (auto-suppressed by the renderer).
     return formatBalanceLine(
       result.data as Balance,
       result.ageMs,

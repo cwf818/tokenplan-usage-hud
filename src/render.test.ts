@@ -709,11 +709,21 @@ describe("formatBalanceLine — unavailable", () => {
 });
 
 describe("formatStaleSuffix", () => {
-  it("returns empty for non-positive or non-finite ageMs", () => {
-    assert.equal(formatStaleSuffix(0), "");
-    assert.equal(formatStaleSuffix(-1), "");
+  it("returns empty only for non-finite ageMs; ageMs <= 0 renders the bare emoji", () => {
+    // v0.2.20: a brand-new fetch (ageMs = 0) renders the stale-color
+    // emoji alone, without "0s ago" — visually marking "data is from
+    // this instant" without spurious text. Negative ageMs (shouldn't
+    // happen in practice — guard rail) is treated the same.
     assert.equal(formatStaleSuffix(Number.NaN), "");
     assert.equal(formatStaleSuffix(Number.POSITIVE_INFINITY), "");
+    assert.equal(formatStaleSuffix(Number.NEGATIVE_INFINITY), "");
+    // ageMs = 0 (and below) → STALE_COLOR + healthy/broken emoji + RESET.
+    const fresh = formatStaleSuffix(0);
+    assert.ok(fresh.includes("⛓️‍💥") || fresh.includes("🔗"));
+    assert.ok(fresh.includes(RESET));
+    assert.ok(!fresh.includes(" ago"));
+    // Negative ageMs: same treatment (emoji only, no "0s ago" / "-1s ago").
+    assert.equal(formatStaleSuffix(-1), fresh);
   });
 
   it("sub-minute uses minUnit floor: 'm' → '<1m ago', 's' → '${seconds}s ago'", () => {

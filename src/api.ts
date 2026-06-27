@@ -1,6 +1,6 @@
-// Fetcher + defensive parser for the MiniMax /v1/token_plan/remains endpoint.
-// Tolerant of multiple plausible field names so we don't break if the
-// upstream schema shifts.
+// Fetcher + defensive parser for a MiniMax-style /v1/token_plan/remains
+// endpoint. Tolerant of multiple plausible field names so we don't break
+// if the upstream schema shifts.
 //
 // Real shape (verified 2026-06-24):
 //   { base_resp: { status_code, status_msg },
@@ -13,10 +13,12 @@
 // We pick the entry with the LOWEST `current_interval_remaining_percent` —
 // i.e. the most-active model — as the source of truth, since statusline
 // space is limited and the user cares about whichever model they're hitting.
+//
+// v0.2.21: endpoint is now passed in by the caller (the providers
+// config block in src/config.ts holds the URL). The hardcoded
+// `const ENDPOINT` is gone.
 
 import type { Window } from "./render.ts";
-
-const ENDPOINT = "https://www.minimaxi.com/v1/token_plan/remains";
 
 export type Remains = {
   fiveHour: Window | null;
@@ -238,9 +240,9 @@ export function parseRemains(raw: unknown): Remains | null {
   return parseLegacy(raw);
 }
 
-export async function fetchRemains(token: string, signal?: AbortSignal): Promise<Remains | null> {
+export async function fetchRemains(token: string, endpoint: string, signal?: AbortSignal): Promise<Remains | null> {
   if (!token) return null;
-  const res = await fetch(ENDPOINT, {
+  const res = await fetch(endpoint, {
     method: "GET",
     headers: {
       Authorization: `Bearer ${token}`,
@@ -262,7 +264,18 @@ export async function fetchRemains(token: string, signal?: AbortSignal): Promise
   return parseRemains(parsed);
 }
 
+/**
+ * @deprecated v0.2.21: use `matchProvider(baseUrl) === "minimax"`
+ * from src/providers.ts. Kept as a thin shim for one minor version
+ * so external callers don't break. Preserves the v0.2.20 substring
+ * behavior (case-insensitive `includes` of the configured host) so
+ * callers passing `https://api.minimaxi.com` (without the
+ * `/anthropic` suffix) still match — the configured
+ * `COMPARE_METHOD` is ignored here, since this shim predates the
+ * providers config block.
+ */
 export function isMiniMaxBaseUrl(baseUrl: string | undefined | null): boolean {
   if (!baseUrl) return false;
-  return baseUrl.toLowerCase().includes("minimaxi.com");
+  const lower = baseUrl.toLowerCase();
+  return lower.includes("api.minimaxi.com");
 }
