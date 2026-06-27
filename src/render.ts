@@ -800,15 +800,23 @@ export function __resetUnknownModuleWarnForTest(): void {
   _unknownModuleWarned = false;
 }
 
-// Expand a template into a rendered line. Modules that return null
-// (or "") cause their immediately adjacent s_N tokens to be skipped
-// too — see the comment on RenderContext for the reasoning.
-export function renderTemplate(template: readonly string[], ctx: RenderContext): string {
+// Expand a template into rendered lines. Each output element is one
+// rendered line — separators and module pieces that contain "\n" are
+// split into separate line segments. Empty segments are dropped so a
+// trailing "\n" separator doesn't emit a blank line at the end.
+//
+// Modules that return null (or "") cause their immediately adjacent
+// s_N tokens to be skipped too — see the comment on RenderContext for
+// the reasoning. Empty segments from the splitting pass get the same
+// treatment.
+export function renderTemplate(template: readonly string[], ctx: RenderContext): string[] {
   const seps = cfg().separators;
-  const out: string[] = [];
+  const lines: string[] = [];
+  let current = "";
   for (let i = 0; i < template.length; i++) {
     const tok = template[i];
     if (tok == null) continue;
+    let piece: string | null = null;
     if (tok.startsWith("s_")) {
       // Separator reference: parse the index. Out-of-range and
       // non-numeric references expand to "" (with a one-shot warn on
@@ -822,32 +830,40 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
         warnUnknownModuleOnce(tok);
         continue;
       }
-      out.push(seps[n]);
-      continue;
-    }
-    if (tok.startsWith("m_")) {
+      piece = seps[n];
+    } else if (tok.startsWith("m_")) {
       const mod = MODULES[tok];
       if (!mod) {
         warnUnknownModuleOnce(tok);
         continue;
       }
-      const piece = mod(ctx);
-      if (piece == null || piece === "") continue;
-      // Strip a leading separator that was just emitted (in the prior
-      // iteration) if THIS module returns content but the previous
-      // emission was only a separator AND there's no module on the
-      // OTHER side either. Implemented by simply checking the piece
-      // for non-empty — null already skips. We DON'T pop a trailing
-      // separator off the output here, because trailing separators
-      // are also handled by the caller's forced-age append path
-      // (which inserts a stale suffix after the template result).
-      out.push(piece);
+      piece = mod(ctx);
+    } else {
+      warnUnknownModuleOnce(tok);
       continue;
     }
-    // Any other token: ignore with a warn.
-    warnUnknownModuleOnce(tok);
+    if (piece == null || piece === "") continue;
+    // Split the piece on '\n' so a "\n" separator or a future module
+    // that embeds newlines naturally produces multi-line output. The
+    // first segment is appended to the in-progress current line; any
+    // further segments start a new line (and the trailing one keeps
+    // the new "current" line for the next piece to append to).
+    const segments = piece.split("\n");
+    for (let j = 0; j < segments.length; j++) {
+      const seg = segments[j]!;
+      if (j === 0) {
+        current += seg;
+      } else {
+        // Push the completed line and start a new one. Skip empty
+        // lines that arise from consecutive "\n\n" splits.
+        if (current.length > 0) lines.push(current);
+        current = seg;
+      }
+    }
   }
-  return out.join("");
+  // Flush whatever's left in the in-progress line.
+  if (current.length > 0) lines.push(current);
+  return lines;
 }
 
 // Top-level renderer used by dispatch.ts. Selects the right template
@@ -886,7 +902,7 @@ export function renderProviderLine(
   // indirection lets a third provider slot in without code changes.
   const templateKey = templateKeyForProvider(provider);
   const template = cfg().lineTemplate[templateKey];
-  const base = renderTemplate(template, fullCtx);
+  const lines = renderTemplate(template, fullCtx);
   // Forced visibility for the age annotation: append whenever
   // ageMs > 0 AND the template didn't already emit it. This matches
   // v0.2.16 behavior exactly — `formatLine` always called
@@ -900,9 +916,17 @@ export function renderProviderLine(
       ? cfg().stale.ageEmoji.broken
       : cfg().stale.ageEmoji.healthy;
     const staleMarker = `${STALE_COLOR}${emoji}`;
-    if (!base.includes(staleMarker)) {
-      return base + formatStaleSuffix(ctx.ageMs, !ctx.stale);
+    const joined = lines.join("\n");
+    if (!joined.includes(staleMarker)) {
+      const suffix = formatStaleSuffix(ctx.ageMs, !ctx.stale);
+      // The suffix carries its own SGR close, so it slots onto the
+      // last line regardless of how many lines the template emitted.
+      if (lines.length === 0) {
+        lines.push(suffix);
+      } else {
+        lines[lines.length - 1] = (lines[lines.length - 1] ?? "") + suffix;
+      }
     }
   }
-  return base;
+  return lines.join("\n");
 }
