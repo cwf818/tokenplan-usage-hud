@@ -58,3 +58,91 @@ describe("compose", () => {
     assert.equal(out, "plain line\nanother line\n5h ▓ 50% · 7d ▓ 50%\n");
   });
 });
+
+describe("compose — multi-line planLine (v0.4.0+)", () => {
+  // When a lineTemplate separator is "\n", the rendered planLine
+  // arrives as a multi-line string. compose() must treat each line
+  // independently: preserve newlines verbatim, close any unclosed
+  // SGR per line so colors don't bleed into the next prompt, and
+  // drop empty trailing/leading lines.
+
+  it("emits each plan line on its own stdout line", () => {
+    const plan = "line1\nline2\nline3";
+    const out = compose("upstream", plan);
+    assert.equal(out, "upstream\nline1\nline2\nline3\n");
+  });
+
+  it("no upstream: each plan line still emitted on its own line", () => {
+    const plan = "line1\nline2";
+    assert.equal(compose(undefined, plan), "line1\nline2\n");
+  });
+
+  it("closes unclosed SGR on each plan line", () => {
+    // m_tokenInSpeed wraps its output in STALE_COLOR (gray) but never
+    // closes it; if compose() just passed it through, the next
+    // prompt would inherit the gray. Verify the reset is appended.
+    const STALE = "\x1b[90m";
+    const plan = `${STALE}in:272.5 t/s\n${STALE}out:0.3 t/s`;
+    const out = compose("upstream", plan);
+    // Each line gets a trailing \x1b[0m so the next line / prompt
+    // starts unstyled.
+    assert.equal(
+      out,
+      `upstream\n${STALE}in:272.5 t/s\x1b[0m\n${STALE}out:0.3 t/s\x1b[0m\n`,
+    );
+  });
+
+  it("does not double-close lines that already end with RESET", () => {
+    const STALE = "\x1b[90m";
+    const RESET = "\x1b[0m";
+    const plan = `${STALE}in:272.5 t/s${RESET}\nout:0.3 t/s`;
+    const out = compose("upstream", plan);
+    // First line already closes itself; second line has no open SGR
+    // so nothing is appended.
+    assert.equal(out, `upstream\n${STALE}in:272.5 t/s${RESET}\nout:0.3 t/s\n`);
+  });
+
+  it("drops blank lines from consecutive '\\n' separators", () => {
+    // A trailing "\n" or a "\n\n" in the middle produces an empty
+    // segment that compose() filters out — no spurious blank lines
+    // in the rendered statusline.
+    const plan = "line1\n\nline2";
+    const out = compose("upstream", plan);
+    assert.equal(out, "upstream\nline1\nline2\n");
+  });
+
+  it("accepts string[] directly for callers that built lines themselves", () => {
+    const out = compose("upstream", ["line1", "line2"]);
+    assert.equal(out, "upstream\nline1\nline2\n");
+  });
+
+  it("string[] with unclosed SGR on each entry — closes each independently", () => {
+    const STALE = "\x1b[90m";
+    const out = compose(undefined, [`${STALE}line1`, `${STALE}line2`]);
+    assert.equal(out, `${STALE}line1\x1b[0m\n${STALE}line2\x1b[0m\n`);
+  });
+
+  it("upstream with unclosed SGR + multi-line plan: each plan line closed", () => {
+    // upstream ends with red and never resets. compose() inserts a
+    // reset before the first plan line AND ensures every plan line
+    // is independently closed (so a future module that opens red
+    // would still be safe).
+    const RED = "\x1b[31m";
+    const STALE = "\x1b[90m";
+    const upstream = `hud ${RED}`;
+    const plan = `${STALE}in:272.5 t/s\n${STALE}out:0.3 t/s`;
+    const out = compose(upstream, plan);
+    assert.equal(
+      out,
+      `hud ${RED}\n\x1b[0m${STALE}in:272.5 t/s\x1b[0m\n${STALE}out:0.3 t/s\x1b[0m\n`,
+    );
+  });
+
+  it("empty planLine array → returns upstream verbatim", () => {
+    assert.equal(compose("hud line", []), "hud line");
+  });
+
+  it("empty planLine string → returns upstream verbatim (no spurious blank line)", () => {
+    assert.equal(compose("hud line", ""), "hud line");
+  });
+});
