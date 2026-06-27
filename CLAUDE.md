@@ -77,11 +77,11 @@ The install script is the **only** way the plugin writes to `settings.json`. The
 1. Resolves the active `settings.json` (user-level by default; `--project` for project-level). If `--project` and the file is missing, creates a minimal one (it does NOT copy from user-level).
 2. Reads `statusLine` via `scripts/lib/edit-settings.mjs`:
    - `_tokenplan_managed === true` → already ours, no-op.
-   - `command` is some foreign string → back up the file to `settings.json.bak.<ISO-timestamp>`, preserve the original command at `<plugin-cache>/state/upstream-cmd.sh` (with shebang) and `<plugin-cache>/state/upstream-cmd.txt` (bare command), then rewrite `statusLine` to invoke our wrapper with `TOKENPLAN_UPSTREAM_CMD=<upstream-cmd.sh>`.
+   - `command` is some foreign string → back up the file to `settings.json.bak.<ISO-timestamp>`, preserve the original command at `<claude-root>/plugins/tokenplan-usage-hud/state/upstream-cmd.sh` (with shebang) and `<claude-root>/plugins/tokenplan-usage-hud/state/upstream-cmd.txt` (bare command), then rewrite `statusLine` to invoke our wrapper with `TOKENPLAN_UPSTREAM_CMD=<upstream-cmd.sh>`. The state dir is sibling of `config.json` — STABLE across `/plugin install` rolls and cache wipes, so a future uninstall can always find it.
    - no `statusLine` → just install our wrapper.
 3. Rewrites the file via `scripts/lib/edit-settings.mjs`, which preserves the original line ending (CRLF on Windows, LF elsewhere).
 
-`install.sh --uninstall` is a thin shim that exec's `scripts/uninstall.sh`. The uninstaller is the source of truth; it works even when the plugin cache is gone (falls back to the most recent pre-managed `settings.json.bak.<ts>` if `state/upstream-cmd.txt` is missing). It also removes `tokenplan-usage-hud@tokenplan-usage-hud` from `settings.json.enabledPlugins` and wipes `cache/`, `marketplaces/`, and the loader's JSON rows. Idempotent. See `scripts/uninstall.sh` for the full state machine.
+`install.sh --uninstall` is a thin shim that exec's `scripts/uninstall.sh`. The uninstaller is the source of truth; it works even when the plugin cache is gone (priority order: stable `state/upstream-cmd.txt` → highest-version legacy `state/upstream-cmd.txt` → most recent pre-managed `settings.json.bak.<ts>`). It also removes `tokenplan-usage-hud@tokenplan-usage-hud` from `settings.json.enabledPlugins` and wipes `cache/`, `marketplaces/`, `plugins/tokenplan-usage-hud/state/`, and the loader's JSON rows. Idempotent. See `scripts/uninstall.sh` for the full state machine.
 
 `install.sh --restore` is a coarser recovery: it copies the most recent `settings.json.bak.<ts>` over the current `settings.json`, regardless of what changed since.
 

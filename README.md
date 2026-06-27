@@ -42,7 +42,7 @@ This patches the active `settings.json` (user-level by default; pass `--project`
 
 1. If `statusLine` is already managed by us (`_tokenplan_managed: true`), the command is a no-op.
 2. Otherwise, the current `settings.json` is backed up to `settings.json.bak.<ISO-timestamp>`.
-3. The original `statusLine.command` is preserved at `<plugin-cache>/state/upstream-cmd.sh` and `<plugin-cache>/state/upstream-cmd.txt`.
+3. The original `statusLine.command` is preserved at `<claude-root>/plugins/tokenplan-usage-hud/state/upstream-cmd.sh` and `<claude-root>/plugins/tokenplan-usage-hud/state/upstream-cmd.txt` — sibling of `config.json`, **stable** across `/plugin install` rolls and cache wipes.
 4. The `statusLine` is rewritten to invoke our wrapper, which sets `TOKENPLAN_UPSTREAM_CMD=<upstream-cmd.sh>` so the original statusline runs above our line.
 
 `install.sh` auto-builds `dist/index.js` if it's missing (the marketplace install only copies source, not the bundle). Re-running the slash command is always a no-op once installed.
@@ -81,7 +81,8 @@ Each is a Pattern B2 slash command — the body is a `!`-fenced shell block that
 This is a self-contained cleanup that works even after the plugin's cache and marketplace have been wiped. It does all of the following:
 
 1. **Restore `statusLine`** — strategy in order:
-   - If `<plugin-cache>/<highest-version>/state/upstream-cmd.txt` exists, restore the original command byte-for-byte from that file.
+   - If `${CLAUDE_ROOT}/plugins/tokenplan-usage-hud/state/upstream-cmd.txt` exists (the stable state dir, sibling of `config.json`), restore the original command byte-for-byte from that file.
+   - Else, fall back to the highest-version cache dir's legacy `state/upstream-cmd.txt` (v0.2.18 and older layout, before the stable state dir existed). Same ordering as the wrapper's `ls + sort + tail` resolver.
    - Else, fall back to the most recent `settings.json.bak.<ts>` whose `statusLine` does **not** have `_tokenplan_managed: true` (the state before the plugin was installed).
    - Else, strip the marker but leave the wrapper in place and print a warning.
 2. **Remove `tokenplan-usage-hud@tokenplan-usage-hud` from `settings.json.enabledPlugins`** (other plugins preserved).
@@ -140,7 +141,7 @@ Every `/plugin install` rolls the cache forward — Claude Code creates a new `<
 ## How it composes with other statuslines
 
 - The wrapper script is `scripts/wrapper.sh`. If `TOKENPLAN_UPSTREAM_CMD` is set, it runs that path as a bash script (`bash "$TOKENPLAN_UPSTREAM_CMD"`), captures stdout, and exposes it to the plugin entry as the `TOKENPLAN_UPSTREAM` env var. If unset, the wrapper runs the plugin as the sole statusline.
-- `TOKENPLAN_UPSTREAM_CMD` is an **absolute path** to a bash script — `install.sh` writes one at `<plugin-cache>/state/upstream-cmd.sh` whose body is `exec bash -c '<original-command>'`. Older v0.1.10–v0.1.11 used `bash -c` against the path itself, which silently failed — fixed in v0.1.12.
+- `TOKENPLAN_UPSTREAM_CMD` is an **absolute path** to a bash script — `install.sh` writes one at `${CLAUDE_ROOT}/plugins/tokenplan-usage-hud/state/upstream-cmd.sh` whose body is `exec bash -c '<original-command>'`. This path is **stable** (sibling of `config.json`, NOT inside the per-version cache dir), so `/plugin install` rolls don't move it. Older v0.1.10–v0.1.11 used `bash -c` against the path itself, which silently failed — fixed in v0.1.12.
 - The plugin preserves interior newlines in upstream output and injects `\x1b[0m` before its own line if upstream ends with an unclosed ANSI SGR — so multi-line, ANSI-colored upstream statuslines render correctly.
 
 ## Activation

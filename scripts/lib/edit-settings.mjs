@@ -84,13 +84,24 @@ function buildLatestCacheCommand(_upstreamCmdFileUnused) {
   //   bash -c '
   //     plugin_dir=$(ls -d …/tokenplan-usage-hud/*/ | awk -F/ '\''{…}'\'' | sort … | tail -1 | cut -f2-)
   //     [ -d "$plugin_dir" ] || { echo … >&2; exit 1; }
-  //     export TOKENPLAN_UPSTREAM_CMD="${plugin_dir}state/upstream-cmd.sh"
+  //     export TOKENPLAN_UPSTREAM_CMD="<root>/plugins/tokenplan-usage-hud/state/upstream-cmd.sh"
   //     exec bash "${plugin_dir}scripts/wrapper.sh"
   //   '
   //
-  // We don't pre-resolve upstream-cmd.sh: it lives in ${plugin_dir}state/
-  // and gets (re)written by install.sh every install, so following the
-  // latest-cache pointer keeps both wrapper and upstream in lockstep.
+  // TOKENPLAN_UPSTREAM_CMD points at a STABLE location
+  // (<root>/plugins/tokenplan-usage-hud/state/upstream-cmd.sh) — NOT
+  // inside the version-specific cache dir. Two reasons:
+  //   1. config.json lives at <root>/plugins/tokenplan-usage-hud/, so
+  //      the state dir is the obvious sibling and survives cache wipes
+  //      (so an uninstall on a future version can still find the
+  //      pre-managed command to restore).
+  //   2. /plugin install rolls the cache forward (0.2.5 → 0.2.6);
+  //      keeping state in a per-version dir means each new version
+  //      starts with no upstream-cmd.sh and the loader has to copy it
+  //      across. A fixed location eliminates that dance.
+  //
+  // plugin_dir is still needed to resolve the wrapper, because the
+  // wrapper itself is per-version (it ships inside the cache dir).
   // The upstreamCmdFile arg is kept for API stability with the caller
   // (install.sh forwards both wrapper + upstream); it's intentionally
   // unused here.
@@ -99,7 +110,7 @@ function buildLatestCacheCommand(_upstreamCmdFileUnused) {
     "bash -c '",
     "plugin_dir=$(ls -d \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}\"/plugins/cache/tokenplan-usage-hud/tokenplan-usage-hud/*/ 2>/dev/null | awk -F/ '\"'\"'{ print $(NF-1) \"\\t\" $(0) }'\"'\"' | sort -t. -k1,1n -k2,2n -k3,3n -k4,4n | tail -1 | cut -f2-); ",
     "[ -d \"$plugin_dir\" ] || { echo \"tokenplan-usage-hud: no installed version found under cache\" >&2; exit 1; }; ",
-    "export TOKENPLAN_UPSTREAM_CMD=\"${plugin_dir}state/upstream-cmd.sh\"; ",
+    "export TOKENPLAN_UPSTREAM_CMD=\"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/tokenplan-usage-hud/state/upstream-cmd.sh\"; ",
     "exec bash \"${plugin_dir}scripts/wrapper.sh\"",
     "'",
   ].join("");

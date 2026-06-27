@@ -1,16 +1,19 @@
 #!/usr/bin/env bash
-# test-install.sh — smoke tests for the no-op / state-carry-forward
+# test-install.sh — smoke tests for the no-op / state-migrate-forward
 # branch in scripts/install.sh.
 #
 # The branch under test:
-#   - When statusLine._tokenplan_managed === true and PLUGIN_DIR/state/
-#     is missing the upstream-cmd.txt, install.sh walks PLUGIN_BASE,
+#   - When statusLine._tokenplan_managed === true and the STABLE state
+#     dir (${CLAUDE_ROOT}/plugins/tokenplan-usage-hud/state/) is
+#     missing the upstream-cmd.txt, install.sh walks PLUGIN_BASE,
 #     finds the SECOND-newest version dir (the one immediately before
 #     PLUGIN_DIR in version order), and copies its state/ files
-#     (upstream-cmd.sh + upstream-cmd.txt) into PLUGIN_DIR/state/.
-#   - The copy is "no clobber" — files already in PLUGIN_DIR/state/
-#     (because Claude Code's marketplace loader already copied them,
-#     or because a previous :install set them) are not overwritten.
+#     (upstream-cmd.sh + upstream-cmd.txt) into the STABLE state dir.
+#     This is the v0.2.18 → v0.2.19 migration: per-version cache state
+#     moves to a permanent location that survives cache wipes.
+#   - The copy is "no clobber" — files already in the stable state dir
+#     (because a previous :install set them, or because they were
+#     already migrated) are not overwritten.
 #
 # These tests don't try to drive the real install.sh against the real
 # user settings.json; they build a minimal PLUGIN_BASE (two version
@@ -75,31 +78,33 @@ assert_file_missing() {
 #     settings.json                 (with _tokenplan_managed: true)
 #     plugins/cache/tokenplan-usage-hud/
 #       tokenplan-usage-hud/
-#         0.2.7/state/upstream-cmd.{sh,txt}    (previous version)
+#         0.2.7/state/upstream-cmd.{sh,txt}    (previous version, LEGACY location)
 #         0.2.8/scripts/wrapper.sh             (current version)
 #         0.2.8/dist/index.js                  (so dist-missing build is skipped)
 #         0.2.8/scripts/install.sh + lib/      (the script under test)
+#     plugins/tokenplan-usage-hud/state/        (STABLE state dir, may be empty/pre-populated)
 #
-#   $STATUSLINE_CMD  statusLine.command value (with cache path baked in)
-#   $PREV_STATE_DIR  previous version's state dir
-#   $CURR_STATE_DIR  current version's state dir (initially empty)
-#   $CURR_PLUGIN_DIR current version's full path
-#   $CURR_VERSION    current version string ("0.2.8")
+#   $STATUSLINE_CMD    statusLine.command value (with cache path baked in)
+#   $PREV_STATE_DIR    previous version's legacy state dir
+#   $STABLE_STATE_DIR  the new stable state dir (sibling of config.json)
+#   $CURR_PLUGIN_DIR   current version's full path
+#   $CURR_VERSION      current version string ("0.2.8")
 build_fixture() {
-  local with_prev_state="$1"   # "yes" or "no"
-  local with_curr_state="$2"   # "yes" or "no"
+  local with_prev_state="$1"   # "yes" or "no" — populate legacy 0.2.7/state
+  local with_stable_state="$2" # "yes" or "no" — populate stable state/
 
   local root
   root="$(mktemp -d -t tokenplan-install-test-XXXXXX)"
   local base="${root}/plugins/cache/tokenplan-usage-hud/tokenplan-usage-hud"
   local curr="${base}/0.2.8"
   local prev="${base}/0.2.7"
-  mkdir -p "${curr}/scripts/lib" "${curr}/dist" "${prev}/state" "${root}/plugins/cache"
+  mkdir -p "${curr}/scripts/lib" "${curr}/dist" "${prev}/state" \
+           "${root}/plugins/cache" \
+           "${root}/plugins/tokenplan-usage-hud"
 
-  # Previous version: state/ with the upstream-cmd that a foreign install
-  # would have written. Both sh and txt are present (the install.sh replace
-  # branch writes both — see scripts/install.sh:write-managed + the
-  # "Also write the bare original command" comment).
+  # Previous version: state/ with the upstream-cmd that a v0.2.18 foreign
+  # install would have written. Both sh and txt are present (the install.sh
+  # replace branch writes both).
   cat > "${prev}/state/upstream-cmd.txt" <<'EOF'
 echo "previous user statusline: ccstatusline"
 EOF
@@ -119,19 +124,19 @@ EOF
   # branch is skipped — we don't want tests that fail in a no-network env.
   printf '# stub\n' > "${curr}/dist/index.js"
 
-  # Optionally pre-populate the current version's state/ (the "loader
-  # already copied" case). When with_curr_state=yes, write a DIFFERENT
-  # upstream-cmd so we can assert install.sh did not clobber it.
-  if [ "$with_curr_state" = "yes" ]; then
-    mkdir -p "${curr}/state"
-    cat > "${curr}/state/upstream-cmd.txt" <<'EOF'
-echo "loader-preserved state — do not clobber"
+  # Optionally pre-populate the STABLE state dir (the "already migrated"
+  # case). When with_stable_state=yes, write a DIFFERENT upstream-cmd so
+  # we can assert install.sh did not clobber it.
+  if [ "$with_stable_state" = "yes" ]; then
+    mkdir -p "${root}/plugins/tokenplan-usage-hud/state"
+    cat > "${root}/plugins/tokenplan-usage-hud/state/upstream-cmd.txt" <<'EOF'
+echo "stable state — do not clobber"
 EOF
-    cat > "${curr}/state/upstream-cmd.sh" <<'EOF'
+    cat > "${root}/plugins/tokenplan-usage-hud/state/upstream-cmd.sh" <<'EOF'
 #!/usr/bin/env bash
-echo "loader-preserved state — do not clobber"
+echo "stable state — do not clobber"
 EOF
-    chmod +x "${curr}/state/upstream-cmd.sh"
+    chmod +x "${root}/plugins/tokenplan-usage-hud/state/upstream-cmd.sh"
   fi
 
   # settings.json with _tokenplan_managed: true (so install.sh hits the
@@ -141,11 +146,14 @@ EOF
   #   - ends with `wrapper.sh"'` (single-quote after closing double-quote)
   # The minimal shape that satisfies both: a `bash -c '…exec bash "<path>/scripts/wrapper.sh"'`
   # whose <path> contains the cache marker. We use the real install path.
+  # Note: we do NOT pin TOKENPLAN_UPSTREAM_CMD here — the no-op branch
+  # doesn't rewrite statusLine, so the command shape only matters for
+  # the fingerprint check.
   cat > "${root}/settings.json" <<EOF
 {
   "statusLine": {
     "type": "command",
-    "command": "bash -c 'plugin_dir=${curr}; export TOKENPLAN_UPSTREAM_CMD=\${plugin_dir}state/upstream-cmd.sh; exec bash \"\${plugin_dir}scripts/wrapper.sh\"'",
+    "command": "bash -c 'plugin_dir=${curr}; exec bash \"\${plugin_dir}scripts/wrapper.sh\"'",
     "_tokenplan_managed": true
   }
 }
@@ -153,8 +161,8 @@ EOF
 
   FIXTURE_ROOT="$root"
   CURR_PLUGIN_DIR="$curr"
-  CURR_STATE_DIR="${curr}/state"
   PREV_STATE_DIR="${prev}/state"
+  STABLE_STATE_DIR="${root}/plugins/tokenplan-usage-hud/state"
   CURR_VERSION="0.2.8"
   # CLAUDE_CONFIG_DIR is the parent of `plugins/`, not `plugins/` itself.
   # install.sh does CLAUDE_ROOT = ${CLAUDE_CONFIG_DIR:-$HOME}/plugins/...
@@ -174,17 +182,17 @@ run_install() {
 
 # --- Tests -------------------------------------------------------------------
 
-echo "== install.sh: state-carry-forward on no-op =="
+echo "== install.sh: state-migrate-forward on no-op =="
 
-echo "-- carries state/ from previous version when ours is empty --"
+echo "-- migrates legacy state/ from previous version when stable state/ is empty --"
 build_fixture yes no
 out=$(run_install)
-assert_file_exists "upstream-cmd.txt copied to current" "${CURR_STATE_DIR}/upstream-cmd.txt"
-assert_file_exists "upstream-cmd.sh copied to current" "${CURR_STATE_DIR}/upstream-cmd.sh"
-assert_eq "upstream-cmd.txt content matches previous" \
+assert_file_exists "upstream-cmd.txt migrated to stable state/" "${STABLE_STATE_DIR}/upstream-cmd.txt"
+assert_file_exists "upstream-cmd.sh migrated to stable state/" "${STABLE_STATE_DIR}/upstream-cmd.sh"
+assert_eq "upstream-cmd.txt content matches legacy" \
   "echo \"previous user statusline: ccstatusline\"" \
-  "$(cat "${CURR_STATE_DIR}/upstream-cmd.txt")"
-if [ -x "${CURR_STATE_DIR}/upstream-cmd.sh" ]; then
+  "$(cat "${STABLE_STATE_DIR}/upstream-cmd.txt")"
+if [ -x "${STABLE_STATE_DIR}/upstream-cmd.sh" ]; then
   echo "  ok  upstream-cmd.sh kept executable bit"
   PASS=$((PASS + 1))
 else
@@ -202,26 +210,25 @@ assert_match_str() {
     FAIL=$((FAIL + 1))
   fi
 }
-assert_match_str "log line announces carry-forward" "carried state/ forward" "$out"
+assert_match_str "log line announces migration" "migrated legacy state/" "$out"
 # Tear down.
 rm -rf "$FIXTURE_ROOT"
 
-echo "-- does NOT clobber state/ when ours is already populated --"
+echo "-- does NOT clobber stable state/ when already populated --"
 build_fixture yes yes
 out=$(run_install)
-assert_eq "upstream-cmd.txt content untouched (loader-preserved)" \
-  "echo \"loader-preserved state — do not clobber\"" \
-  "$(cat "${CURR_STATE_DIR}/upstream-cmd.txt")"
+assert_eq "upstream-cmd.txt content untouched (stable preserved)" \
+  "echo \"stable state — do not clobber\"" \
+  "$(cat "${STABLE_STATE_DIR}/upstream-cmd.txt")"
 assert_eq "upstream-cmd.sh content untouched" \
-  "$(printf '#!/usr/bin/env bash\necho "loader-preserved state — do not clobber"\n')" \
-  "$(cat "${CURR_STATE_DIR}/upstream-cmd.sh")"
-# The carry-forward message should NOT appear when the files were
-# already there.
-if echo "$out" | grep -qF "carried state/ forward"; then
-  echo "  FAIL should not have printed carry-forward log"
+  "$(printf '#!/usr/bin/env bash\necho "stable state — do not clobber"\n')" \
+  "$(cat "${STABLE_STATE_DIR}/upstream-cmd.sh")"
+# The migration message should NOT appear when the files were already there.
+if echo "$out" | grep -qF "migrated legacy state/"; then
+  echo "  FAIL should not have printed migration log"
   FAIL=$((FAIL + 1))
 else
-  echo "  ok  did not log carry-forward (files were already present)"
+  echo "  ok  did not log migration (stable state/ was already populated)"
   PASS=$((PASS + 1))
 fi
 rm -rf "$FIXTURE_ROOT"
@@ -231,7 +238,7 @@ echo "-- no previous version (only one cache dir): no-op without copying --"
 root="$(mktemp -d -t tokenplan-install-test-XXXXXX)"
 base="${root}/plugins/cache/tokenplan-usage-hud/tokenplan-usage-hud"
 curr="${base}/0.2.8"
-mkdir -p "${curr}/scripts/lib" "${curr}/dist"
+mkdir -p "${curr}/scripts/lib" "${curr}/dist" "${root}/plugins/tokenplan-usage-hud"
 ln -s "${SCRIPT_DIR}/wrapper.sh" "${curr}/scripts/wrapper.sh"
 ln -s "${SCRIPT_DIR}/install.sh" "${curr}/scripts/install.sh"
 ln -s "${SCRIPT_DIR}/lib/edit-settings.mjs" "${curr}/scripts/lib/edit-settings.mjs"
@@ -241,14 +248,15 @@ printf '# stub\n' > "${curr}/dist/index.js"
 cat > "${root}/settings.json" <<EOF
 { "statusLine": { "type": "command", "command": "bash -c 'plugin_dir=${curr}; exec bash \"\${plugin_dir}scripts/wrapper.sh\"'", "_tokenplan_managed": true } }
 EOF
-# Current state/ does NOT exist.
+# Stable state dir does NOT exist; legacy per-version state dir does NOT exist.
 out=$(HOME="$root" CLAUDE_CONFIG_DIR="$root" bash "$INSTALL_SH" 2>&1) || true
-assert_file_missing "upstream-cmd.txt was NOT created from nowhere" "${curr}/state/upstream-cmd.txt"
-if echo "$out" | grep -qF "carried state/ forward"; then
-  echo "  FAIL should not have printed carry-forward (no previous version)"
+assert_file_missing "stable upstream-cmd.txt was NOT created from nowhere" \
+  "${root}/plugins/tokenplan-usage-hud/state/upstream-cmd.txt"
+if echo "$out" | grep -qF "migrated legacy state/"; then
+  echo "  FAIL should not have printed migration log (no previous version)"
   FAIL=$((FAIL + 1))
 else
-  echo "  ok  no carry-forward log when there's no previous version"
+  echo "  ok  no migration log when there's no previous version"
   PASS=$((PASS + 1))
 fi
 # Should still print the standard no-op message.

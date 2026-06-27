@@ -13,8 +13,10 @@
 #   - Idempotent: re-running on an already-managed statusLine is a no-op.
 #   - If a non-managed statusLine is found, the current settings.json is backed
 #     up to settings.json.bak.<ISO-timestamp>, and the original statusLine
-#     command is preserved in <plugin-cache-dir>/state/upstream-cmd.sh so the
-#     wrapper can invoke it as the upstream.
+#     command is preserved in <claude-root>/plugins/tokenplan-usage-hud/state/upstream-cmd.sh
+#     (sibling of config.json) so the wrapper can invoke it as the upstream.
+#     This location is STABLE across /plugin install rolls — the per-version
+#     cache dir can come and go, but the state dir is permanent.
 #   - Settings are rewritten via scripts/lib/edit-settings.js, which preserves
 #     the original line ending (CRLF on Windows, LF elsewhere).
 #
@@ -70,7 +72,12 @@ PLUGIN_DIR=$(ls -d ${PLUGIN_BASE}/*/ 2>/dev/null \
   | awk -F/ '{ print $(NF-1) "\t" $(0) }' \
   | sort -t. -k1,1n -k2,2n -k3,3n -k4,4n \
   | tail -1 | cut -f2-)
-STATE_DIR="${PLUGIN_DIR%/}/state"
+# State lives at a STABLE location — sibling of config.json
+# (~/.claude/plugins/tokenplan-usage-hud/state/) — so it survives
+# /plugin install rolls and cache wipes. v0.2.19 moved it here from
+# the per-version ${PLUGIN_DIR}/state/ so a future uninstall can find
+# the pre-managed command even after the cache has been cleaned.
+STATE_DIR="${CLAUDE_ROOT}/plugins/tokenplan-usage-hud/state"
 UPSTREAM_CMD_FILE="${STATE_DIR}/upstream-cmd.sh"
 UPSTREAM_CMD_ONLY="${STATE_DIR}/upstream-cmd.txt"
 WRAPPER="${PLUGIN_DIR%/}/scripts/wrapper.sh"
@@ -171,44 +178,39 @@ CURRENT=$(node "$HELPER" "$WIN_TARGET" status)
 
 case "$CURRENT" in
   managed)
-    # Carry the upstream-cmd forward from the previous version's cache
-    # dir to ours, in case Claude Code's marketplace loader didn't
-    # (or the previous version was wiped, or this is the first install
-    # run after a manual /plugin install). Without this, a later
-    # --uninstall on THIS version's dir would have no state to restore
-    # from and would fall back to the .bak.<ts> heuristic (which can
-    # itself be empty if no settings.json.bak.<ts> predates the managed
-    # install).
+    # Carry the upstream-cmd forward into our stable STATE_DIR
+    # (${CLAUDE_ROOT}/plugins/tokenplan-usage-hud/state/), in case:
+    #   - The user just upgraded from v0.2.18 (where state lived at
+    #     the per-version cache dir); the OLD location still has the
+    #     pre-managed command, and we need to move it to the new home.
+    #   - The previous version's cache was wiped but a foreign-install
+    #     state survived somewhere (rare).
+    #   - The user manually deleted ${CLAUDE_ROOT}/plugins/tokenplan-usage-hud/state/
+    #     after uninstall but the settings.json still points at us.
     #
-    # Only copy if OUR state dir is missing the upstream-cmd.txt — we
-    # don't want to clobber a state we already have (e.g. set by a
-    # recent replace-install that the loader preserved). We look at the
-    # SECOND-newest version (the one immediately before PLUGIN_DIR),
-    # because the loader typically copies state to the new dir
-    # automatically, and the genuinely-lost-state case is the previous
-    # version being orphaned or wiped.
+    # Sources to check, in priority order:
+    #   1. The PREVIOUS per-version cache dir's state/ (v0.2.18 and older).
+    #   2. The stable state dir itself (already populated — nothing to do).
+    #
+    # Only copy into STATE_DIR if it's currently missing upstream-cmd.txt
+    # — we don't want to clobber a state we already have.
     if [ ! -f "$UPSTREAM_CMD_ONLY" ]; then
       PREV=$(ls -d ${PLUGIN_BASE}/*/ 2>/dev/null \
         | awk -F/ '{ print $(NF-1) "\t" $(0) }' \
         | sort -t. -k1,1n -k2,2n -k3,3n -k4,4n \
         | tail -2 | head -1 | cut -f2-)
       if [ -n "$PREV" ] && [ "$PREV" != "${PLUGIN_DIR%/}/" ] && [ -f "${PREV%/}/state/upstream-cmd.txt" ]; then
-        # Create STATE_DIR first (may not exist on a fresh loader copy
-        # of a version that was installed but never :install'd). -p is
-        # idempotent.
+        # Create STATE_DIR first (-p is idempotent). Even on a fresh
+        # install this is the first time the dir exists.
         mkdir -p "$STATE_DIR"
-        # Copy each file individually so we never overwrite a file the
-        # loader DID copy forward (e.g. if upstream-cmd.sh is here but
-        # upstream-cmd.txt is missing). cp -n is "no clobber" on
-        # POSIX/Git-Bash; fall back to a guarded loop on systems where
-        # it's not available.
+        # Copy each file individually so we never overwrite a file
+        # that's already in place. cp -n is "no clobber" on POSIX/
+        # Git-Bash; fall back to a guarded loop on systems where it's
+        # not available.
         if cp -n "${PREV%/}/state/upstream-cmd.sh" "${STATE_DIR}/upstream-cmd.sh" 2>/dev/null \
            && cp -n "${PREV%/}/state/upstream-cmd.txt" "${STATE_DIR}/upstream-cmd.txt" 2>/dev/null; then
           : # cp -n succeeded — both files came from PREV
         else
-          # No `cp -n` (rare — only on some embedded bash). Guard
-          # manually: only copy files that don't already exist on our
-          # side.
           for f in upstream-cmd.sh upstream-cmd.txt; do
             if [ ! -f "${STATE_DIR}/${f}" ] && [ -f "${PREV%/}/state/${f}" ]; then
               cp "${PREV%/}/state/${f}" "${STATE_DIR}/${f}"
@@ -219,7 +221,7 @@ case "$CURRENT" in
         # as a bash script later (see uninstall.sh), so it must be
         # executable.
         chmod +x "${STATE_DIR}/upstream-cmd.sh" 2>/dev/null || true
-        echo "install.sh: carried state/ forward from $(basename "${PREV%/}") to $(basename "${PLUGIN_DIR%/}") (preserves uninstall's restore source)"
+        echo "install.sh: migrated legacy state/ from $(basename "${PREV%/}") to ${STATE_DIR}"
       fi
     fi
     echo "install.sh: ${TARGET} already managed by tokenplan-usage-hud; no-op."

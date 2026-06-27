@@ -6,12 +6,14 @@ allowed-tools: ["Bash(${CLAUDE_PLUGIN_ROOT}/scripts/uninstall.sh:*)"]
 
 # tokenplan-usage-hud :uninstall
 
-Restores the original `statusLine.command` from `<plugin-cache>/state/upstream-cmd.txt`
-if available, otherwise falls back to the most recent pre-managed
-`settings.json.bak.<ts>`. Strips `tokenplan-usage-hud@tokenplan-usage-hud`
+Restores the original `statusLine.command` from the stable
+`plugins/tokenplan-usage-hud/state/upstream-cmd.txt` (sibling of
+`config.json`) if available, otherwise falls back to the most recent
+pre-managed `settings.json.bak.<ts>`. Strips `tokenplan-usage-hud@tokenplan-usage-hud`
 from `enabledPlugins` and `extraKnownMarketplaces`, wipes
-`cache/tokenplan-usage-hud/`, the marketplace dir, and the plugin's row
-from `installed_plugins.json` and `known_marketplaces.json`. Backs up
+`cache/tokenplan-usage-hud/`, the marketplace dir, the stable
+`plugins/tokenplan-usage-hud/state/` dir, and the plugin's row from
+`installed_plugins.json` and `known_marketplaces.json`. Backs up
 `settings.json` and the two JSON files with `.<name>.bak.<timestamp>`
 before any destructive change. Runs `scripts/clean.sh` as its final step
 to trim old backups (keeps only the most recent per file; user-named
