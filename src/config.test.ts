@@ -209,47 +209,47 @@ describe("loadConfig — partial / per-section validation", () => {
   });
 });
 
-describe("loadConfig — stale.resetArrows", () => {
+describe("loadConfig — countdown.resetArrows", () => {
   it("default is the 12-emoji clock face array", () => {
     const cfg = __testing.DEFAULT_CONFIG;
-    assert.equal(cfg.stale.resetArrows.length, 12);
-    assert.equal(cfg.stale.resetArrows[0], "🕛");
-    assert.equal(cfg.stale.resetArrows[11], "🕐");
+    assert.equal(cfg.countdown.resetArrows.length, 12);
+    assert.equal(cfg.countdown.resetArrows[0], "🕛");
+    assert.equal(cfg.countdown.resetArrows[11], "🕐");
   });
 
   it("accepts a custom array of single-line strings", async () => {
     writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
-      stale: { resetArrows: ["⏳", "⌛"] }
+      countdown: { resetArrows: ["⏳", "⌛"] }
     }));
     const cfg = await loadConfig();
-    assert.deepEqual(cfg.stale.resetArrows, ["⏳", "⌛"]);
+    assert.deepEqual(cfg.countdown.resetArrows, ["⏳", "⌛"]);
   });
 
   it("rejects a non-array resetArrows (e.g. a string) and falls back to defaults", async () => {
     writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
-      stale: { resetArrows: "↻" }
+      countdown: { resetArrows: "↻" }
     }));
     const cfg = await loadConfig();
-    assert.equal(cfg.stale.resetArrows.length, 12);
-    assert.equal(cfg.stale.resetArrows[0], "🕛");
+    assert.equal(cfg.countdown.resetArrows.length, 12);
+    assert.equal(cfg.countdown.resetArrows[0], "🕛");
     assert.match(capturedStderr, /resetArrows/);
   });
 
   it("rejects an empty array and falls back to defaults", async () => {
     writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
-      stale: { resetArrows: [] }
+      countdown: { resetArrows: [] }
     }));
     const cfg = await loadConfig();
-    assert.equal(cfg.stale.resetArrows.length, 12);
+    assert.equal(cfg.countdown.resetArrows.length, 12);
     assert.match(capturedStderr, /resetArrows/);
   });
 
   it("rejects an array containing non-strings or multi-line strings and falls back to defaults", async () => {
     writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
-      stale: { resetArrows: ["OK", 42, "fine\n", null] }
+      countdown: { resetArrows: ["OK", 42, "fine\n", null] }
     }));
     const cfg = await loadConfig();
-    assert.equal(cfg.stale.resetArrows.length, 12);
+    assert.equal(cfg.countdown.resetArrows.length, 12);
     assert.match(capturedStderr, /resetArrows/);
   });
 
@@ -259,8 +259,8 @@ describe("loadConfig — stale.resetArrows", () => {
     }));
     const cfg = await loadConfig();
     // The 12-emoji default is still in place; old keys are silently ignored.
-    assert.equal(cfg.stale.resetArrows.length, 12);
-    assert.equal(cfg.stale.resetArrows[0], "🕛");
+    assert.equal(cfg.countdown.resetArrows.length, 12);
+    assert.equal(cfg.countdown.resetArrows[0], "🕛");
   });
 });
 

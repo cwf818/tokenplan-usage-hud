@@ -11,7 +11,7 @@ import {
   resolveDisplayMode,
   splitBar,
 } from "./render.ts";
-import { __resetForTest } from "./config.ts";
+import { __resetForTest, type Config } from "./config.ts";
 
 const RESET = "\x1b[0m";
 const BRIGHT_GREEN = "\x1b[38;5;41m";
@@ -387,7 +387,7 @@ describe("formatResetSuffix", () => {
 
   describe("minUnit='s' (second granularity)", () => {
     beforeEach(() => {
-      __resetForTest({ timeFormat: { minUnit: "s", maxUnitCount: 2 }, stale: { ageEmoji: { healthy: "🔗", broken: "⛓️‍💥" }, resetArrows: ["🕛","🕚","🕙","🕘","🕗","🕖","🕕","🕔","🕓","🕒","🕑","🕐"], separator: " · " } });
+      __resetForTest({ timeFormat: { minUnit: "s", maxUnitCount: 2 }, stale: { ageEmoji: { healthy: "🔗", broken: "⛓️‍💥" }, separator: " · " }, countdown: { resetArrows: ["🕛","🕚","🕙","🕘","🕗","🕖","🕕","🕔","🕓","🕒","🕑","🕐"] } });
     });
     afterEach(() => {
       __resetForTest();
@@ -460,7 +460,7 @@ describe("pickResetArrow (stale.resetArrows[] by remaining/total)", () => {
   });
 
   it("two-glyph hourglass pair: full→empty", () => {
-    __resetForTest({ timeFormat: { minUnit: "m", maxUnitCount: 2 }, stale: { resetArrows: ["⏳", "⌛"], ageEmoji: { healthy: "🔗", broken: "⛓️‍💥" }, separator: " · " } });
+    __resetForTest({ timeFormat: { minUnit: "m", maxUnitCount: 2 }, stale: { ageEmoji: { healthy: "🔗", broken: "⛓️‍💥" }, separator: " · " }, countdown: { resetArrows: ["⏳", "⌛"] } });
     try {
       // Use a small but non-trivial remaining so the countdown is non-empty.
       const arrowAt = (ratio: number) => {
@@ -679,12 +679,16 @@ describe("formatStaleSuffix", () => {
     assert.equal(formatStaleSuffix(Number.POSITIVE_INFINITY), "");
   });
 
-  it("rounds sub-minute remainder UP to 1m ago", () => {
-    // 30 seconds is well under a minute but we never want to show "0m ago".
-    // v0.2.11: broken emoji IS the indicator (no leading "· " separator).
-    assert.equal(strip(formatStaleSuffix(30_000)), "⛓️‍💥 1m ago");
-    // Exactly 1s short of 1m — round up to 1m, not down to 0.
-    assert.equal(strip(formatStaleSuffix(59_000)), "⛓️‍💥 1m ago");
+  it("sub-minute uses minUnit floor: 'm' → '<1m ago', 's' → '${seconds}s ago'", () => {
+    // v0.2.14: no spurious round-up — minUnit governs the sub-minute
+    // rendering. With default minUnit='m', sub-minute → "<1m ago".
+    // With minUnit='s', sub-minute → "30s ago" / "59s ago".
+    assert.equal(strip(formatStaleSuffix(30_000)), "⛓️‍💥 <1m ago");
+    assert.equal(strip(formatStaleSuffix(59_000)), "⛓️‍💥 <1m ago");
+    __resetForTest({ timeFormat: { minUnit: "s", maxUnitCount: 2 } } as Partial<Config>);
+    assert.equal(strip(formatStaleSuffix(30_000)), "⛓️‍💥 30s ago");
+    assert.equal(strip(formatStaleSuffix(59_000)), "⛓️‍💥 59s ago");
+    __resetForTest();
   });
 
   it("sub-minute → 'Xm ago' (X >= 1)", () => {

@@ -278,30 +278,6 @@ A reference with every field is at [config.example.json](./config.example.json).
     // the user actually sees (no leading separator) — it's the
     // indicator of network failure. Healthy is reserved for future use.
     "ageEmoji": { "healthy": "🔗", "broken": "⛓️‍💥" },
-    // Glyphs appended to the reset countdown (e.g. "2h3m🕛"). The picker
-    // indexes by `remainingMs / resetDurationMs`, so the array reads
-    // left-to-right as "few remaining → many remaining" (i.e. ascending
-    // by remaining-time ratio). Index 0 is shown when remaining ≈ 0
-    // (about to reset); the last entry is shown when remaining ≈ total
-    // (fresh). Twelve clock-face emoji give a smooth visual ramp from
-    // 12 o'clock (🕛, least remaining) around to 1 o'clock (🕐, most
-    // remaining); two glyphs give a binary hourglass (full/empty);
-    // one glyph is static. Providers without start_time (DeepSeek,
-    // legacy) fall back to index 0.
-    "resetArrows": [
-      "🕛",
-      "🕚",
-      "🕙",
-      "🕘",
-      "🕗",
-      "🕖",
-      "🕕",
-      "🕔",
-      "🕓",
-      "🕒",
-      "🕑",
-      "🕐",
-    ],
   },
   "bar": {
     // bar geometry
@@ -330,6 +306,35 @@ A reference with every field is at [config.example.json](./config.example.json).
     //   2h0m     → "2h0m"   (NOT "2h" — internal zeros preserved)
     //   0d0h5m   → "5m"     (leading zeros dropped)
     "maxUnitCount": 2,
+  },
+  "countdown": {
+    // Reset-countdown visualization. Belongs with the countdown, NOT with
+    // the stale-on-error annotation (which is a separate concern).
+    //
+    // Glyphs appended to the reset countdown (e.g. "2h3m🕛"). The picker
+    // indexes by `remainingMs / resetDurationMs`, so the array reads
+    // left-to-right as "few remaining → many remaining" (i.e. ascending
+    // by remaining-time ratio). Index 0 is shown when remaining ≈ 0
+    // (about to reset); the last entry is shown when remaining ≈ total
+    // (fresh). Twelve clock-face emoji give a smooth visual ramp from
+    // 12 o'clock (🕛, least remaining) around to 1 o'clock (🕐, most
+    // remaining); two glyphs give a binary hourglass (full/empty);
+    // one glyph is static. Providers without start_time (DeepSeek,
+    // legacy) fall back to index 0.
+    "resetArrows": [
+      "🕛",
+      "🕚",
+      "🕙",
+      "🕘",
+      "🕗",
+      "🕖",
+      "🕕",
+      "🕔",
+      "🕓",
+      "🕒",
+      "🕑",
+      "🕐",
+    ],
   },
 }
 ```
@@ -416,12 +421,13 @@ Three outcomes when the provider API is called:
 
 The `X ago` format uses the **same template as the reset countdown**:
 d/h/m units, `maxUnitCount=2` default, drop leading zeros but keep
-internal/trailing zeros. Sub-minute rounds UP to `1m ago` (never shows
-`0m ago`). Examples:
+internal/trailing zeros. Sub-minute follows `timeFormat.minUnit`:
+`minUnit="m"` → `<1m ago`; `minUnit="s"` → `${seconds}s ago`. Examples
+(with default `minUnit="m"`):
 
 | Cached age  | Rendered suffix        |
 | ----------- | ---------------------- |
-| 30 s        | `⛓️‍💥 1m ago`           |
+| 30 s        | `⛓️‍💥 <1m ago`          |
 | 5 min       | `⛓️‍💥 5m ago`           |
 | 90 min      | `⛓️‍💥 1h30m ago`         |
 | 24 h        | `⛓️‍💥 1d0h ago`          |
