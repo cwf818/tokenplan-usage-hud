@@ -55,10 +55,20 @@ async function readStdin(): Promise<string> {
 // FetchResult and buildProviderLine live in src/dispatch.ts so tests can
 // import them without dragging in index.ts's stdin side effects.
 
+// The plugin is a per-tick child process — every invocation is a fresh
+// process, so the in-memory cache is reset on every tick. Within a
+// single tick we still go through `cache.get` for the (defensive) hot
+// path, but its only real consumer is the `cache.peek` fallback in the
+// fetch-failed branch. There is no persistent cross-tick cache by
+// design: the age suffix is computed from the API response itself
+// (`Window.resetStartAt` → "time since this window started"), so the
+// user sees a meaningful value on every successful tick without any
+// disk state.
+
 async function getRemainsData(token: string): Promise<FetchResult<Remains>> {
   const ttlMs = configStore.get().cacheTtlMs;
-  const fresh = cache.get<Remains>(CACHE_KEY_REMAINS, ttlMs);
-  if (fresh) return { kind: "fresh", data: fresh };
+  const cached = cache.get<Remains>(CACHE_KEY_REMAINS, ttlMs);
+  if (cached) return { kind: "fresh", data: cached };
 
   try {
     const data = await fetchRemains(token, AbortSignal.timeout(configStore.get().fetchTimeoutMs));
@@ -68,21 +78,21 @@ async function getRemainsData(token: string): Promise<FetchResult<Remains>> {
     }
     // Fetcher returned null (e.g. base_resp.status_code != 0). Treat as a
     // hard fail, but still try the stale cache.
-    const cached = cache.peekWithAge<Remains>(CACHE_KEY_REMAINS);
-    if (cached) return { kind: "stale", data: cached.value, ageMs: cached.ageMs };
+    const stale = cache.peekWithAge<Remains>(CACHE_KEY_REMAINS);
+    if (stale) return { kind: "stale", data: stale.value, ageMs: stale.ageMs };
     return { kind: "fail" };
   } catch {
     // Network / HTTP error. Stale-on-error: keep showing the last good value.
-    const cached = cache.peekWithAge<Remains>(CACHE_KEY_REMAINS);
-    if (cached) return { kind: "stale", data: cached.value, ageMs: cached.ageMs };
+    const stale = cache.peekWithAge<Remains>(CACHE_KEY_REMAINS);
+    if (stale) return { kind: "stale", data: stale.value, ageMs: stale.ageMs };
     return { kind: "fail" };
   }
 }
 
 async function getBalanceData(token: string): Promise<FetchResult<Balance>> {
   const ttlMs = configStore.get().cacheTtlMs;
-  const fresh = cache.get<Balance>(CACHE_KEY_BALANCE, ttlMs);
-  if (fresh) return { kind: "fresh", data: fresh };
+  const cached = cache.get<Balance>(CACHE_KEY_BALANCE, ttlMs);
+  if (cached) return { kind: "fresh", data: cached };
 
   try {
     const data = await fetchBalance(token, AbortSignal.timeout(configStore.get().fetchTimeoutMs));
@@ -90,12 +100,12 @@ async function getBalanceData(token: string): Promise<FetchResult<Balance>> {
       cache.set(CACHE_KEY_BALANCE, data);
       return { kind: "fresh", data };
     }
-    const cached = cache.peekWithAge<Balance>(CACHE_KEY_BALANCE);
-    if (cached) return { kind: "stale", data: cached.value, ageMs: cached.ageMs };
+    const stale = cache.peekWithAge<Balance>(CACHE_KEY_BALANCE);
+    if (stale) return { kind: "stale", data: stale.value, ageMs: stale.ageMs };
     return { kind: "fail" };
   } catch {
-    const cached = cache.peekWithAge<Balance>(CACHE_KEY_BALANCE);
-    if (cached) return { kind: "stale", data: cached.value, ageMs: cached.ageMs };
+    const stale = cache.peekWithAge<Balance>(CACHE_KEY_BALANCE);
+    if (stale) return { kind: "stale", data: stale.value, ageMs: stale.ageMs };
     return { kind: "fail" };
   }
 }

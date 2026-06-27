@@ -1,8 +1,9 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { buildProviderLine, type FetchResult } from "./dispatch.ts";
+import { buildProviderLine, ageFromRemains, type FetchResult } from "./dispatch.ts";
 import type { Remains } from "./api.ts";
 import type { Balance } from "./api.deepseek.ts";
+import { __resetForTest } from "./config.ts";
 
 const RESET = "\x1b[0m";
 const RED = "\x1b[38;5;196m";
@@ -11,28 +12,106 @@ const STALE_COLOR = "\x1b[90m";
 const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
 
 // A minimally valid Remains payload (two windows) — enough for the renderer.
-const MINI_DATA: Remains = {
-  fiveHour: { pct: 38, resetAt: null },
+// Window.resetStartAt is the source of truth for the age suffix (v0.2.15+).
+const buildMiniData = (startedMsAgo: number | null): Remains => ({
+  fiveHour: {
+    pct: 38,
+    resetAt: null,
+    resetStartAt: startedMsAgo == null ? null : new Date(Date.now() - startedMsAgo).toISOString(),
+  },
   weekly: { pct: 39, resetAt: null },
-};
+});
 
-// A minimally valid Balance payload.
+// A minimally valid Balance payload — DeepSeek has no window-start concept.
 const DEEP_DATA: Balance = {
   isAvailable: true,
   entries: [{ currency: "USD", totalBalance: 25 }],
   minValue: 25,
 };
 
-describe("buildProviderLine — fresh", () => {
-  it("MiniMax: renders the two-window Usage line, no stale suffix", () => {
-    const result: FetchResult<Remains> = { kind: "fresh", data: MINI_DATA };
+// Pin config defaults the tests rely on so a future config refactor
+// doesn't quietly break the assertions below.
+const pinDefaults = () =>
+  __resetForTest({
+    cacheTtlMs: 60_000,
+    stale: {
+      ageEmoji: { healthy: "🔗", broken: "⛓️‍💥" },
+      separator: " · ",
+    },
+    timeFormat: { minUnit: "m", maxUnitCount: 2 },
+  });
+
+describe("ageFromRemains", () => {
+  it("returns 0 when no resetStartAt is present", () => {
+    pinDefaults();
+    const age = ageFromRemains({
+      fiveHour: { pct: 10, resetAt: null },
+      weekly: { pct: 10, resetAt: null },
+    });
+    assert.equal(age, 0);
+  });
+
+  it("returns elapsed ms from fiveHour.resetStartAt", () => {
+    pinDefaults();
+    const data: Remains = {
+      fiveHour: {
+        pct: 10,
+        resetAt: null,
+        resetStartAt: new Date(Date.now() - 5_000).toISOString(),
+      },
+      weekly: { pct: 10, resetAt: null },
+    };
+    const age = ageFromRemains(data);
+    assert.ok(age >= 5_000 && age < 6_000, `expected ~5s, got ${age}`);
+  });
+
+  it("falls back to weekly.resetStartAt when fiveHour is missing", () => {
+    pinDefaults();
+    const data: Remains = {
+      fiveHour: { pct: 0, resetAt: null },
+      weekly: {
+        pct: 0,
+        resetAt: null,
+        resetStartAt: new Date(Date.now() - 90 * 60_000).toISOString(),
+      },
+    };
+    const age = ageFromRemains(data);
+    assert.ok(age >= 90 * 60_000 && age < 91 * 60_000, `expected ~90min, got ${age}`);
+  });
+});
+
+describe("buildProviderLine — fresh (age derived from API resetStartAt)", () => {
+  it("MiniMax: resetStartAt=null renders no suffix (no age data)", () => {
+    pinDefaults();
+    const result: FetchResult<Remains> = { kind: "fresh", data: buildMiniData(null) };
     const line = buildProviderLine("minimax", result);
     assert.ok(line);
     assert.ok(line!.startsWith("Usage: "));
     assert.ok(!line!.includes("ago"));
   });
 
-  it("DeepSeek: renders the Balance line, no stale suffix", () => {
+  it("MiniMax: 30s into the window shows healthy 🔗 <1m ago suffix", () => {
+    pinDefaults();
+    const result: FetchResult<Remains> = { kind: "fresh", data: buildMiniData(30_000) };
+    const line = buildProviderLine("minimax", result);
+    assert.ok(line);
+    assert.ok(strip(line!).endsWith("🔗 <1m ago"));
+    assert.ok(line!.endsWith(`${STALE_COLOR}🔗 <1m ago${RESET}`));
+  });
+
+  it("MiniMax: 1h28m into the window shows healthy 🔗 1h28m ago suffix", () => {
+    pinDefaults();
+    const result: FetchResult<Remains> = {
+      kind: "fresh",
+      data: buildMiniData(88 * 60_000),
+    };
+    const line = buildProviderLine("minimax", result);
+    assert.ok(line);
+    assert.ok(strip(line!).endsWith("🔗 1h28m ago"));
+  });
+
+  it("DeepSeek: fresh tick renders no suffix (no window concept)", () => {
+    pinDefaults();
     const result: FetchResult<Balance> = { kind: "fresh", data: DEEP_DATA };
     const line = buildProviderLine("deepseek", result);
     assert.ok(line);
@@ -42,22 +121,29 @@ describe("buildProviderLine — fresh", () => {
   });
 
   it("null provider: returns null even with fresh data", () => {
-    const result: FetchResult<Remains> = { kind: "fresh", data: MINI_DATA };
+    pinDefaults();
+    const result: FetchResult<Remains> = { kind: "fresh", data: buildMiniData(0) };
     assert.equal(buildProviderLine(null, result), null);
   });
 });
 
-describe("buildProviderLine — stale", () => {
-  it("MiniMax: appends dim '⛓️‍💥 5m ago' suffix", () => {
-    const result: FetchResult<Remains> = { kind: "stale", data: MINI_DATA, ageMs: 5 * 60_000 };
+describe("buildProviderLine — stale (fetch failed, cache reused)", () => {
+  it("MiniMax: appends dim '⛓️‍💥 5m ago' suffix (broken emoji on stale)", () => {
+    pinDefaults();
+    // Stale-on-error → ageMs comes from cache, NOT from resetStartAt.
+    const result: FetchResult<Remains> = {
+      kind: "stale",
+      data: buildMiniData(null),
+      ageMs: 5 * 60_000,
+    };
     const line = buildProviderLine("minimax", result);
     assert.ok(line);
-    // v0.2.11: broken emoji IS the indicator (no leading " · " separator).
     assert.ok(strip(line!).endsWith("⛓️‍💥 5m ago"));
     assert.ok(line!.endsWith(`${STALE_COLOR}⛓️‍💥 5m ago${RESET}`));
   });
 
-  it("DeepSeek: appends dim '⛓️‍💥 1h30m ago' suffix (maxUnitCount=2, keeps minutes)", () => {
+  it("DeepSeek: appends dim '⛓️‍💥 1h30m ago' suffix (maxUnitCount=2 keeps minutes)", () => {
+    pinDefaults();
     const result: FetchResult<Balance> = {
       kind: "stale",
       data: DEEP_DATA,
@@ -65,12 +151,12 @@ describe("buildProviderLine — stale", () => {
     };
     const line = buildProviderLine("deepseek", result);
     assert.ok(line);
-    // v0.2.11: maxUnitCount=2 default keeps internal non-zero units.
-    // 90 minutes = 1h30m, NOT "1h" (the old behavior).
+    // 90 minutes = 1h30m, NOT "1h" (maxUnitCount=2 keeps internal non-zero units).
     assert.ok(strip(line!).endsWith("⛓️‍💥 1h30m ago"));
   });
 
   it("stale line still renders the actual cached data (not 'not available!')", () => {
+    pinDefaults();
     const result: FetchResult<Balance> = {
       kind: "stale",
       data: DEEP_DATA,
@@ -84,6 +170,7 @@ describe("buildProviderLine — stale", () => {
 
 describe("buildProviderLine — fail", () => {
   it("MiniMax: renders 'Usage: not available!' in RED", () => {
+    pinDefaults();
     const result: FetchResult<Remains> = { kind: "fail" };
     const line = buildProviderLine("minimax", result);
     assert.equal(line, `Usage: ${RED}not available!${RESET}`);
@@ -91,6 +178,7 @@ describe("buildProviderLine — fail", () => {
   });
 
   it("DeepSeek: renders 'Balance: not available!' in RED", () => {
+    pinDefaults();
     const result: FetchResult<Balance> = { kind: "fail" };
     const line = buildProviderLine("deepseek", result);
     assert.equal(line, `Balance: ${RED}not available!${RESET}`);
@@ -98,11 +186,13 @@ describe("buildProviderLine — fail", () => {
   });
 
   it("null provider: returns null on fail (no line at all)", () => {
+    pinDefaults();
     const result: FetchResult<Remains> = { kind: "fail" };
     assert.equal(buildProviderLine(null, result), null);
   });
 
   it("fail line does NOT carry a stale suffix (nothing to be stale-of)", () => {
+    pinDefaults();
     const result: FetchResult<Balance> = { kind: "fail" };
     const line = buildProviderLine("deepseek", result);
     assert.ok(!line!.includes("ago"));

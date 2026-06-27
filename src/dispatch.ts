@@ -8,9 +8,10 @@
 //   stale — fetch failed but a cached value exists; `ageMs` is how old it is
 //   fail  — fetch failed AND no cached value; caller renders "not available!"
 //
-// The renderer uses the distinction to decide whether to append the dim
-// " · Xm ago" annotation (stale only) or to render a hard-fail placeholder
-// (fail only). Fresh renders are unchanged.
+// v0.2.15: the age suffix is now ALWAYS rendered on a successful tick.
+// The age is computed from the API response's `Window.resetStartAt`
+// (time since the window started) — no disk persistence needed, since
+// the API response is the source of truth and is fresh on every tick.
 
 import type { Remains } from "./api.ts";
 import type { Balance } from "./api.deepseek.ts";
@@ -22,21 +23,39 @@ export type FetchResult<T> =
   | { kind: "stale"; data: T; ageMs: number }
   | { kind: "fail" };
 
-// Render the MiniMax two-window line from a Remains payload. `staleMs` is
-// passed through to formatLine so the trailing " · Xm ago" annotation can
-// be appended when applicable.
+// Compute the age suffix from the API data. For MiniMax, this is the
+// time since the 5h window started (Window.resetStartAt is part of
+// every API response — survives across ticks without persistence).
+// Returns 0 when the timestamp is missing or unparseable (the suffix
+// is suppressed when ageMs <= 0).
+export function ageFromRemains(data: Remains, nowMs: number = Date.now()): number {
+  const start = data.fiveHour?.resetStartAt ?? data.weekly?.resetStartAt;
+  if (!start) return 0;
+  const ms = Date.parse(start);
+  if (!Number.isFinite(ms)) return 0;
+  return Math.max(0, nowMs - ms);
+}
+
+// Render the MiniMax two-window line from a Remains payload. The
+// `ageMs` arg comes from the FetchResult — for fresh ticks it's not
+// provided, so we derive it from the API's `resetStartAt` (time since
+// this window started, baked into every response). For stale ticks,
+// `ageMs` carries the time since the last successful fetch. The
+// `stale` flag controls the healthy/broken emoji in the suffix.
 export function renderPlanLine(
   data: Remains,
   mode: ReturnType<typeof resolveDisplayMode>,
-  staleMs?: number
+  ageMs?: number,
+  stale: boolean = false,
 ): string | null {
+  const effectiveAge = ageMs ?? ageFromRemains(data);
   if (data.fiveHour && data.weekly) {
-    return formatLine(data.fiveHour, data.weekly, mode, Date.now(), staleMs);
+    return formatLine(data.fiveHour, data.weekly, mode, Date.now(), effectiveAge, stale);
   }
   // If only one window is present, render what's available rather than nothing.
   const zero = { pct: 0 } as const;
-  if (data.fiveHour) return formatLine(data.fiveHour, zero, mode, Date.now(), staleMs);
-  if (data.weekly) return formatLine(zero, data.weekly, mode, Date.now(), staleMs);
+  if (data.fiveHour) return formatLine(data.fiveHour, zero, mode, Date.now(), effectiveAge, stale);
+  if (data.weekly) return formatLine(zero, data.weekly, mode, Date.now(), effectiveAge, stale);
   return null;
 }
 
@@ -58,10 +77,23 @@ export function buildProviderLine(
     // Display mode now lives in configStore — the old TOKENPLAN_DISPLAY
     // env var is gone (see README "Configuration").
     const mode = resolveDisplayMode();
-    return renderPlanLine(result.data as Remains, mode, result.kind === "stale" ? result.ageMs : undefined);
+    const stale = result.kind === "stale";
+    return renderPlanLine(
+      result.data as Remains,
+      mode,
+      stale ? result.ageMs : undefined,
+      stale,
+    );
   }
   if (provider === "deepseek") {
-    return formatBalanceLine(result.data as Balance, result.kind === "stale" ? result.ageMs : undefined);
+    // DeepSeek has no window-start concept; the suffix only renders
+    // on stale-on-error (when the caller-supplied ageMs > 0).
+    const stale = result.kind === "stale";
+    return formatBalanceLine(
+      result.data as Balance,
+      stale ? result.ageMs : undefined,
+      stale,
+    );
   }
   return null;
 }

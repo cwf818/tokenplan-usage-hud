@@ -88,19 +88,24 @@ type DisplayMode = "used" | "remaining";
 // level (rather than buried under `stale`) means a user who wants
 // second-level granularity anywhere gets it everywhere consistently.
 type TimeFormat = {
-  // Smallest unit shown on time countdowns.
-  //   "m" (default): sub-unit shows as "<1m" — the "<" prefix signals
-  //                  "less than 1 minute" so a window about to reset is
-  //                  visually distinct from one with a full minute left.
-  //   "s":           sub-unit shows as actual seconds (e.g. "47s").
-  minUnit: "m" | "s";
-  // How many non-zero units to display. Drops LEADING zero units
-  // first, then takes up to maxUnitCount from the start — including
-  // any internal/trailing zero units. Clamped to [1, 4]. Examples:
+  // Smallest unit shown on time countdowns. Units BELOW this granularity
+  // are never rendered directly — when all remaining units collapse to
+  // zero (or get truncated), the formatter falls back to "<1<minUnit>"
+  // (positive remaining) or "0<minUnit>" (past-due).
+  //   "m" (default): sub-minute shows as "<1m".
+  //   "s":           sub-minute shows as actual seconds (e.g. "47s").
+  //   "h":           sub-hour shows as "<1h" (useful for windows where
+  //                  minute-precision is noise — e.g. the weekly reset).
+  minUnit: "m" | "s" | "h";
+  // How many non-zero units to display. After dropping units below
+  // minUnit AND dropping leading zero units, takes up to maxUnitCount
+  // from the start — including any internal/trailing zero units.
+  // Clamped to [1, 4]. Examples (minUnit="m"):
   //   1d2h3m4s → "1d2h"
   //   2h3m4s   → "2h3m"
   //   2h0m     → "2h0m"   (NOT "2h" — internal zeros preserved)
   //   0d0h5m   → "5m"     (leading zeros dropped)
+  //   0d0h30s  → "<1m"    (all extracted units zero under minUnit)
   maxUnitCount: number;
 };
 
@@ -477,9 +482,9 @@ function mergeConfig(raw: Record<string, unknown>): Config {
     if (tf && typeof tf === "object" && !Array.isArray(tf)) {
       const t = tf as Record<string, unknown>;
       if ("minUnit" in t) {
-        if (t.minUnit === "m" || t.minUnit === "s")
+        if (t.minUnit === "m" || t.minUnit === "s" || t.minUnit === "h")
           out.timeFormat.minUnit = t.minUnit;
-        else warn('timeFormat.minUnit must be "m" or "s"; using default');
+        else warn('timeFormat.minUnit must be "m", "s", or "h"; using default');
       }
       if ("maxUnitCount" in t) {
         if (isFiniteNumber(t.maxUnitCount))
