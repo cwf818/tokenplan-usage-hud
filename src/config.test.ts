@@ -354,11 +354,11 @@ describe("loadConfig — timeFormat (top-level)", () => {
 });
 
 describe("loadConfig — separators (top-level)", () => {
-  it("defaults: s_0=' ', s_1=' · '", () => {
+  it("defaults: s_0=' ', s_1='·'", () => {
     const cfg = __testing.DEFAULT_CONFIG;
     assert.equal(cfg.separators.length, 2);
     assert.equal(cfg.separators[0], " ");
-    assert.equal(cfg.separators[1], " · ");
+    assert.equal(cfg.separators[1], "·");
   });
 
   it("accepts a custom array of single-line strings", async () => {

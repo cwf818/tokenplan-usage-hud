@@ -31,7 +31,6 @@ const pinDefaults = () =>
     cacheTtlMs: 60_000,
     stale: {
       ageEmoji: { healthy: "🔗", broken: "⛓️‍💥" },
-      separator: " · ",
     },
     timeFormat: { minUnit: "m", maxUnitCount: 2 },
   });

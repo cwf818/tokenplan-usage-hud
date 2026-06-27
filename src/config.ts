@@ -19,11 +19,12 @@ import { join } from "node:path";
 
 // Default separator strings referenced from lineTemplate as s_0, s_1, ….
 // s_0 is the within-group separator (default: " "); s_1 is the
-// between-group separator (default: " · " — note the leading and
-// trailing spaces are part of the separator, matching the v0.2.16
-// " · " literal that joined the two windows). Users may override
-// either or add more (s_2, s_3, …) by extending the array.
-const DEFAULT_SEPARATORS: string[] = [" ", " · "];
+// between-group separator (default: "·" — just the symbol, no
+// surrounding spaces). The default plan template composes
+// s_0 + s_1 + s_0 around the inter-window boundary to produce
+// the visual " · " (a space, the middot, a space). Users may
+// override either or add more (s_2, s_3, …) by extending the array.
+const DEFAULT_SEPARATORS: string[] = [" ", "·"];
 
 // Default line layout. A template is an ordered list of tokens; each
 // token is either a display module ("m_<name>") or a separator
@@ -84,14 +85,13 @@ const DEFAULT_CURRENCY: {
 };
 
 const DEFAULT_STALE = {
-  // Separator between the data line and the stale annotation. (Legacy:
-  // the v0.2.11 design drops this — the broken-chain emoji IS the
-  // indicator. Kept in DEFAULT_STALE for users who want to reintroduce
-  // a custom separator.)
-  separator: " · ",
   // Emoji pair prepended to the "X ago" annotation when the fetch
   // failed. The broken glyph is what the user actually sees (no
   // leading separator) — it's the indicator of network failure.
+  // v0.2.17: removed the legacy `separator` field. The stale
+  // annotation is now appended directly after the template output
+  // (no leading separator). If a custom separator is needed, place
+  // it in the lineTemplate explicitly.
   ageEmoji: { healthy: "🔗", broken: "⛓️‍💥" },
   // Glyphs appended to the reset countdown (e.g. "2h3m🕛"). The picker
   // indexes into this array by `remainingMs / resetDurationMs`, so the
@@ -494,17 +494,14 @@ function mergeConfig(raw: Record<string, unknown>): Config {
     }
   }
 
-  // stale
+  // stale — v0.2.17 dropped the legacy `separator` field. The stale
+  // annotation is now appended directly after the template output
+  // (no leading separator). The `stale` block is still accepted for
+  // forward-compat (e.g. ageEmoji overrides), but only `ageEmoji` is
+  // recognized; unknown sub-keys are silently ignored.
   if ("stale" in raw) {
     const s = raw.stale;
-    if (s && typeof s === "object" && !Array.isArray(s)) {
-      const sm = s as Record<string, unknown>;
-      if ("separator" in sm) {
-        if (typeof sm.separator === "string")
-          out.stale.separator = sm.separator;
-        else warn("stale.separator must be a string; using default");
-      }
-    } else {
+    if (!s || typeof s !== "object" || Array.isArray(s)) {
       warn("stale must be an object; using default");
     }
   }
