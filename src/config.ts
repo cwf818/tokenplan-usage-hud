@@ -751,13 +751,14 @@ function mergeConfig(raw: Record<string, unknown>): Config {
   // of the array expands to "" (with a one-line warn) — we
   // deliberately don't fail config load on missing separators.
   //
-  // v0.4.0+ — separators may now contain "\n" to split the rendered
-  // statusline across multiple lines (each line is independently SGR-
-  // closed by compose()). We still reject separators with \r, NUL, or
-  // other ASCII control bytes — those would almost certainly be a
-  // JSON mistake (a stray backtick escape, a copy-paste from a
-  // document with non-standard line endings, etc.) and shouldn't
-  // silently pollute the statusline.
+  // v0.4.0+ — separators may now contain "\n" (real line break, the
+  // renderer splits on it and closes SGR per line) or "\t" (TAB, the
+  // terminal renders it against its tab stops). Both are intentional
+  // user-facing values, not JSON mistakes. We still reject separators
+  // with \r, NUL, \b, \f, \v, or other ASCII control bytes — those
+  // would almost certainly be a JSON mistake (a stray backtick escape,
+  // a copy-paste from a document with non-standard line endings, etc.)
+  // and shouldn't silently pollute the statusline.
   if ("separators" in raw) {
     const s = raw.separators;
     if (Array.isArray(s)) {
@@ -766,10 +767,11 @@ function mergeConfig(raw: Record<string, unknown>): Config {
       for (let i = 0; i < s.length; i++) {
         const v = s[i];
         // Allow string separators, including those that contain "\n"
-        // (for multi-line layouts). Reject anything with other
-        // control characters — those are almost certainly a JSON
-        // mistake that shouldn't reach the renderer.
-        if (typeof v === "string" && !/[\x00-\x09\x0b-\x1f\x7f]/.test(v)) {
+        // (multi-line layouts) or "\t" (terminal-rendered tab stops).
+        // Reject anything with other control characters — those are
+        // almost certainly a JSON mistake that shouldn't reach the
+        // renderer.
+        if (typeof v === "string" && !/[\x00-\x08\x0b-\x1f\x7f]/.test(v)) {
           cleaned.push(v);
         } else {
           rejected++;
