@@ -58,8 +58,6 @@ const DEFAULT_STALE = {
   // separator. Kept in DEFAULT_STALE in case a user re-introduces a
   // custom separator.)
   separator: " · ",
-  // Sub-minute ages round UP to this many minutes ("0m ago" looks broken).
-  minMinutes: 1,
   // Number of units to display in time countdowns (reset countdown AND
   // stale suffix). Drops leading zero units first, then takes up to
   // maxUnitCount from the start — including any internal/trailing zero
@@ -410,11 +408,6 @@ function mergeConfig(raw: Record<string, unknown>): Config {
           out.stale.separator = sm.separator;
         else warn("stale.separator must be a string; using default");
       }
-      if ("minMinutes" in sm) {
-        if (isFinitePositiveNumber(sm.minMinutes))
-          out.stale.minMinutes = sm.minMinutes;
-        else warn("stale.minMinutes must be a positive number; using default");
-      }
       if ("minUnit" in sm) {
         if (sm.minUnit === "m" || sm.minUnit === "s")
           out.stale.minUnit = sm.minUnit;
@@ -486,7 +479,7 @@ export function __resetForTest(overrides?: Partial<Config>): void {
   // Deep-merge so tests can override `stale: { resetArrowMore: "A" }`
   // without erasing colors / bar / etc. Plain `...DEFAULT_CONFIG,
   // ...overrides` would replace the whole `stale` object with a partial
-  // one missing minMinutes / separator.
+  // one missing separator / minUnit.
   const base = JSON.parse(JSON.stringify(DEFAULT_CONFIG)) as Config;
   const merged = deepMerge(
     base,

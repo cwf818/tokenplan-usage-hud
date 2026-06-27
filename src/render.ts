@@ -326,37 +326,26 @@ function pickResetArrow(
 //
 // Sub-minute remainder rounds UP to 1m so we never see "0m ago",
 // which would look like the cache hasn't actually moved.
+// Compact "age of cached value" formatter for the stale-on-error annotation.
+// Returns e.g. "⛓️‍💥 5m ago" / "⛓️‍💥 1h30m ago" / "⛓️‍💥 1d5h ago",
+// already SGR-wrapped in STALE_COLOR and RESET-terminated. Returns ""
+// when ageMs is not positive.
+//
+// Per the v0.2.11 design, the broken-chain emoji IS the indicator
+// (no leading "· " separator) — it visually announces the network
+// failure. The X time itself uses the SAME template as the reset
+// countdown (formatRemainingMs), with these tweaks:
+//   - Sub-minute rounds UP to 1m so we never see "0m ago" (which
+//     would look like the cache hasn't actually moved).
+//   - The countdown's `minUnit` knob doesn't apply here — X-ago is
+//     always d/h/m granularity.
 export function formatStaleSuffix(ageMs: number): string {
   if (!Number.isFinite(ageMs) || ageMs <= 0) return "";
   const emoji = cfg().stale.ageEmoji.broken;
-
-  // Sub-minute: round up to 1 minute so we never see "0m ago".
-  let totalMinutes = Math.floor(ageMs / 60_000);
-  if (ageMs % 60_000 > 0) totalMinutes += 1;
-
-  const days = Math.floor(totalMinutes / (60 * 24));
-  const hours = Math.floor((totalMinutes % (60 * 24)) / 60);
-  const minutes = totalMinutes % 60;
-
-  // Build units in d/h/m order, drop leading zeros, take maxUnitCount.
-  const maxUnitCount = Math.max(
-    1,
-    Math.min(4, Math.floor(cfg().stale.maxUnitCount)),
-  );
-  const allUnits: Array<[number, string]> = [
-    [days, "d"],
-    [hours, "h"],
-    [minutes, "m"],
-  ];
-  let leadingZeroCount = 0;
-  while (
-    leadingZeroCount < allUnits.length &&
-    allUnits[leadingZeroCount][0] === 0
-  ) {
-    leadingZeroCount++;
-  }
-  const shown = allUnits.slice(leadingZeroCount, leadingZeroCount + maxUnitCount);
-  const label = `${shown.map(([v, u]) => `${v}${u}`).join("")} ago`;
+  // Round up to 1 minute so we never see "0m ago".
+  const minutesFloor = Math.floor(ageMs / 60_000);
+  const minutes = ageMs % 60_000 > 0 ? minutesFloor + 1 : minutesFloor;
+  const label = `${formatRemainingMs(minutes * 60_000)} ago`;
   return `${STALE_COLOR}${emoji} ${label}${RESET}`;
 }
 
