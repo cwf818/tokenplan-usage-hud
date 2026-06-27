@@ -376,8 +376,11 @@ function pickResetArrow(
 //                                  granularity is fine-grained enough
 //                                  that we don't need to lie about it)
 export function formatStaleSuffix(ageMs: number, healthy: boolean = false): string {
-  if (!Number.isFinite(ageMs) || ageMs <= 0) return "";
+  if (!Number.isFinite(ageMs)) return "";
   const emoji = healthy ? cfg().stale.ageEmoji.healthy : cfg().stale.ageEmoji.broken;
+  // ageMs == 0: render the emoji alone (no "0s ago" — that would be
+  // noise; the emoji alone marks "data is from this instant").
+  if (ageMs <= 0) return `${STALE_COLOR}${emoji}${RESET}`;
   const label = `${formatRemainingMs(ageMs)} ago`;
   return `${STALE_COLOR}${emoji} ${label}${RESET}`;
 }
@@ -565,11 +568,14 @@ const MODULES: Record<string, Module> = {
   // to render (unavailable / empty / no min) so the template can
   // opt out of showing it.
   m_balance: (c) => (c.balance ? formatBalanceEntriesColored(c.balance) || null : null),
-  // Stale-age annotation. Hidden when ageMs is missing or non-positive
-  // (fresh tick). The forced-age append path in renderProviderLine
-  // covers the case where the user removed m_age from the template.
+  // Stale-age annotation. Hidden only when ageMs is missing (caller
+  // didn't supply it). ageMs == 0 still renders the bare emoji —
+  // visually marking "data is from this instant" without printing
+  // a spurious "0s ago" label. The forced-age append path in
+  // renderProviderLine covers the case where the user removed
+  // m_age from the template.
   m_age: (c) =>
-    c.ageMs != null && c.ageMs > 0 ? formatStaleSuffix(c.ageMs, !c.stale) : null,
+    c.ageMs != null ? formatStaleSuffix(c.ageMs, !c.stale) : null,
   // Plugin version (e.g. "v0.2.17"). Hidden when version is empty
   // (the configStore never got setVersion()'d — e.g. tests that
   // don't care about the version).
