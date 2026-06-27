@@ -17,6 +17,37 @@ import { join } from "node:path";
 
 // ----- Defaults — must match today's hardcoded values exactly -----
 
+// Default separator strings referenced from lineTemplate as s_0, s_1, ….
+// s_0 is the within-group separator (default: " "); s_1 is the
+// between-group separator (default: " · " — note the leading and
+// trailing spaces are part of the separator, matching the v0.2.16
+// " · " literal that joined the two windows). Users may override
+// either or add more (s_2, s_3, …) by extending the array.
+const DEFAULT_SEPARATORS: string[] = [" ", " · "];
+
+// Default line layout. A template is an ordered list of tokens; each
+// token is either a display module ("m_<name>") or a separator
+// reference ("s_<n>"). The renderer walks the list left-to-right and
+// concatenates the output of each module, with s_N looked up in
+// `separators[N]`. See render.ts:renderTemplate for the full grammar.
+//
+// Defaults reproduce the v0.2.16 output byte-for-byte:
+//   plan:    "Usage: <5h> <countdown5h> · <7d> <countdown7d>"
+//   balance: "Balance: <balance>"
+// with separators=[" ", "·"] expanding s_0→" " and s_1→"·".
+const DEFAULT_LINE_TEMPLATE: {
+  plan: string[];
+  balance: string[];
+} = {
+  plan: [
+    "m_label", "s_0",
+    "m_window5h", "s_0", "m_countdown5h",
+    "s_0", "s_1", "s_0",
+    "m_window7d", "s_0", "m_countdown7d",
+  ],
+  balance: ["m_label", "s_0", "m_balance"],
+};
+
 // 256-color SGR sequences. The colors are kept as plain ANSI strings
 // (not symbolic names) so a downstream user can copy/paste a value
 // from `console.log` and paste it into config.json without translation.
@@ -152,7 +183,7 @@ const DEFAULT_CONFIG: {
   cacheTtlMs: number;
   fetchTimeoutMs: number;
   display: DisplayMode;
-  modeLabels: { used: string; remaining: string };
+  modeLabels: { used: string; remaining: string; balance: string };
   colors: typeof DEFAULT_COLORS;
   thresholds: typeof DEFAULT_THRESHOLDS;
   currency: typeof DEFAULT_CURRENCY;
@@ -160,11 +191,20 @@ const DEFAULT_CONFIG: {
   bar: typeof DEFAULT_BAR;
   countdown: Countdown;
   timeFormat: TimeFormat;
+  separators: string[];
+  lineTemplate: typeof DEFAULT_LINE_TEMPLATE;
+  // Plugin version, populated at startup by index.ts from
+  // .claude-plugin/plugin.json. The m_version display module reads
+  // this field; tests inject values via __resetForTest.
+  version: string;
 } = {
   cacheTtlMs: 60_000,
   fetchTimeoutMs: 5_000,
   display: "used",
-  modeLabels: { used: "Usage:", remaining: "Remain:" },
+  // "balance" was added in v0.2.17 alongside the lineTemplate refactor
+  // so the m_label module for the DeepSeek path can pick it up. Defaults
+  // to "Balance:" to preserve the v0.2.16 hardcoded literal.
+  modeLabels: { used: "Usage:", remaining: "Remain:", balance: "Balance:" },
   colors: DEFAULT_COLORS,
   thresholds: DEFAULT_THRESHOLDS,
   currency: DEFAULT_CURRENCY,
@@ -172,6 +212,9 @@ const DEFAULT_CONFIG: {
   bar: DEFAULT_BAR,
   countdown: DEFAULT_COUNTDOWN,
   timeFormat: DEFAULT_TIME_FORMAT,
+  separators: DEFAULT_SEPARATORS,
+  lineTemplate: DEFAULT_LINE_TEMPLATE,
+  version: "",
 };
 
 export type Config = typeof DEFAULT_CONFIG;
@@ -187,6 +230,14 @@ let _current: Config = DEFAULT_CONFIG;
 export const configStore = {
   get(): Config {
     return _current;
+  },
+  // Inject the plugin version loaded from .claude-plugin/plugin.json
+  // at startup. Mutates the current Config's `version` field in place
+  // — the test reset path also resets it (see __resetForTest). Tests
+  // can call this directly to simulate the startup injection without
+  // touching the filesystem.
+  setVersion(v: string): void {
+    _current.version = v;
   },
 };
 
@@ -337,6 +388,12 @@ function mergeConfig(raw: Record<string, unknown>): Config {
         out.modeLabels.remaining = m.remaining;
       else if ("remaining" in m)
         warn("modeLabels.remaining must be a string; using default");
+      // v0.2.17: added alongside the lineTemplate refactor so m_label
+      // can pick it up for the DeepSeek (balance) path. Replaces the
+      // hardcoded "Balance: " literal in the old formatBalanceLine.
+      if (typeof m.balance === "string") out.modeLabels.balance = m.balance;
+      else if ("balance" in m)
+        warn("modeLabels.balance must be a string; using default");
     } else {
       warn("modeLabels must be an object; using default");
     }
@@ -533,6 +590,70 @@ function mergeConfig(raw: Record<string, unknown>): Config {
     }
   }
 
+  // separators — array of single-line strings referenced from
+  // lineTemplate as s_0, s_1, …. Validation only checks shape; the
+  // renderer looks them up at expansion time, so an s_N that points
+  // past the end of the array expands to "" (with a one-line warn) —
+  // we deliberately don't fail config load on missing separators.
+  if ("separators" in raw) {
+    const s = raw.separators;
+    if (Array.isArray(s)) {
+      const cleaned: string[] = [];
+      let rejected = 0;
+      for (let i = 0; i < s.length; i++) {
+        const v = s[i];
+        if (typeof v === "string" && !/\n/.test(v)) {
+          cleaned.push(v);
+        } else {
+          rejected++;
+        }
+      }
+      if (cleaned.length === 0) {
+        warn("separators must contain at least one valid string; using default");
+      } else {
+        if (rejected > 0)
+          warn(`separators: dropped ${rejected} non-string or multi-line entries`);
+        out.separators = cleaned;
+      }
+    } else {
+      warn("separators must be an array of strings; using default");
+    }
+  }
+
+  // lineTemplate — { plan: string[], balance: string[] }. Token values
+  // are NOT validated against the module-name enum here; that happens
+  // at render time so a typo produces a "unknown module 'm_foo'"
+  // warning in the rendered line (not a silent reject at config load).
+  if ("lineTemplate" in raw) {
+    const lt = raw.lineTemplate;
+    if (lt && typeof lt === "object" && !Array.isArray(lt)) {
+      const ltm = lt as Record<string, unknown>;
+      const validate = (key: "plan" | "balance"): string[] | null => {
+        if (!(key in ltm)) return null;
+        const arr = ltm[key];
+        if (!Array.isArray(arr)) {
+          warn(`lineTemplate.${key} must be an array of strings; using default`);
+          return null;
+        }
+        const cleaned: string[] = [];
+        for (const v of arr) {
+          if (typeof v === "string") cleaned.push(v);
+        }
+        if (cleaned.length === 0) {
+          warn(`lineTemplate.${key} must contain at least one string; using default`);
+          return null;
+        }
+        return cleaned;
+      };
+      const plan = validate("plan");
+      if (plan) out.lineTemplate.plan = plan;
+      const balance = validate("balance");
+      if (balance) out.lineTemplate.balance = balance;
+    } else {
+      warn("lineTemplate must be an object; using default");
+    }
+  }
+
   return out;
 }
 
@@ -540,7 +661,11 @@ function mergeConfig(raw: Record<string, unknown>): Config {
 
 export function __resetForTest(overrides?: Partial<Config>): void {
   if (overrides === undefined) {
-    _current = DEFAULT_CONFIG;
+    // v0.2.17: deep-clone DEFAULT_CONFIG before assigning. setVersion()
+    // mutates _current.version in place; if _current WERE DEFAULT_CONFIG
+    // itself, that mutation would leak across reset calls. Cloning
+    // makes the reset path symmetric with the overrides branch.
+    _current = JSON.parse(JSON.stringify(DEFAULT_CONFIG)) as Config;
     return;
   }
   // Deep-merge so tests can override `stale: { separator: " · " }`

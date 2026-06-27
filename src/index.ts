@@ -17,6 +17,9 @@ import type { Provider } from "./types.ts";
 import { compose } from "./composition.ts";
 import { type FetchResult, buildProviderLine } from "./dispatch.ts";
 import { configStore, loadConfig } from "./config.ts";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const CACHE_KEY_REMAINS = "remains";
 const CACHE_KEY_BALANCE = "balance";
@@ -154,4 +157,38 @@ process.on("uncaughtException", (err) => {
 // fall back to DEFAULT_CONFIG (with a stderr line) — never blocks
 // startup on a missing file.
 await loadConfig();
+// v0.2.17: load the plugin version from .claude-plugin/plugin.json
+// and inject it into the configStore so the m_version display module
+// can render it. Failure to find/parse the manifest is non-fatal —
+// m_version simply renders nothing when version is empty. We try
+// both "<runtime>/../.claude-plugin/plugin.json" (production layout
+// where the bundle lives at <plugin-cache>/dist/index.js) and
+// "<runtime>/.claude-plugin/plugin.json" (dev layout where the
+// runtime file lives next to the manifest in the repo root).
+loadPluginVersion();
 await main();
+
+function loadPluginVersion(): void {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    join(here, "..", ".claude-plugin", "plugin.json"),
+    join(here, ".claude-plugin", "plugin.json"),
+  ];
+  for (const p of candidates) {
+    if (!existsSync(p)) continue;
+    try {
+      const raw = readFileSync(p, "utf8");
+      const parsed = JSON.parse(raw) as { version?: unknown };
+      if (typeof parsed.version === "string" && parsed.version.length > 0) {
+        configStore.setVersion(parsed.version);
+        return;
+      }
+    } catch {
+      // Malformed manifest: fall through to the next candidate.
+      // The error is non-fatal — m_version degrades to rendering "".
+    }
+  }
+  // No manifest found or all candidates malformed: leave version empty.
+  // No stderr warn here either — dev runs from a checkout without a
+  // built dist don't necessarily have plugin.json next to source.
+}
