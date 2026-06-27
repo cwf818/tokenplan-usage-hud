@@ -8,9 +8,10 @@ allowed-tools: ["Bash(${CLAUDE_PLUGIN_ROOT}/scripts/install.sh:*)"]
 
 The wrapper writes the latest-cache-dir command into `statusLine.command`,
 backs up any pre-existing statusLine to `settings.json.bak.<ISO-timestamp>`,
-and preserves the original command in `<plugin-cache>/state/upstream-cmd.sh`
-so it can be re-invoked as the upstream. Re-running on an already-managed
-statusLine is a no-op (`_tokenplan_managed: true`).
+and preserves the original command in `<claude-root>/plugins/tokenplan-usage-hud/state/upstream-cmd.sh`
+(sibling of `config.json`, stable across `/plugin install` rolls and cache
+wipes) so it can be re-invoked as the upstream. Re-running on an
+already-managed statusLine is a no-op (`_tokenplan_managed: true`).
 
 The script runs locally with no network access and never prints
 `ANTHROPIC_AUTH_TOKEN`.

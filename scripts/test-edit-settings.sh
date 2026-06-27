@@ -95,7 +95,7 @@ assert_match "command references cache dir glob" "tokenplan-usage-hud/tokenplan-
 assert_match "command uses sort -t. for version sort" "sort -t\\." "$CMD"
 assert_match "command tails -1 + cut -f2-" "tail -1 \\| cut -f2-" "$CMD"
 assert_match "command guards against missing cache" '\[ -d "\$plugin_dir" \]' "$CMD"
-assert_match "command points upstream at state/" 'TOKENPLAN_UPSTREAM_CMD="\$\{plugin_dir\}state/upstream-cmd.sh"' "$CMD"
+assert_match "command points upstream at stable state dir" 'TOKENPLAN_UPSTREAM_CMD="\$\{CLAUDE_CONFIG_DIR:-\$HOME/.claude\}/plugins/tokenplan-usage-hud/state/upstream-cmd.sh"' "$CMD"
 assert_match "command execs wrapper from \$plugin_dir" 'exec bash "\$\{plugin_dir\}scripts/wrapper.sh"' "$CMD"
 assert_eq "refreshInterval preserved" "90" "$(jget "$SETTINGS" statusLine.refreshInterval)"
 assert_eq "managed marker set" "true" "$(jget "$SETTINGS" statusLine._tokenplan_managed)"

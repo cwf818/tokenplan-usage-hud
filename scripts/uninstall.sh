@@ -10,9 +10,18 @@
 #   1. Restores settings.json.statusLine to the user's pre-tokenplan
 #      state. Strategy:
 #        a. If statusLine._tokenplan_managed === true AND
-#           <plugin-cache>/<highest-version>/state/upstream-cmd.txt
+#           ${CLAUDE_ROOT}/plugins/tokenplan-usage-hud/state/upstream-cmd.txt
 #           exists, restore from that file (the original install.sh
-#           --uninstall behavior, byte-for-byte).
+#           --uninstall behavior, byte-for-byte). This is the STABLE
+#           state location (sibling of config.json) as of v0.2.19; it
+#           survives cache wipes, so this case covers the common
+#           post-upgrade uninstall.
+#        a'. (Legacy fallback for v0.2.18 and older) If the stable
+#           state dir has no upstream-cmd.txt but any installed cache
+#           version dir has one under <version>/state/, prefer the
+#           NEWEST available legacy state file. This handles users
+#           who installed v0.2.18, never re-ran :install on v0.2.19,
+#           and now want to uninstall.
 #        b. Else if statusLine._tokenplan_managed === true, fall back
 #           to the most recent settings.json.bak.<ts> in the same
 #           dir whose statusLine does NOT have _tokenplan_managed
@@ -26,6 +35,12 @@
 #        - cache/tokenplan-usage-hud/
 #        - marketplaces/tokenplan-usage-hud/
 #        - marketplaces/cwf818-tokenplan-usage-hud/   (legacy alias)
+#        - plugins/tokenplan-usage-hud/state/        (our stable state dir;
+#                                                     clean slate so a future
+#                                                     re-install doesn't see a
+#                                                     stale upstream-cmd.txt
+#                                                     pointing at a now-foreign
+#                                                     command)
 #   5. Strips the plugin row from installed_plugins.json and
 #      known_marketplaces.json (with timestamped .bak.<TS> backups),
 #      preserving CRLF.
@@ -75,6 +90,7 @@ PLUGINS_DIR="${CLAUDE_ROOT}/plugins"
 CACHE_DIR="${PLUGINS_DIR}/cache/tokenplan-usage-hud"
 MARKETPLACE_DIR="${PLUGINS_DIR}/marketplaces/tokenplan-usage-hud"
 TMP_MARKETPLACE_DIR="${PLUGINS_DIR}/marketplaces/cwf818-tokenplan-usage-hud"
+STATE_DIR="${PLUGINS_DIR}/tokenplan-usage-hud/state"
 INSTALLED_JSON="${PLUGINS_DIR}/installed_plugins.json"
 KNOWN_JSON="${PLUGINS_DIR}/known_marketplaces.json"
 SETTINGS_PLUGIN_KEY="tokenplan-usage-hud@tokenplan-usage-hud"
@@ -137,11 +153,17 @@ if [ -f "$TARGET" ]; then
     } catch (e) { process.stdout.write("0"); }
   ' "$WIN_TARGET" 2>/dev/null || echo "0")
   if [ "$MANAGED" = "1" ]; then
-    # Find the highest version's upstream-cmd.txt (if cache still exists).
-    # Glob at PLUGIN_BASE (one level deeper than CACHE_DIR) so we hit
-    # the version directories directly. Mirrors scripts/install.sh.
+    # Find the upstream-cmd.txt to restore from. Priority:
+    #   1. The stable state dir (v0.2.19+): sibling of config.json,
+    #      survives cache wipes.
+    #   2. Any installed cache version's state/upstream-cmd.txt
+    #      (legacy v0.2.18 and older). Pick the NEWEST version's file
+    #      that exists — same ordering the statusLine wrapper uses.
+    #   3. Most recent pre-managed settings.json.bak.<ts>.
     UPSTREAM_TXT=""
-    if [ -d "$CACHE_DIR" ]; then
+    if [ -f "${STATE_DIR}/upstream-cmd.txt" ]; then
+      UPSTREAM_TXT="${STATE_DIR}/upstream-cmd.txt"
+    elif [ -d "$CACHE_DIR" ]; then
       PLUGIN_BASE="${CACHE_DIR}/tokenplan-usage-hud"
       SELF_DIR=$(ls -d ${PLUGIN_BASE}/*/ 2>/dev/null \
         | awk -F/ '{ print $(NF-1) "\t" $(0) }' \
@@ -231,7 +253,7 @@ if [ -f "$TARGET" ]; then
 fi
 
 # Action 3: wipe dirs
-for d in "$CACHE_DIR" "$MARKETPLACE_DIR" "$TMP_MARKETPLACE_DIR"; do
+for d in "$CACHE_DIR" "$MARKETPLACE_DIR" "$TMP_MARKETPLACE_DIR" "$STATE_DIR"; do
   if [ -d "$d" ]; then
     ACTIONS+=("rm -rf ${d}")
     DRY_NOTHING=0
@@ -452,7 +474,7 @@ if [ -n "$EKM_PLAN" ]; then
 fi
 
 # --- Apply: wipe dirs --------------------------------------------------------
-for d in "$CACHE_DIR" "$MARKETPLACE_DIR" "$TMP_MARKETPLACE_DIR"; do
+for d in "$CACHE_DIR" "$MARKETPLACE_DIR" "$TMP_MARKETPLACE_DIR" "$STATE_DIR"; do
   if [ -d "$d" ]; then
     rm -rf "$d"
     echo "uninstall.sh: removed ${d}"

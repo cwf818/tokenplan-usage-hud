@@ -35,10 +35,12 @@ SELF_DIR=$(ls -d $SELF_CACHE_GLOB 2>/dev/null \
   | tail -1 | cut -f2-)
 
 # Run the optional upstream statusline, if the user has set TOKENPLAN_UPSTREAM_CMD.
-# install.sh writes this as the absolute path to <plugin-cache>/state/upstream-cmd.sh
+# install.sh writes this as the absolute path to
+# <claude-root>/plugins/tokenplan-usage-hud/state/upstream-cmd.sh
 # (a bash script with a shebang and an `exec bash -c '...'` line for the original
-# statusLine command). We run it as a script, NOT pass it to `bash -c` — that
-# would attempt to execute the path as a command line and fail silently.
+# statusLine command). The path is STABLE — sibling of config.json, survives
+# cache wipes and version rolls. We run it as a script, NOT pass it to `bash -c` —
+# that would attempt to execute the path as a command line and fail silently.
 # stdout -> TOKENPLAN_UPSTREAM. Failure / unset / empty -> TOKENPLAN_UPSTREAM="".
 UPSTREAM_OUT=""
 if [ -n "${TOKENPLAN_UPSTREAM_CMD:-}" ] && [ -f "$TOKENPLAN_UPSTREAM_CMD" ]; then

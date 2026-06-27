@@ -8,12 +8,14 @@
 # can't be invoked (e.g. plugin not yet loaded, or being iterated on).
 #
 # Behavior (delegated to scripts/uninstall.sh):
-#   - Restores settings.json.statusLine (from preserved upstream-cmd.txt
-#     or the most recent pre-managed .bak.<ts>).
+#   - Restores settings.json.statusLine (from the stable
+#     state/upstream-cmd.txt — sibling of config.json — or the most
+#     recent pre-managed .bak.<ts>).
 #   - Removes `tokenplan-usage-hud@tokenplan-usage-hud` from
 #     settings.json.enabledPlugins.
-#   - Wipes cache/tokenplan-usage-hud/, the marketplace dir, and the
-#     legacy `cwf818-tokenplan-usage-hud` alias.
+#   - Wipes cache/tokenplan-usage-hud/, the marketplace dir, the legacy
+#     `cwf818-tokenplan-usage-hud` alias, AND the stable
+#     plugins/tokenplan-usage-hud/state/ dir.
 #   - Strips the plugin's row from installed_plugins.json and
 #     known_marketplaces.json (with timestamped .bak.<TS> backups).
 #   - Backs up settings.json before any destructive change.
