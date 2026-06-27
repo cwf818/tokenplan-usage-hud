@@ -378,14 +378,38 @@ describe("loadConfig — separators (top-level)", () => {
     assert.match(capturedStderr, /separators/);
   });
 
-  it("rejects multi-line strings (statusline injection guard)", async () => {
+  it("accepts '\\n' as a separator (v0.4.0+ multi-line layouts)", async () => {
     writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
-      separators: [" ", "X\nINJECT"],
+      separators: [" ", "·", "\n"],
     }));
     const cfg = await loadConfig();
-    assert.equal(cfg.separators.length, 1);
-    assert.equal(cfg.separators[0], " ");
-    assert.match(capturedStderr, /separators/);
+    assert.deepEqual(cfg.separators, [" ", "·", "\n"]);
+  });
+
+  it("accepts a separator that IS just '\\n' (single-element multi-line)", async () => {
+    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
+      separators: ["\n"],
+    }));
+    const cfg = await loadConfig();
+    assert.deepEqual(cfg.separators, ["\n"]);
+  });
+
+  it("rejects separators with non-\\n control chars (JSON mistake guard)", async () => {
+    // v0.4.0+: '\n' alone is allowed (multi-line separator), but
+    // anything with a stray non-\n control char ('\\r', NUL, '\\t',
+    // etc.) is almost certainly a JSON mistake and gets dropped.
+    // Build the strings via String.fromCharCode so the TypeScript
+    // source itself doesn't contain literal control bytes that
+    // would be silently consumed by tooling.
+    const TAB = String.fromCharCode(9);
+    const CR = String.fromCharCode(13);
+    const NUL = String.fromCharCode(0);
+    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
+      separators: [" ", `Y${TAB}TAB`, `Z${CR}CR`, `W${NUL}NUL`],
+    }));
+    const cfg = await loadConfig();
+    assert.deepEqual(cfg.separators, [" "]);
+    assert.match(capturedStderr, /separators.*dropped.*invalid entries/);
   });
 
   it("falls back to defaults when array is empty", async () => {

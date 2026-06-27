@@ -745,11 +745,19 @@ function mergeConfig(raw: Record<string, unknown>): Config {
     }
   }
 
-  // separators — array of single-line strings referenced from
-  // lineTemplate as s_0, s_1, …. Validation only checks shape; the
-  // renderer looks them up at expansion time, so an s_N that points
-  // past the end of the array expands to "" (with a one-line warn) —
-  // we deliberately don't fail config load on missing separators.
+  // separators — array of strings referenced from lineTemplate as
+  // s_0, s_1, …. Validation only checks shape; the renderer looks
+  // them up at expansion time, so an s_N that points past the end
+  // of the array expands to "" (with a one-line warn) — we
+  // deliberately don't fail config load on missing separators.
+  //
+  // v0.4.0+ — separators may now contain "\n" to split the rendered
+  // statusline across multiple lines (each line is independently SGR-
+  // closed by compose()). We still reject separators with \r, NUL, or
+  // other ASCII control bytes — those would almost certainly be a
+  // JSON mistake (a stray backtick escape, a copy-paste from a
+  // document with non-standard line endings, etc.) and shouldn't
+  // silently pollute the statusline.
   if ("separators" in raw) {
     const s = raw.separators;
     if (Array.isArray(s)) {
@@ -757,7 +765,11 @@ function mergeConfig(raw: Record<string, unknown>): Config {
       let rejected = 0;
       for (let i = 0; i < s.length; i++) {
         const v = s[i];
-        if (typeof v === "string" && !/\n/.test(v)) {
+        // Allow string separators, including those that contain "\n"
+        // (for multi-line layouts). Reject anything with other
+        // control characters — those are almost certainly a JSON
+        // mistake that shouldn't reach the renderer.
+        if (typeof v === "string" && !/[\x00-\x09\x0b-\x1f\x7f]/.test(v)) {
           cleaned.push(v);
         } else {
           rejected++;
@@ -767,7 +779,7 @@ function mergeConfig(raw: Record<string, unknown>): Config {
         warn("separators must contain at least one valid string; using default");
       } else {
         if (rejected > 0)
-          warn(`separators: dropped ${rejected} non-string or multi-line entries`);
+          warn(`separators: dropped ${rejected} non-string or invalid entries`);
         out.separators = cleaned;
       }
     } else {
