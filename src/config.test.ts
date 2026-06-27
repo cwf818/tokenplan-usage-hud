@@ -326,9 +326,17 @@ describe("loadConfig — timeFormat (top-level)", () => {
     assert.equal(cfg.timeFormat.maxUnitCount, 1);
   });
 
-  it("rejects out-of-enum minUnit and warns", async () => {
+  it("accepts minUnit='h' (hour granularity)", async () => {
     writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
       timeFormat: { minUnit: "h" },
+    }));
+    const cfg = await loadConfig();
+    assert.equal(cfg.timeFormat.minUnit, "h");
+  });
+
+  it("rejects out-of-enum minUnit and warns", async () => {
+    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
+      timeFormat: { minUnit: "d" },
     }));
     const cfg = await loadConfig();
     assert.equal(cfg.timeFormat.minUnit, "m");

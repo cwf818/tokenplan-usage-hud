@@ -399,12 +399,49 @@ describe("formatResetSuffix", () => {
       assert.equal(formatResetSuffix(at(59_999), NOW), "59s");
     });
 
-    it("exactly 1 minute → '1m' (no sub-minute display when ≥ 1m)", () => {
-      assert.equal(formatResetSuffix(at(60_000), NOW), "1m");
+    it("exactly 1 minute → '1m0s' (unified algorithm keeps seconds when minUnit='s')", () => {
+      // v0.2.15: unified algorithm. allUnits = [0d,0h,1m,0s]. After
+      // dropping leading zeros: [1m, 0s]. Slice to maxUnitCount=2:
+      // "1m0s". The trailing 0s is internal-zero — kept on purpose
+      // because the user said "去掉前导0" (only LEADING zeros are dropped).
+      assert.equal(formatResetSuffix(at(60_000), NOW), "1m0s");
     });
 
     it("past-due → '0s' (v0.2.11: explicit past-due signal)", () => {
       assert.equal(formatResetSuffix(at(-1_000), NOW), "0s");
+    });
+
+    it("≥ 1 unit: seconds appear in countdown when minUnit='s' AND the slice fits them", () => {
+      // maxUnitCount=3 → all three units fit, so 2h3m45s → "2h3m45s".
+      __resetForTest({ timeFormat: { minUnit: "s", maxUnitCount: 3 } });
+      assert.equal(formatResetSuffix(at(2 * 3_600_000 + 3 * 60_000 + 45_000), NOW), "2h3m45s");
+      assert.equal(formatResetSuffix(at(5 * 60_000 + 7_000), NOW), "5m7s");
+      __resetForTest({ timeFormat: { minUnit: "s", maxUnitCount: 2 } });
+    });
+
+    it("maxUnitCount slices off trailing seconds (unified algorithm)", () => {
+      // maxUnitCount=2, minUnit="s". 2h3m45s → drop leading zeros (none
+      // to drop) → [2h, 3m, 45s] → slice to 2 → "2h3m". Seconds are
+      // dropped by the slice, NOT by minUnit (which kept them).
+      assert.equal(formatResetSuffix(at(2 * 3_600_000 + 3 * 60_000 + 45_000), NOW), "2h3m");
+    });
+
+    it("exactly 2h3m → '2h3m' (maxUnitCount=2 slices off the seconds slot)", () => {
+      // With maxUnitCount=2, the seconds unit gets sliced off even
+      // when minUnit="s". To see the trailing "0s", the user must
+      // raise maxUnitCount to 3 (verified in a sibling test above).
+      assert.equal(formatResetSuffix(at(2 * 3_600_000 + 3 * 60_000), NOW), "2h3m");
+    });
+
+    it("minUnit='s' + maxUnitCount=1: seconds visible only when they're the lead unit", () => {
+      // 1d2h3m45s with maxUnitCount=1 → just "1d" (sliced off everything
+      // but the first unit). To see seconds, the slice must reach them.
+      __resetForTest({ timeFormat: { minUnit: "s", maxUnitCount: 1 } });
+      assert.equal(formatResetSuffix(at(24 * 3_600_000 + 2 * 3_600_000 + 3 * 60_000 + 45_000), NOW), "1d");
+      // 50s with maxUnitCount=1 + minUnit="s" → [0d,0h,0m,50s] →
+      // drop leading zeros → [50s] → "50s".
+      assert.equal(formatResetSuffix(at(50_000), NOW), "50s");
+      __resetForTest({ timeFormat: { minUnit: "s", maxUnitCount: 2 } });
     });
   });
 });
@@ -725,13 +762,14 @@ describe("formatStaleSuffix", () => {
 });
 
 describe("formatLine — stale suffix integration", () => {
-  it("appends the stale suffix when staleMs is provided", () => {
+  it("appends the stale suffix with broken emoji when stale=true", () => {
     const line = formatLine(
       { pct: 38, resetAt: null },
       { pct: 39, resetAt: null },
       "used",
       Date.now(),
-      5 * 60_000
+      5 * 60_000,
+      true,  // stale → broken emoji
     );
     // Stale suffix should be at the END of the line. v0.2.11: broken
     // emoji IS the indicator, no leading " · " separator.
@@ -739,13 +777,26 @@ describe("formatLine — stale suffix integration", () => {
     assert.ok(strip(line).endsWith("⛓️‍💥 5m ago"), `stripped: ${strip(line)}`);
   });
 
-  it("does NOT append the stale suffix when staleMs is omitted", () => {
+  it("appends the stale suffix with healthy emoji when stale=false", () => {
+    const line = formatLine(
+      { pct: 38, resetAt: null },
+      { pct: 39, resetAt: null },
+      "used",
+      Date.now(),
+      30_000,
+      false,  // fresh → healthy emoji
+    );
+    assert.ok(line.endsWith(`${STALE_COLOR}🔗 <1m ago${RESET}`));
+    assert.ok(strip(line).endsWith("🔗 <1m ago"));
+  });
+
+  it("does NOT append the stale suffix when ageMs is omitted", () => {
     const line = formatLine({ pct: 38, resetAt: null }, { pct: 39, resetAt: null });
     assert.ok(!line.includes("ago"));
     assert.ok(!line.includes(STALE_COLOR));
   });
 
-  it("does NOT append the stale suffix when staleMs is 0", () => {
+  it("does NOT append the stale suffix when ageMs is 0", () => {
     const line = formatLine(
       { pct: 38, resetAt: null },
       { pct: 39, resetAt: null },
@@ -758,10 +809,11 @@ describe("formatLine — stale suffix integration", () => {
 });
 
 describe("formatBalanceLine — stale suffix integration", () => {
-  it("appends the stale suffix on a healthy single-currency line", () => {
+  it("appends the stale suffix with broken emoji when stale=true", () => {
     const line = formatBalanceLine(
       { isAvailable: true, entries: [{ currency: "CNY", totalBalance: 110 }], minValue: 110 },
-      5 * 60_000
+      5 * 60_000,
+      true,  // stale → broken emoji
     );
     assert.ok(line.endsWith(`${STALE_COLOR}⛓️‍💥 5m ago${RESET}`));
     assert.ok(strip(line).endsWith("⛓️‍💥 5m ago"));
@@ -777,7 +829,8 @@ describe("formatBalanceLine — stale suffix integration", () => {
         ],
         minValue: 3.5,
       },
-      90 * 60_000
+      90 * 60_000,
+      true,
     );
     // 90m → 1h30m ago (v0.2.11: maxUnitCount=2 keeps internal non-zero units)
     assert.ok(strip(line).endsWith("⛓️‍💥 1h30m ago"));
@@ -788,13 +841,14 @@ describe("formatBalanceLine — stale suffix integration", () => {
     // there's no cached value to be stale-OF.
     const line = formatBalanceLine(
       { isAvailable: false, entries: [], minValue: null },
-      5 * 60_000
+      5 * 60_000,
+      true,
     );
     assert.equal(strip(line), "Balance: not available!");
     assert.ok(!line.includes("ago"));
   });
 
-  it("does NOT append the stale suffix when staleMs is omitted", () => {
+  it("does NOT append the stale suffix when ageMs is omitted", () => {
     const line = formatBalanceLine({
       isAvailable: true,
       entries: [{ currency: "USD", totalBalance: 25 }],

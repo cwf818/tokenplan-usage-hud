@@ -201,20 +201,9 @@ function formatOne(
 // appends the window label and the fill-state arrow glyph picked by
 // `pickResetArrow`.
 //
-// Rules (per the v0.2.11 design):
-//   - Past-due (remainingMs <= 0): "0m" / "0s" depending on minUnit, so
-//     the user sees an explicit "this window has reset" signal.
-//   - Sub-minUnit (>0 but < 1 unit): "<1m" / "<1s" — visually distinct
-//     from "0m" so a window about to reset isn't confused with one
-//     already reset.
-//   - ≥ 1 unit: drop LEADING zero units, keep up to maxUnitCount units
-//     from the start (including any internal/trailing zeros —
-//     "2h0m" stays "2h0m", NOT "2h"). maxUnitCount default = 2.
-//     Examples:
-//       1d2h3m4s maxUnitCount=2 → "1d2h"
-//       2h3m4s   maxUnitCount=2 → "2h3m"
-//       2h0m4s   maxUnitCount=2 → "2h0m"
-//       0d0h5m   maxUnitCount=2 → "5m"
+// The actual formatting rules live in `formatRemainingMs` (shared with
+// the stale-age suffix). See that function's doc comment for the full
+// `minUnit` × `maxUnitCount` matrix.
 export function formatResetSuffix(
   resetAt: string | null | undefined,
   nowMs: number = Date.now(),
@@ -228,12 +217,30 @@ export function formatResetSuffix(
 }
 
 // Pure helper: format a non-negative number of milliseconds as a
-// `1d2h3m4s` style countdown, respecting `timeFormat.minUnit` for the
-// sub-unit threshold and `timeFormat.maxUnitCount` for the slice length.
-// Top-level config so the formatting is consistent across reset
-// countdowns and stale-age suffixes.
-// Clamped to a non-negative result — callers that need past-due
-// handling should special-case `remainingMs <= 0` themselves.
+// `1d2h3m4s` style countdown, respecting `timeFormat.minUnit` (the
+// smallest unit that may appear) and `timeFormat.maxUnitCount` (how
+// many non-zero units to show). Top-level config so the formatting
+// is consistent across reset countdowns and stale-age suffixes.
+//
+// Unified algorithm:
+//   1. Extract [days, hours, minutes, seconds] from remainingMs.
+//   2. Drop units below minUnit (so "m" drops s, "h" drops m+s).
+//   3. Drop leading zero units from the trimmed list.
+//   4. If the trimmed list is empty → "<1<minUnit>" (positive) or
+//      "0<minUnit>" (past-due).
+//   5. Slice the remaining list to maxUnitCount, join as `1d2h3m4s`.
+//
+// Examples (maxUnitCount=2):
+//   remaining=2h3m45s minUnit="m" → "2h3m"   (s dropped by minUnit)
+//   remaining=2h3m45s minUnit="s" → "2h3m"   (slice cuts s — s > maxUnitCount budget)
+//   remaining=2h3m45s minUnit="s", maxUnitCount=3 → "2h3m45s"
+//   remaining=2h3m0s  minUnit="s", maxUnitCount=3 → "2h3m0s" (internal zeros kept)
+//   remaining=50s      minUnit="m" → "<1m"
+//   remaining=50s      minUnit="s" → "50s"
+//   remaining=50m      minUnit="h" → "<1h"
+//   remaining=2h0m     minUnit="m" → "2h0m"   (internal zero kept)
+//   remaining=1d2h3m4s minUnit="m", maxUnitCount=2 → "1d2h"
+//   remaining=0        → "0m" / "0s" / "0h" depending on minUnit
 export function formatRemainingMs(remainingMs: number): string {
   if (!Number.isFinite(remainingMs)) return "";
 
@@ -243,44 +250,52 @@ export function formatRemainingMs(remainingMs: number): string {
     Math.min(4, Math.floor(cfg().timeFormat.maxUnitCount)),
   );
 
-  // Past-due: explicit "0m" / "0s" so the user sees a clear "this
-  // window has reset" signal — distinct from "<1m" which means
-  // "less than 1 minute left" (i.e. about to reset).
-  if (remainingMs <= 0) return minUnit === "s" ? "0s" : "0m";
-
   const totalSeconds = Math.floor(remainingMs / 1000);
-  const totalMinutes = Math.floor(totalSeconds / 60);
-  const days = Math.floor(totalMinutes / (60 * 24));
-  const hours = Math.floor((totalMinutes % (60 * 24)) / 60);
-  const minutes = totalMinutes % 60;
+  const days = Math.floor(totalSeconds / 86400);
+  const hours = Math.floor((totalSeconds % 86400) / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
   const seconds = totalSeconds % 60;
 
-  // Sub-minUnit handling: > 0 but less than 1 unit of minUnit →
-  // "<1unit" floor. Wins over maxUnitCount — "<1unit" is the truth.
-  if (minUnit === "m" && totalMinutes === 0) return "<1m";
-  if (minUnit === "s" && totalMinutes === 0) return `${seconds}s`;
+  // Past-due: explicit "0<minUnit>" so the user sees a clear "this
+  // window has reset" signal — distinct from "<1<minUnit>" which means
+  // "less than 1 unit left" (about to reset).
+  if (remainingMs <= 0) return `0${minUnit}`;
 
-  // ≥ 1 unit: drop leading zero units (so `0d0h5m` → `5m`, not `0d0h5m`),
-  // keep up to maxUnitCount units from the start (including internal /
-  // trailing zeros — `2h0m` stays `2h0m`). The countdown always uses
-  // d/h/m granularity; minUnit only affects the sub-unit floor above.
+  // Build the full unit list, then trim units below minUnit granularity.
+  // Order matters: largest → smallest, so "leading zero drop" naturally
+  // strips the high-order zeros before the units we care about.
   const allUnits: Array<[number, string]> = [
     [days, "d"],
     [hours, "h"],
     [minutes, "m"],
+    [seconds, "s"],
   ];
+  // Pre-compute unit→rank once so we can filter and compare without
+  // re-allocating per item (TS also dislikes inline-object indexing).
+  // Larger rank = smaller unit (s > m > h > d), so `rank[u] <= minUnitRank`
+  // keeps units AT or ABOVE minUnit in size (i.e. drops units below it).
+  const rank: Record<string, number> = { d: 0, h: 1, m: 2, s: 3 };
+  const minUnitRank = rank[minUnit];
+  const trimmed = allUnits.filter(([, u]) => rank[u] <= minUnitRank);
+
+  // Drop leading zero units (so "0d0h5m" → "5m", not "0d0h5m").
   let leadingZeroCount = 0;
   while (
-    leadingZeroCount < allUnits.length &&
-    allUnits[leadingZeroCount][0] === 0
+    leadingZeroCount < trimmed.length &&
+    trimmed[leadingZeroCount][0] === 0
   ) {
     leadingZeroCount++;
   }
-  const shown = allUnits.slice(leadingZeroCount, leadingZeroCount + maxUnitCount);
-  // Unreachable: the <= 0 branch above already returned for past-due,
-  // and we just verified totalMinutes > 0 in the sub-minute floor above.
-  // The slice will always have at least one element.
-  return shown.map(([v, u]) => `${v}${u}`).join("");
+  const nonzero = trimmed.slice(leadingZeroCount);
+
+  // All extracted units zero (or all below minUnit) → "<1<minUnit>"
+  // floor. Wins over maxUnitCount — "<1<minUnit>" is the truth, not
+  // a lossy empty string.
+  if (nonzero.length === 0) return `<1${minUnit}`;
+
+  // Take the first maxUnitCount (keeps internal/trailing zeros —
+  // "2h0m" stays "2h0m").
+  return nonzero.slice(0, maxUnitCount).map(([v, u]) => `${v}${u}`).join("");
 }
 
 // Pick a reset-countdown glyph from the configured array by how full the
@@ -314,23 +329,28 @@ function pickResetArrow(
   return arrows[idx];
 }
 
-// Compact "age of cached value" formatter for the stale-on-error annotation.
-// Returns e.g. "⛓️‍💥 5m ago" / "⛓️‍💥 1h30m ago" / "⛓️‍💥 1d5h ago",
-// already SGR-wrapped in STALE_COLOR and RESET-terminated. Returns ""
-// when ageMs is not positive.
+// Compact "age of cached value" formatter for the trailing annotation.
+// Returns e.g. "🔗 5m ago" (healthy, fetch succeeded) or "⛓️‍💥 5m ago"
+// (broken, fetch failed and we're showing stale data). SGR-wrapped in
+// STALE_COLOR and RESET-terminated. Returns "" when ageMs is not positive.
 //
-// Per the v0.2.11 design, the broken-chain emoji IS the indicator
-// (no leading "· " separator) — it visually announces the network
-// failure. The X time itself uses the SAME template as the reset
-// countdown (formatRemainingMs) with the same `timeFormat.minUnit`
-// and `timeFormat.maxUnitCount` knobs. Sub-minute:
+// The emoji switches based on the `healthy` parameter — the caller
+// decides by passing true on successful fetch, false on stale-on-error.
+// This decoupling matters because the data's age can mean different
+// things (MiniMax uses "time since window started" derived from the
+// API's resetStartAt; DeepSeek / stale uses "time since last successful
+// fetch"), and only the caller knows which is which.
+//
+// The X time itself uses the SAME template as the reset countdown
+// (formatRemainingMs) with the same `timeFormat.minUnit` and
+// `timeFormat.maxUnitCount` knobs. Sub-minute:
 //   minUnit="m" → "<1m ago"  (the "<" floor reads "less than 1 minute")
 //   minUnit="s" → "${seconds}s ago" (no spurious round-up — second
 //                                  granularity is fine-grained enough
 //                                  that we don't need to lie about it)
-export function formatStaleSuffix(ageMs: number): string {
+export function formatStaleSuffix(ageMs: number, healthy: boolean = false): string {
   if (!Number.isFinite(ageMs) || ageMs <= 0) return "";
-  const emoji = cfg().stale.ageEmoji.broken;
+  const emoji = healthy ? cfg().stale.ageEmoji.healthy : cfg().stale.ageEmoji.broken;
   const label = `${formatRemainingMs(ageMs)} ago`;
   return `${STALE_COLOR}${emoji} ${label}${RESET}`;
 }
@@ -347,11 +367,17 @@ export function formatLine(
   weekly: Window,
   mode: DisplayMode = resolveDisplayMode(),
   nowMs: number = Date.now(),
-  staleMs?: number,
+  ageMs?: number,
+  stale: boolean = false,
 ): string {
   const modeLabel = cfg().modeLabels[mode];
   const base = `${modeLabel} ${formatOne("5h", fiveHour, mode, undefined, nowMs)} · ${formatOne("7d", weekly, mode, undefined, nowMs)}`;
-  return base + (staleMs ? formatStaleSuffix(staleMs) : "");
+  if (ageMs == null || ageMs <= 0) return base;
+  // The caller decides healthy vs broken. Default `stale=true` so we
+  // err on the side of "the user should know this might be old data"
+  // unless explicitly told otherwise — a fresh successful fetch passes
+  // stale=false.
+  return base + formatStaleSuffix(ageMs, !stale);
 }
 
 // ----- DeepSeek balance line -------------------------------------------------
@@ -418,7 +444,7 @@ export type BalanceLike = {
   minValue: number | null;
 };
 
-export function formatBalanceLine(b: BalanceLike, staleMs?: number): string {
+export function formatBalanceLine(b: BalanceLike, ageMs?: number, stale: boolean = false): string {
   if (!b.isAvailable || b.entries.length === 0 || b.minValue == null) {
     // "not available!" is rendered for BOTH the original "API said no" branch
     // (is_available: false) and the "fetch failed and we have no cache" branch
@@ -430,5 +456,6 @@ export function formatBalanceLine(b: BalanceLike, staleMs?: number): string {
   // Color follows the LOWEST entry — most urgent currency drives the hue.
   const color = colorForBalance(b.minValue);
   const base = `Balance: ${color}${chunks.join(" · ")}${RESET}`;
-  return base + (staleMs ? formatStaleSuffix(staleMs) : "");
+  if (ageMs == null || ageMs <= 0) return base;
+  return base + formatStaleSuffix(ageMs, !stale);
 }

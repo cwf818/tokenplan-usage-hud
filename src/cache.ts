@@ -1,4 +1,5 @@
 // Tiny in-memory TTL cache for the statusline. Single-process; not persisted.
+//
 // Stale-on-error: callers should fall back to `peek(key)` if a fetch throws.
 
 type Entry<T> = { at: number; value: T };
