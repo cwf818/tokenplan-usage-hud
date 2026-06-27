@@ -17,6 +17,56 @@ export type ProviderType = "TOKEN_PLAN" | "BALANCE";
 
 export type CompareMethod = "EXACT" | "INCLUDE" | "STARTWITH";
 
+// ----- v0.4.0+ token-usage module ---------------------------------------
+//
+// One row appended per statusline tick. Source = stdin (per probe schema
+// captured 2026-06-27). Persisted to disk so m_token5h/m_token7d can
+// query "how many tokens in the last N hours" across ticks.
+//
+// `at` is the wall-clock timestamp (Unix ms) when this tick fired.
+// `in`/`out` mirror `context_window.total_input_tokens` /
+// `total_output_tokens` — the per-tick cumulative numbers from Claude
+// Code. `ctx_*` mirror `context_window.current_usage.*` — the
+// post-turn context snapshot. `cwd` is the project working directory
+// from stdin, used to scope the on-disk path (see token-store.ts).
+export type TokenSample = {
+  at: number;
+  session: string;
+  cwd: string;
+  in: number;
+  out: number;
+  ctx_in: number;
+  ctx_creation: number;
+  ctx_read: number;
+};
+
+// What the renderer needs to know about a single tick. Built once in
+// src/index.ts (drains stdin, samples, appends to disk) and passed to
+// the renderer's `RenderContext` extension below.
+//
+// `current` = post-turn snapshot (used by m_ctx, m_cacheRead,
+//            m_cacheHitRate). `totals` = session cumulative (used by
+//            m_tokenIn, m_tokenOut, m_tokenTotal). `cost` = stdin.cost
+//            block, used by m_tokenInSpeed/m_tokenOutSpeed (session-avg
+//            requires total_duration_ms).
+export type TokenSnapshot = {
+  sessionId: string | null;
+  cwd: string | null;
+  totals: {
+    input: number | null;
+    output: number | null;
+  };
+  current: {
+    input: number | null;
+    output: number | null;
+    cacheCreation: number | null;
+    cacheRead: number | null;
+  };
+  cost: {
+    totalDurationMs: number | null;
+  };
+};
+
 // One provider's declarative config block. All fields are required;
 // the mergeConfig validator drops malformed entries (with a stderr
 // warn) rather than auto-filling them, so a typo can't silently

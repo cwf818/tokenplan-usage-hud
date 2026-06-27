@@ -16,6 +16,8 @@
 
 import { configStore } from "./config.ts";
 import { templateKeyForProvider } from "./providers.ts";
+import type { TokenSnapshot } from "./types.ts";
+import { readSamples } from "./token-store.ts";
 
 export type Window = {
   // Percentage USED in [0, 100]. May be fractional; we'll round.
@@ -400,6 +402,7 @@ export function formatLine(
   nowMs: number = Date.now(),
   ageMs?: number,
   stale: boolean = false,
+  tokens: TokenSnapshot | null = null,
 ): string {
   // v0.2.17: delegate to the lineTemplate renderer. The default plan
   // template reproduces the v0.2.16 byte-for-byte output.
@@ -411,6 +414,7 @@ export function formatLine(
     ageMs: ageMs ?? null,
     stale,
     version: cfg().version,
+    tokens,
   });
 }
 
@@ -493,7 +497,7 @@ function formatBalanceEntriesColored(b: BalanceLike): string {
   return `${color}${chunks.join(" · ")}${RESET}`;
 }
 
-export function formatBalanceLine(b: BalanceLike, ageMs?: number, stale: boolean = false): string {
+export function formatBalanceLine(b: BalanceLike, ageMs?: number, stale: boolean = false, tokens: TokenSnapshot | null = null): string {
   if (!b.isAvailable || b.entries.length === 0 || b.minValue == null) {
     // "not available!" is rendered for BOTH the original "API said no" branch
     // (is_available: false) and the "fetch failed and we have no cache" branch
@@ -512,6 +516,7 @@ export function formatBalanceLine(b: BalanceLike, ageMs?: number, stale: boolean
     ageMs: ageMs ?? null,
     stale,
     version: cfg().version,
+    tokens,
   });
 }
 
@@ -541,6 +546,10 @@ type RenderContext = {
   ageMs: number | null;
   stale: boolean;
   version: string;
+  // v0.4.0+ — live stdin snapshot for the m_token* modules. Always
+  // present on the main flow (index.ts builds one before invoking
+  // renderProviderLine); tests inject a fake via __resetForTest.
+  tokens: TokenSnapshot | null;
 };
 
 type Module = (ctx: RenderContext) => string | null;
@@ -581,6 +590,119 @@ const MODULES: Record<string, Module> = {
   // (the configStore never got setVersion()'d — e.g. tests that
   // don't care about the version).
   m_version: (c) => (c.version ? `v${c.version}` : null),
+  // ----- v0.4.0+ token-usage modules -----
+  // Each module is independent and returns null when its source data
+  // isn't available, so users compose freely via lineTemplate. The
+  // default plan / balance templates do NOT include any of these —
+  // existing users see no change on upgrade.
+
+  // Session cumulative input tokens (stdin.context_window.total_input_tokens).
+  m_tokenIn: (c) =>
+    c.tokens?.totals.input != null
+      ? `in:${formatCompactToken(c.tokens.totals.input)}`
+      : null,
+  // Session cumulative output tokens.
+  m_tokenOut: (c) =>
+    c.tokens?.totals.output != null
+      ? `out:${formatCompactToken(c.tokens.totals.output)}`
+      : null,
+  // Session cumulative in + out + cache (cache = ctx_creation + ctx_read
+  // from the latest per-turn snapshot — close enough for "total tokens
+  // spent in this session" intent; users wanting exact counts can split
+  // into m_tokenIn / m_tokenOut).
+  m_tokenTotal: (c) => {
+    const t = c.tokens;
+    if (!t) return null;
+    const inT = t.totals.input ?? 0;
+    const outT = t.totals.output ?? 0;
+    const cache =
+      (t.current.cacheCreation ?? 0) + (t.current.cacheRead ?? 0);
+    return `tot:${formatCompactToken(inT + outT + cache)}`;
+  },
+  // Alias for m_tokenTotal — clearer when used in a template that
+  // also has m_token5h/m_token7d (so the three read as "session / 5h /
+  // 7d" rather than "tot / 5h / 7d").
+  m_tokenSession: (c) => {
+    const t = c.tokens;
+    if (!t) return null;
+    const inT = t.totals.input ?? 0;
+    const outT = t.totals.output ?? 0;
+    const cache =
+      (t.current.cacheCreation ?? 0) + (t.current.cacheRead ?? 0);
+    return `session:${formatCompactToken(inT + outT + cache)}`;
+  },
+  // Current post-turn context length (current_usage.input + creation + read,
+  // excludes output per ccstatusline convention).
+  m_ctx: (c) => {
+    const t = c.tokens?.current;
+    if (!t) return null;
+    const len =
+      (t.input ?? 0) + (t.cacheCreation ?? 0) + (t.cacheRead ?? 0);
+    if (len === 0) return null;
+    return `ctx:${formatCompactToken(len)}`;
+  },
+  // Cache hit rate (read / (read + creation) * 100). 5-band coloring
+  // mirrors the existing 5-band system but uses cacheHitColors for the
+  // 3 relevant thresholds (good ≥ 80%, warn ≥ 50%, bad < 50%).
+  m_cacheHitRate: (c) => {
+    const t = c.tokens?.current;
+    if (!t) return null;
+    const read = t.cacheRead ?? 0;
+    const creation = t.cacheCreation ?? 0;
+    const denom = read + creation;
+    if (denom === 0) return null;
+    const pct = (read / denom) * 100;
+    const color = cacheHitColor(pct);
+    return `${color}cache:${pct.toFixed(cachePctPrecision())}%${RESET}`;
+  },
+  // Cache read tokens + context share (ccstatusline-style: "163k (99.2%)").
+  // Single-color (STALE_COLOR); the percentage is informational, not
+  // a health indicator on its own.
+  m_cacheRead: (c) => {
+    const t = c.tokens?.current;
+    if (!t) return null;
+    const read = t.cacheRead ?? 0;
+    if (read === 0) return null;
+    const denom =
+      (t.input ?? 0) + read + (t.cacheCreation ?? 0);
+    const pct = denom > 0 ? (read / denom) * 100 : null;
+    const label = formatCompactToken(read);
+    return pct == null
+      ? `${STALE_COLOR}cache:${label}${RESET}`
+      : `${STALE_COLOR}cache:${label} (${pct.toFixed(cachePctPrecision())}%)${RESET}`;
+  },
+  // Tokens used in the last 5h. Reads token-samples.jsonl filtered to
+  // (now - 5h). Sums in+out per sample; uses delta vs FIRST sample in
+  // the window to avoid double-counting cumulative growth across
+  // samples (samples within the window each carry the SESSION-cumulative
+  // value, not a delta).
+  m_token5h: (c) =>
+    windowedTokenLabel(c, 5 * 60 * 60 * 1000, "5h"),
+  // Tokens used in the last 7d.
+  m_token7d: (c) =>
+    windowedTokenLabel(c, 7 * 24 * 60 * 60 * 1000, "7d"),
+  // Session-avg input speed: total_input_tokens / cost.total_duration_ms * 1000.
+  // Returns null when totalDurationMs is 0 (very early in session) or
+  // total_input_tokens is missing — both indicate "not enough data yet".
+  m_tokenInSpeed: (c) => {
+    const t = c.tokens;
+    if (!t || t.totals.input == null || t.cost.totalDurationMs == null)
+      return null;
+    const durMs = t.cost.totalDurationMs;
+    if (durMs <= 0) return null;
+    const tps = (t.totals.input / durMs) * 1000;
+    return `${STALE_COLOR}in:${formatSpeed(tps)}${RESET}`;
+  },
+  // Session-avg output speed.
+  m_tokenOutSpeed: (c) => {
+    const t = c.tokens;
+    if (!t || t.totals.output == null || t.cost.totalDurationMs == null)
+      return null;
+    const durMs = t.cost.totalDurationMs;
+    if (durMs <= 0) return null;
+    const tps = (t.totals.output / durMs) * 1000;
+    return `${STALE_COLOR}out:${formatSpeed(tps)}${RESET}`;
+  },
 };
 
 // Cap unknown-module warnings to once per process so a template typo
@@ -588,6 +710,83 @@ const MODULES: Record<string, Module> = {
 // seconds in active sessions). A one-shot warn is enough — the user
 // will see it on the first invocation.
 let _unknownModuleWarned = false;
+
+// ----- v0.4.0+ token-module helpers -----
+
+// Compact token formatter: <thresholds[0] → raw integer, <thresholds[1]
+// → "<x.y>k", else "<x.y>M". Matches formatRemainingMs's tier shape
+// but uses token-specific thresholds (default 1k / 1M). Negative or
+// non-finite inputs fall back to "0". Exported so tests can pin the
+// behavior at threshold boundaries.
+export function formatCompactToken(n: number): string {
+  if (!Number.isFinite(n) || n < 0) return "0";
+  const t = cfg().tokenFormat;
+  const [lo, hi] = t.thresholds;
+  if (n < lo) return String(Math.floor(n));
+  if (n < hi) return `${(n / 1_000).toFixed(t.precision)}k`;
+  return `${(n / 1_000_000).toFixed(t.precision)}M`;
+}
+
+// Speed formatter: t/s with k suffix above 1000. Mirrors ccstatusline's
+// formatSpeed. Null → "—". Exported for tests.
+export function formatSpeed(tps: number | null): string {
+  if (tps == null || !Number.isFinite(tps)) return "—";
+  const precision = cfg().tokenFormat.speedPrecision;
+  if (Math.abs(tps) >= 1000) {
+    return `${(tps / 1000).toFixed(precision)}k t/s`;
+  }
+  return `${tps.toFixed(precision)} t/s`;
+}
+
+function cachePctPrecision(): number {
+  return cfg().tokenFormat.cachePctPrecision;
+}
+
+// 3-band cache-hit color picker (good / warn / bad) using
+// cacheHitColors + cacheHitThresholds from config. Exported for tests.
+export function cacheHitColor(pct: number): string {
+  const [lo, hi] = cfg().tokenFormat.cacheHitThresholds;
+  const c = cfg().cacheHitColors;
+  if (pct >= hi) return c.good;
+  if (pct >= lo) return c.warn;
+  return c.bad;
+}
+
+// Read samples for the (cwd, session) from the current snapshot,
+// filter to the [now - windowMs, now] range, sum the delta between
+// the FIRST and LAST sample in the window, and format as
+// "<label>:<compact>". Returns null when:
+//   - tokens/sessionId/cwd missing
+//   - no samples in the window yet (fresh session)
+//   - only one sample (can't compute a delta)
+// The "first sample baseline + last sample now" approach matches how
+// total_input_tokens / total_output_tokens are session-cumulative on
+// stdin — delta = (cumulative at end of window) - (cumulative at start
+// of window) = tokens used during the window.
+function windowedTokenLabel(
+  c: RenderContext,
+  windowMs: number,
+  label: string,
+): string | null {
+  const t = c.tokens;
+  if (!t || !t.sessionId || !t.cwd) return null;
+  const since = c.nowMs - windowMs;
+  const samples = readSamples(t.cwd, t.sessionId, since);
+  if (samples.length < 2) return null;
+  // Sort defensively in case the JSONL wasn't appended in time order.
+  const sorted = samples.slice().sort((a, b) => a.at - b.at);
+  const first = sorted[0]!;
+  const last = sorted[sorted.length - 1]!;
+  const deltaIn = Math.max(0, last.in - first.in);
+  const deltaOut = Math.max(0, last.out - first.out);
+  // Per ADR: 5h/7d windows reuse tokenplan Window.resetStartAt when
+  // available (so the window boundary lines up exactly). Falling back
+  // to sliding `now - windowMs` when no plan data is loaded keeps the
+  // module useful for non-tokenplan providers.
+  const total = deltaIn + deltaOut;
+  if (total === 0) return null;
+  return `${label}:${formatCompactToken(total)}`;
+}
 
 function warnUnknownModuleOnce(name: string): void {
   if (_unknownModuleWarned) return;
@@ -660,10 +859,14 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
 // lineTemplate.
 export function renderProviderLine(
   provider: import("./types.ts").Provider,
-  ctx: Omit<RenderContext, "fiveHour" | "weekly" | "balance"> & {
+  ctx: Omit<RenderContext, "fiveHour" | "weekly" | "balance" | "tokens"> & {
     fiveHour?: Window | null;
     weekly?: Window | null;
     balance?: BalanceLike | null;
+    // v0.4.0+ — optional for back-compat with tests/callers that
+    // don't thread a TokenSnapshot. Defaults to null, which causes
+    // all m_token* modules to skip rendering.
+    tokens?: TokenSnapshot | null;
   },
 ): string {
   const fullCtx: RenderContext = {
@@ -675,6 +878,7 @@ export function renderProviderLine(
     ageMs: ctx.ageMs,
     stale: ctx.stale,
     version: ctx.version,
+    tokens: ctx.tokens ?? null,
   };
   // v0.2.21: template picked by provider TYPE via providers.ts, not
   // by provider-name literal. Same outward behavior — defaults put

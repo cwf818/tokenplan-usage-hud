@@ -281,6 +281,13 @@ A reference with every field is at [config.example.json](./config.example.json).
     // lineTemplate (e.g. add an `s_0` token after `m_window7d`).
     "ageEmoji": { "healthy": "🔗", "broken": "⛓️‍💥" },
   },
+  "cacheHitColors": {
+    // v0.4.0+ — 3-band palette for the m_cacheHitRate module.
+    // Bands chosen by cacheHitThresholds (in tokenFormat below).
+    "good": "brightGreen", // ≥ 80%
+    "warn": "yellow",      // ≥ 50%
+    "bad": "orange",       // < 50%
+  },
   "bar": {
     // bar geometry
     "width": 8, // 3..64
@@ -349,6 +356,22 @@ A reference with every field is at [config.example.json](./config.example.json).
     " ",
     "·",
   ],
+  "tokenFormat": {
+    // v0.4.0+ — compact number formatting for the m_token* modules.
+    //   < thresholds[0] → raw integer ("342")
+    //   < thresholds[1] → "<x.y>k"   ("12.3k")
+    //   ≥ thresholds[1] → "<x.y>M"   ("1.2M")
+    "thresholds": [1000, 1000000],
+    // Decimal places for the k / M tier (0..4)
+    "precision": 1,
+    // Decimal places for m_tokenInSpeed / m_tokenOutSpeed (0..4)
+    "speedPrecision": 1,
+    // Decimal places for m_cacheHitRate percentage (0..4)
+    "cachePctPrecision": 1,
+    // 3-band cache-hit thresholds (ascending). < lo → bad (orange),
+    // < hi → warn (yellow), ≥ hi → good (green).
+    "cacheHitThresholds": [50, 80],
+  },
   "lineTemplate": {
     // Custom line layout. Each entry is either a display module
     // ("m_<name>") or a separator reference ("s_<n>"). The renderer
@@ -448,6 +471,16 @@ Recognized modules:
 | `m_balance`        | The DeepSeek balance chunk (e.g. `$25 · ￥110`), single SGR-wrapped block |
 | `m_age`            | The stale-age annotation: `⛓️‍💥 5m ago` (broken) or `🔗 5m ago` (healthy) |
 | `m_version`        | The plugin version: `v0.2.17` (auto-loaded from `.claude-plugin/plugin.json`) |
+| `m_tokenIn`        | Session cumulative input tokens — e.g. `in:163k`. Reads stdin `context_window.total_input_tokens`. Hidden when stdin lacks the field. |
+| `m_tokenOut`       | Session cumulative output tokens — e.g. `out:155`. Reads stdin `context_window.total_output_tokens`. |
+| `m_tokenTotal` / `m_tokenSession` | Session cumulative total (`input + output + cache`) — e.g. `tot:163k` / `session:163k`. Two names for the same metric; pick whichever reads better in your template. |
+| `m_ctx`            | Current post-turn context length (excludes output) — e.g. `ctx:163k`. Reads `current_usage.{input + cache_creation + cache_read}`. |
+| `m_cacheHitRate`   | Cache hit rate as a percentage with 3-band coloring (`good ≥ 80%`, `warn ≥ 50%`, `bad < 50%`) — e.g. green `cache:99%`. Reads `current_usage.{cache_read, cache_creation}`. |
+| `m_cacheRead`      | Cache read tokens + context share — e.g. dim-gray `cache:163k (99.2%)`. Hidden when cache traffic is zero. |
+| `m_token5h`        | Tokens used in the last 5h (delta between first and last sample in the window) — e.g. `5h:12k`. Reads `state/token-samples/<projectHash>/<sessionId>.jsonl`. Hidden when fewer than 2 samples exist for the window. |
+| `m_token7d`        | Same, for the last 7 days. |
+| `m_tokenInSpeed`   | Session-average input speed — e.g. dim-gray `in:42.5 t/s`. Reads `total_input_tokens / cost.total_duration_ms × 1000`. Hidden when session duration is 0. |
+| `m_tokenOutSpeed`  | Same for output tokens. |
 
 **Forced visibility of `m_age`:** when the fetch result is **stale** (network failure with a cached value), the broken-chain age annotation is appended to the rendered line **unconditionally** — even if your `lineTemplate` doesn't list `m_age`. This preserves the invariant that a network failure is always visible, no matter what the user puts in their template. On `fresh` ticks, no annotation is shown. The `m_age` module itself only emits when `ageMs > 0`, so a user who *does* include `m_age` in their template gets exactly one annotation, not two.
 
@@ -478,6 +511,67 @@ Recognized modules:
   }
 }
 ```
+
+### Token usage (v0.4.0+)
+
+In addition to the tokenplan 5h/7d window percentages, the plugin reads Claude Code's session JSON from stdin and exposes a **suite of opt-in `m_token*` modules**. The default `lineTemplate` does NOT include any token module — existing v0.3.x configs render byte-identical after upgrade. To opt in, add the desired modules to your `lineTemplate.plan` (and/or `balance`).
+
+**Available data sources** (parsed once per tick from stdin, zero IO):
+
+- `context_window.total_input_tokens` / `total_output_tokens` — session cumulative
+- `context_window.current_usage.{input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens}` — post-turn snapshot
+- `cost.total_duration_ms` — session wall-clock duration (used by speed modules)
+- `session_id`, `cwd`, `transcript_path` — used to scope the state file for 5h/7d modules
+
+**Persistent state file** (only for `m_token5h` / `m_token7d`): one JSON line per tick, appended to `~/.claude/plugins/tokenplan-usage-hud/state/token-samples/<projectHash>/<sessionId>.jsonl`. ~120B per row, ~700KB over 7d. Lives in the stable `state/` directory — survives cache rolls and version bumps.
+
+**Example template** with token counts alongside the windows:
+
+```jsonc
+{
+  "lineTemplate": {
+    "plan": [
+      "m_label", "s_0",
+      "m_window5h", "s_0", "m_countdown5h",
+      "s_0", "s_1", "s_0",
+      "m_window7d", "s_0", "m_countdown7d",
+      "s_0", "s_1", "s_0",
+      "m_tokenIn", "s_0", "m_tokenOut", "s_0", "m_ctx",
+      "s_0", "m_cacheHitRate",
+    ],
+  }
+}
+```
+
+Renders (example): `Usage: ▓░░░░░░░ 9% (4h47m🕔 5h) · ▓▓░░░░░░ 25% (2d8h🕔 7d) · in:163.5k out:155 ctx:163.5k cache:100.0%`
+
+**Token-format config** (`tokenFormat` block):
+
+```jsonc
+{
+  "tokenFormat": {
+    // Compact notation thresholds: < thresholds[0] → raw integer,
+    // < thresholds[1] → "12.3k", else → "1.2M".
+    "thresholds": [1000, 1000000],
+    // Decimal places for the k/M tier (0..4)
+    "precision": 1,
+    // Decimal places for m_tokenInSpeed / m_tokenOutSpeed (0..4)
+    "speedPrecision": 1,
+    // Decimal places for m_cacheHitRate percentage (0..4)
+    "cachePctPrecision": 1,
+    // 3-band cache-hit thresholds (ascending). < lo → bad,
+    // < hi → warn, ≥ hi → good.
+    "cacheHitThresholds": [50, 80],
+  },
+  "cacheHitColors": {
+    "good": "brightGreen",
+    "warn": "yellow",
+    "bad": "orange",
+  },
+}
+```
+
+**Module reference:** see the [Module tokens](#module-tokens) table above for the full `m_token*` list with output examples. The full design rationale (data source choice, slice strategy, color policy, state file shape) lives at `memory/token-usage-design-adr.md` in the source repo.
 
 **Show only the 5-hour window** (drop the 7-day window):
 

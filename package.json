@@ -1,6 +1,6 @@
 {
   "name": "tokenplan-usage-hud",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "description": "Claude Code statusline plugin that renders MiniMax token-plan usage (5h + weekly) or DeepSeek account balance, picked by ANTHROPIC_BASE_URL. Composes with another statusline via the TOKENPLAN_UPSTREAM_CMD env var.",
   "type": "module",
