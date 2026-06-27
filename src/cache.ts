@@ -14,6 +14,23 @@ export function get<T>(key: string, ttlMs: number): T | null {
   return e.value;
 }
 
+// TTL-aware sibling of peekWithAge. Returns the entry's value AND its age
+// when the entry is still within TTL; returns null on miss or after
+// expiration. Use this when the caller wants the freshness signal even
+// on a successful cache hit — a fresh hit at age=500ms is semantically
+// different from a fresh hit at age=59s, and downstream consumers
+// (e.g. the m_age lineTemplate module) can choose to surface that.
+export function getWithAge<T>(
+  key: string,
+  ttlMs: number,
+): { value: T; ageMs: number } | null {
+  const e = store.get(key) as Entry<T> | undefined;
+  if (!e) return null;
+  const ageMs = Date.now() - e.at;
+  if (ageMs > ttlMs) return null;
+  return { value: e.value, ageMs };
+}
+
 export function set<T>(key: string, value: T): void {
   store.set(key, { at: Date.now(), value });
 }

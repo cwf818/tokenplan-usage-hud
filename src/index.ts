@@ -70,14 +70,24 @@ async function readStdin(): Promise<string> {
 
 async function getRemainsData(token: string): Promise<FetchResult<Remains>> {
   const ttlMs = configStore.get().cacheTtlMs;
-  const cached = cache.get<Remains>(CACHE_KEY_REMAINS, ttlMs);
-  if (cached) return { kind: "fresh", data: cached };
+  // Within-TTL cache hit: the data is fresh BY DEFINITION (age < ttlMs),
+  // but the age itself is still useful information — it tells the user
+  // how stale "fresh" really is. Surface it on the FetchResult so a
+  // downstream consumer (e.g. a custom lineTemplate with m_age) can
+  // render "🔗 30s ago" on a within-TTL cache hit. The default
+  // templates don't put m_age between data modules, so the visible
+  // output stays byte-identical to v0.2.16 on a brand-new fetch
+  // (ageMs ≈ 0 → m_age returns null → no suffix).
+  const cached = cache.getWithAge<Remains>(CACHE_KEY_REMAINS, ttlMs);
+  if (cached) return { kind: "fresh", data: cached.value, ageMs: cached.ageMs };
 
   try {
     const data = await fetchRemains(token, AbortSignal.timeout(configStore.get().fetchTimeoutMs));
     if (data) {
       cache.set(CACHE_KEY_REMAINS, data);
-      return { kind: "fresh", data };
+      // ageMs=0 on a brand-new fetch — the renderer's m_age module
+      // short-circuits on ageMs <= 0, so the suffix is suppressed.
+      return { kind: "fresh", data, ageMs: 0 };
     }
     // Fetcher returned null (e.g. base_resp.status_code != 0). Treat as a
     // hard fail, but still try the stale cache.
@@ -94,14 +104,15 @@ async function getRemainsData(token: string): Promise<FetchResult<Remains>> {
 
 async function getBalanceData(token: string): Promise<FetchResult<Balance>> {
   const ttlMs = configStore.get().cacheTtlMs;
-  const cached = cache.get<Balance>(CACHE_KEY_BALANCE, ttlMs);
-  if (cached) return { kind: "fresh", data: cached };
+  // Same age-threading rationale as getRemainsData above.
+  const cached = cache.getWithAge<Balance>(CACHE_KEY_BALANCE, ttlMs);
+  if (cached) return { kind: "fresh", data: cached.value, ageMs: cached.ageMs };
 
   try {
     const data = await fetchBalance(token, AbortSignal.timeout(configStore.get().fetchTimeoutMs));
     if (data) {
       cache.set(CACHE_KEY_BALANCE, data);
-      return { kind: "fresh", data };
+      return { kind: "fresh", data, ageMs: 0 };
     }
     const stale = cache.peekWithAge<Balance>(CACHE_KEY_BALANCE);
     if (stale) return { kind: "stale", data: stale.value, ageMs: stale.ageMs };

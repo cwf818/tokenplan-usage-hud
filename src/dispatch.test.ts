@@ -36,9 +36,9 @@ const pinDefaults = () =>
   });
 
 describe("buildProviderLine — fresh (no age suffix; data just arrived)", () => {
-  it("MiniMax: fresh tick renders no X-ago suffix", () => {
+  it("MiniMax: fresh tick with ageMs=0 renders no X-ago suffix", () => {
     pinDefaults();
-    const result: FetchResult<Remains> = { kind: "fresh", data: MINI_DATA };
+    const result: FetchResult<Remains> = { kind: "fresh", data: MINI_DATA, ageMs: 0 };
     const line = buildProviderLine("minimax", result);
     assert.ok(line);
     assert.ok(line!.startsWith("Usage: "));
@@ -46,9 +46,9 @@ describe("buildProviderLine — fresh (no age suffix; data just arrived)", () =>
     assert.ok(!line!.includes(STALE_COLOR));
   });
 
-  it("DeepSeek: fresh tick renders no X-ago suffix (no window concept)", () => {
+  it("DeepSeek: fresh tick with ageMs=0 renders no X-ago suffix (no window concept)", () => {
     pinDefaults();
-    const result: FetchResult<Balance> = { kind: "fresh", data: DEEP_DATA };
+    const result: FetchResult<Balance> = { kind: "fresh", data: DEEP_DATA, ageMs: 0 };
     const line = buildProviderLine("deepseek", result);
     assert.ok(line);
     assert.ok(line!.startsWith("Balance: "));
@@ -56,9 +56,38 @@ describe("buildProviderLine — fresh (no age suffix; data just arrived)", () =>
     assert.ok(!line!.includes("ago"));
   });
 
+  it("MiniMax: within-TTL cache hit (ageMs>0) renders healthy emoji suffix", () => {
+    // v0.2.20: the fresh variant now carries ageMs so a within-TTL
+    // cache hit (e.g. a same-process repeat call) surfaces its age
+    // via the forced-age append path. The renderer treats it like a
+    // fresh tick (healthy 🔗 emoji), distinct from a stale-on-error
+    // (broken ⛓️‍💥 emoji).
+    pinDefaults();
+    const result: FetchResult<Remains> = {
+      kind: "fresh",
+      data: MINI_DATA,
+      ageMs: 30_000,
+    };
+    const line = buildProviderLine("minimax", result);
+    assert.ok(line);
+    assert.ok(strip(line!).endsWith("🔗 <1m ago"), `got: ${line}`);
+  });
+
+  it("DeepSeek: within-TTL cache hit (ageMs>0) renders healthy emoji suffix", () => {
+    pinDefaults();
+    const result: FetchResult<Balance> = {
+      kind: "fresh",
+      data: DEEP_DATA,
+      ageMs: 5 * 60_000,
+    };
+    const line = buildProviderLine("deepseek", result);
+    assert.ok(line);
+    assert.ok(strip(line!).endsWith("🔗 5m ago"), `got: ${line}`);
+  });
+
   it("null provider: returns null even with fresh data", () => {
     pinDefaults();
-    const result: FetchResult<Remains> = { kind: "fresh", data: MINI_DATA };
+    const result: FetchResult<Remains> = { kind: "fresh", data: MINI_DATA, ageMs: 0 };
     assert.equal(buildProviderLine(null, result), null);
   });
 });

@@ -8,8 +8,8 @@
       "name": "tokenplan-usage-hud",
       "source": "./",
       "description": "Provider-agnostic Claude Code statusline plugin for token-plan usage and account balance. Picks the provider from ANTHROPIC_BASE_URL (currently MiniMax + DeepSeek); hides itself otherwise. Ships :install, :uninstall, :clean, and :clean-cache slash commands.",
-      "version": "0.2.19"
+      "version": "0.2.20"
     }
   ],
-  "version": "0.2.19"
+  "version": "0.2.20"
 }
