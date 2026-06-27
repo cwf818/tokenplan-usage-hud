@@ -4,14 +4,20 @@
 // which has top-level `await main()` side effects).
 //
 // Three outcomes the provider data layer can report:
-//   fresh — we just successfully fetched the data
-//   stale — fetch failed but a cached value exists; `ageMs` is how old it is
+//   fresh — we just successfully fetched the data; `ageMs` is 0 (the
+//           formatter short-circuits when ageMs <= 0, so no X-ago suffix
+//           appears on a fresh tick).
+//   stale — fetch failed but a cached value exists; `ageMs` is how long
+//           it's been since the last successful fetch (from cache.Entry.at).
 //   fail  — fetch failed AND no cached value; caller renders "not available!"
 //
-// v0.2.15: the age suffix is now ALWAYS rendered on a successful tick.
-// The age is computed from the API response's `Window.resetStartAt`
-// (time since the window started) — no disk persistence needed, since
-// the API response is the source of truth and is fresh on every tick.
+// v0.2.16: dropped the v0.2.15 `ageFromRemains` helper. That helper
+// computed "time since the 5h window started" from the API response's
+// resetStartAt — but that's a business-progress signal, not a data-
+// freshness signal, and conflating the two produced wrong emojis (a
+// 1h28m window incorrectly rendered ⛓️‍💥 just because the cache age
+// exceeded TTL). The cache already exposes the right primitive via
+// peekWithAge; fresh ticks just don't need a suffix.
 
 import type { Remains } from "./api.ts";
 import type { Balance } from "./api.deepseek.ts";
@@ -23,39 +29,23 @@ export type FetchResult<T> =
   | { kind: "stale"; data: T; ageMs: number }
   | { kind: "fail" };
 
-// Compute the age suffix from the API data. For MiniMax, this is the
-// time since the 5h window started (Window.resetStartAt is part of
-// every API response — survives across ticks without persistence).
-// Returns 0 when the timestamp is missing or unparseable (the suffix
-// is suppressed when ageMs <= 0).
-export function ageFromRemains(data: Remains, nowMs: number = Date.now()): number {
-  const start = data.fiveHour?.resetStartAt ?? data.weekly?.resetStartAt;
-  if (!start) return 0;
-  const ms = Date.parse(start);
-  if (!Number.isFinite(ms)) return 0;
-  return Math.max(0, nowMs - ms);
-}
-
-// Render the MiniMax two-window line from a Remains payload. The
-// `ageMs` arg comes from the FetchResult — for fresh ticks it's not
-// provided, so we derive it from the API's `resetStartAt` (time since
-// this window started, baked into every response). For stale ticks,
-// `ageMs` carries the time since the last successful fetch. The
-// `stale` flag controls the healthy/broken emoji in the suffix.
+// Render the MiniMax two-window line from a Remains payload. The `stale`
+// flag controls the healthy/broken emoji in the suffix; on fresh ticks
+// no ageMs is passed, so the suffix is suppressed entirely (no point
+// telling the user "0s ago" — they can see the line render in real time).
 export function renderPlanLine(
   data: Remains,
   mode: ReturnType<typeof resolveDisplayMode>,
   ageMs?: number,
   stale: boolean = false,
 ): string | null {
-  const effectiveAge = ageMs ?? ageFromRemains(data);
   if (data.fiveHour && data.weekly) {
-    return formatLine(data.fiveHour, data.weekly, mode, Date.now(), effectiveAge, stale);
+    return formatLine(data.fiveHour, data.weekly, mode, Date.now(), ageMs, stale);
   }
   // If only one window is present, render what's available rather than nothing.
   const zero = { pct: 0 } as const;
-  if (data.fiveHour) return formatLine(data.fiveHour, zero, mode, Date.now(), effectiveAge, stale);
-  if (data.weekly) return formatLine(zero, data.weekly, mode, Date.now(), effectiveAge, stale);
+  if (data.fiveHour) return formatLine(data.fiveHour, zero, mode, Date.now(), ageMs, stale);
+  if (data.weekly) return formatLine(zero, data.weekly, mode, Date.now(), ageMs, stale);
   return null;
 }
 
@@ -86,8 +76,8 @@ export function buildProviderLine(
     );
   }
   if (provider === "deepseek") {
-    // DeepSeek has no window-start concept; the suffix only renders
-    // on stale-on-error (when the caller-supplied ageMs > 0).
+    // DeepSeek has no window concept; the suffix only renders on
+    // stale-on-error (when ageMs > 0). Fresh ticks are unsuffixed.
     const stale = result.kind === "stale";
     return formatBalanceLine(
       result.data as Balance,

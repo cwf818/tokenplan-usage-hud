@@ -330,16 +330,16 @@ function pickResetArrow(
 }
 
 // Compact "age of cached value" formatter for the trailing annotation.
-// Returns e.g. "🔗 5m ago" (healthy, fetch succeeded) or "⛓️‍💥 5m ago"
-// (broken, fetch failed and we're showing stale data). SGR-wrapped in
-// STALE_COLOR and RESET-terminated. Returns "" when ageMs is not positive.
+// Returns e.g. "⛓️‍💥 5m ago" (broken, fetch failed and we're showing
+// stale data — the typical case for this suffix). SGR-wrapped in
+// STALE_COLOR and RESET-terminated. Returns "" when ageMs is not
+// positive — that's how fresh ticks suppress the suffix entirely.
 //
-// The emoji switches based on the `healthy` parameter — the caller
-// decides by passing true on successful fetch, false on stale-on-error.
-// This decoupling matters because the data's age can mean different
-// things (MiniMax uses "time since window started" derived from the
-// API's resetStartAt; DeepSeek / stale uses "time since last successful
-// fetch"), and only the caller knows which is which.
+// The `healthy` parameter toggles the emoji: 🔗 vs ⛓️‍💥. The caller
+// (buildProviderLine) decides which by mapping FetchResult.kind:
+// fresh → healthy (but doesn't emit because ageMs is 0), stale →
+// broken. The data's age always means "time since last successful
+// fetch" (from cache.Entry.at via peekWithAge); no other time source.
 //
 // The X time itself uses the SAME template as the reset countdown
 // (formatRemainingMs) with the same `timeFormat.minUnit` and
