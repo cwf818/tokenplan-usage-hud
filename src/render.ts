@@ -298,7 +298,7 @@ function pickResetArrow(
   resetStartAt: string | null | undefined,
   resetDurationMs: number | null | undefined,
 ): string {
-  const arrows = cfg().stale.resetArrows;
+  const arrows = cfg().countdown.resetArrows;
   const first = arrows[0] ?? "";
   if (resetStartAt == null || resetDurationMs == null) return first;
   const startMs = Date.parse(resetStartAt);
@@ -321,31 +321,17 @@ function pickResetArrow(
 //
 // Per the v0.2.11 design, the broken-chain emoji IS the indicator
 // (no leading "· " separator) — it visually announces the network
-// failure. The X time itself uses minutes as the smallest unit
-// (seconds never appear) and the same `timeFormat.maxUnitCount` rules
-// as the reset countdown: drop leading zeros, keep internal/trailing
-// zeros up to the configured count.
-//
-// Sub-minute remainder rounds UP to 1m so we never see "0m ago",
-// which would look like the cache hasn't actually moved.
-// already SGR-wrapped in STALE_COLOR and RESET-terminated. Returns ""
-// when ageMs is not positive.
-//
-// Per the v0.2.11 design, the broken-chain emoji IS the indicator
-// (no leading "· " separator) — it visually announces the network
 // failure. The X time itself uses the SAME template as the reset
-// countdown (formatRemainingMs), with these tweaks:
-//   - Sub-minute rounds UP to 1m so we never see "0m ago" (which
-//     would look like the cache hasn't actually moved).
-//   - The countdown's `minUnit` knob doesn't apply here — X-ago is
-//     always d/h/m granularity.
+// countdown (formatRemainingMs) with the same `timeFormat.minUnit`
+// and `timeFormat.maxUnitCount` knobs. Sub-minute:
+//   minUnit="m" → "<1m ago"  (the "<" floor reads "less than 1 minute")
+//   minUnit="s" → "${seconds}s ago" (no spurious round-up — second
+//                                  granularity is fine-grained enough
+//                                  that we don't need to lie about it)
 export function formatStaleSuffix(ageMs: number): string {
   if (!Number.isFinite(ageMs) || ageMs <= 0) return "";
   const emoji = cfg().stale.ageEmoji.broken;
-  // Round up to 1 minute so we never see "0m ago".
-  const minutesFloor = Math.floor(ageMs / 60_000);
-  const minutes = ageMs % 60_000 > 0 ? minutesFloor + 1 : minutesFloor;
-  const label = `${formatRemainingMs(minutes * 60_000)} ago`;
+  const label = `${formatRemainingMs(ageMs)} ago`;
   return `${STALE_COLOR}${emoji} ${label}${RESET}`;
 }
 

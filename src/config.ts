@@ -72,21 +72,6 @@ const DEFAULT_STALE = {
   // ramp from 12 o'clock (🕛, least remaining) around to 1 o'clock
   // (🕐, most remaining); two glyphs give a binary "hourglass" pair
   // (full/empty); one glyph is a static indicator. Providers without
-  // start_time (DeepSeek, legacy) fall back to index 0.
-  resetArrows: [
-    "🕛",
-    "🕚",
-    "🕙",
-    "🕘",
-    "🕗",
-    "🕖",
-    "🕕",
-    "🕔",
-    "🕓",
-    "🕒",
-    "🕑",
-    "🕐",
-  ],
 };
 
 const DEFAULT_BAR = {
@@ -124,6 +109,40 @@ const DEFAULT_TIME_FORMAT: TimeFormat = {
   maxUnitCount: 2,
 };
 
+// Reset-countdown visualization. Belongs with the countdown, NOT with
+// the stale-on-error annotation (which is a separate concern).
+type Countdown = {
+  // Glyphs appended to the reset countdown (e.g. "2h3m🕛"). The picker
+  // indexes into this array by remainingMs / resetDurationMs, so the array
+  // reads left-to-right as "few remaining → many remaining":
+  //   index 0  : remainingMs ≈ 0 (just reset / about to reset)
+  //   last     : remainingMs ≈ resetDurationMs (fresh)
+  // min(..., length-1) clamps ratio=1.0 to the last entry. Twelve clock-face
+  // emoji give a smooth visual ramp from 12 o'clock (🕛, least remaining)
+  // around to 1 o'clock (🕐, most remaining); two glyphs give a binary
+  // hourglass pair; one glyph is static. Providers without start_time
+  // (DeepSeek, legacy) fall back to index 0.
+  resetArrows: string[];
+};
+
+const DEFAULT_COUNTDOWN: Countdown = {
+  resetArrows: [
+    "🕛",
+    "🕚",
+    "🕙",
+    "🕘",
+    "🕗",
+    "🕖",
+    "🕕",
+    "🕔",
+    "🕓",
+    "🕒",
+    "🕑",
+    "🕐",
+  ],
+};
+
+
 const DEFAULT_CONFIG: {
   cacheTtlMs: number;
   fetchTimeoutMs: number;
@@ -134,6 +153,7 @@ const DEFAULT_CONFIG: {
   currency: typeof DEFAULT_CURRENCY;
   stale: typeof DEFAULT_STALE;
   bar: typeof DEFAULT_BAR;
+  countdown: Countdown;
   timeFormat: TimeFormat;
 } = {
   cacheTtlMs: 60_000,
@@ -145,6 +165,7 @@ const DEFAULT_CONFIG: {
   currency: DEFAULT_CURRENCY,
   stale: DEFAULT_STALE,
   bar: DEFAULT_BAR,
+  countdown: DEFAULT_COUNTDOWN,
   timeFormat: DEFAULT_TIME_FORMAT,
 };
 
@@ -421,22 +442,32 @@ function mergeConfig(raw: Record<string, unknown>): Config {
           out.stale.separator = sm.separator;
         else warn("stale.separator must be a string; using default");
       }
-      if ("resetArrows" in sm) {
-        const arr = sm.resetArrows;
+    } else {
+      warn("stale must be an object; using default");
+    }
+  }
+
+  // countdown — top-level (reset countdown visualization).
+  if ("countdown" in raw) {
+    const c = raw.countdown;
+    if (c && typeof c === "object" && !Array.isArray(c)) {
+      const cm = c as Record<string, unknown>;
+      if ("resetArrows" in cm) {
+        const arr = cm.resetArrows;
         if (
           Array.isArray(arr) &&
           arr.every((v) => typeof v === "string" && !/\n/.test(v)) &&
           arr.length > 0
         ) {
-          out.stale.resetArrows = arr as string[];
+          out.countdown.resetArrows = arr as string[];
         } else {
           warn(
-            "stale.resetArrows must be a non-empty array of single-line strings; using default",
+            "countdown.resetArrows must be a non-empty array of single-line strings; using default",
           );
         }
       }
     } else {
-      warn("stale must be an object; using default");
+      warn("countdown must be an object; using default");
     }
   }
 
@@ -507,10 +538,10 @@ export function __resetForTest(overrides?: Partial<Config>): void {
     _current = DEFAULT_CONFIG;
     return;
   }
-  // Deep-merge so tests can override `stale: { resetArrowMore: "A" }`
+  // Deep-merge so tests can override `stale: { separator: " · " }`
   // without erasing colors / bar / etc. Plain `...DEFAULT_CONFIG,
   // ...overrides` would replace the whole `stale` object with a partial
-  // one missing separator / minUnit.
+  // one missing separator / ageEmoji.
   const base = JSON.parse(JSON.stringify(DEFAULT_CONFIG)) as Config;
   const merged = deepMerge(
     base,
