@@ -387,7 +387,7 @@ describe("formatResetSuffix", () => {
 
   describe("minUnit='s' (second granularity)", () => {
     beforeEach(() => {
-      __resetForTest({ timeFormat: { minUnit: "s", maxUnitCount: 2 }, stale: { ageEmoji: { healthy: "🔗", broken: "⛓️‍💥" }, separator: " · " }, countdown: { resetArrows: ["🕛","🕚","🕙","🕘","🕗","🕖","🕕","🕔","🕓","🕒","🕑","🕐"] } });
+      __resetForTest({ timeFormat: { minUnit: "s", maxUnitCount: 2 }, stale: { ageEmoji: { healthy: "🔗", broken: "⛓️‍💥" } }, countdown: { resetArrows: ["🕛","🕚","🕙","🕘","🕗","🕖","🕕","🕔","🕓","🕒","🕑","🕐"] } });
     });
     afterEach(() => {
       __resetForTest();
@@ -497,7 +497,7 @@ describe("pickResetArrow (stale.resetArrows[] by remaining/total)", () => {
   });
 
   it("two-glyph hourglass pair: full→empty", () => {
-    __resetForTest({ timeFormat: { minUnit: "m", maxUnitCount: 2 }, stale: { ageEmoji: { healthy: "🔗", broken: "⛓️‍💥" }, separator: " · " }, countdown: { resetArrows: ["⏳", "⌛"] } });
+    __resetForTest({ timeFormat: { minUnit: "m", maxUnitCount: 2 }, stale: { ageEmoji: { healthy: "🔗", broken: "⛓️‍💥" } }, countdown: { resetArrows: ["⏳", "⌛"] } });
     try {
       // Use a small but non-trivial remaining so the countdown is non-empty.
       const arrowAt = (ratio: number) => {

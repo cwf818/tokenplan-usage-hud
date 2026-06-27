@@ -273,11 +273,11 @@ A reference with every field is at [config.example.json](./config.example.json).
     "default": "CNY", // assumed currency when API omits one
   },
   "stale": {
-    // stale-on-error annotation
-    "separator": " · ",
-    // Emoji pair for the "X ago" annotation. The broken glyph is what
-    // the user actually sees (no leading separator) — it's the
-    // indicator of network failure. Healthy is reserved for future use.
+    // stale-on-error annotation. v0.2.17 dropped the legacy
+    // `separator` field — the stale annotation is now appended
+    // directly after the template output. If a custom separator
+    // is needed before the annotation, place it explicitly in the
+    // lineTemplate (e.g. add an `s_0` token after `m_window7d`).
     "ageEmoji": { "healthy": "🔗", "broken": "⛓️‍💥" },
   },
   "bar": {
@@ -340,13 +340,13 @@ A reference with every field is at [config.example.json](./config.example.json).
   "separators": [
     // Separator strings referenced from `lineTemplate` as s_0, s_1, ….
     // s_0 — between adjacent modules within a group (default: " ")
-    // s_1 — between the two window groups / between balance entries
-    //       (default: " · " — note the leading and trailing spaces
-    //       are part of the separator)
+    // s_1 — the inter-group glyph (default: "·", just the symbol — no
+    //       surrounding spaces; the default plan template composes
+    //       s_0 + s_1 + s_0 to produce the visual " · ")
     // Add more entries to reference them as s_2, s_3, … in your
     // lineTemplate.
     " ",
-    " · ",
+    "·",
   ],
   "lineTemplate": {
     // Custom line layout. Each entry is either a display module
