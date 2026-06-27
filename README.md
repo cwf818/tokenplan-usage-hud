@@ -272,30 +272,12 @@ A reference with every field is at [config.example.json](./config.example.json).
     "default": "CNY", // assumed currency when API omits one
   },
   "stale": {
-    // stale-on-error annotation + reset arrow
+    // stale-on-error annotation
     "separator": " · ",
-    // How many non-zero units to show in time countdowns (reset
-    // countdown AND stale-age suffix). Drops LEADING zero units
-    // first, then takes up to maxUnitCount from the start —
-    // including any internal/trailing zero units.
-    //   1d2h3m4s maxUnitCount=2 → "1d2h"
-    //   2h3m4s   maxUnitCount=2 → "2h3m"
-    //   2h0m     maxUnitCount=2 → "2h0m"   (NOT "2h" — internal zeros preserved)
-    //   0d0h5m   maxUnitCount=2 → "5m"     (leading zeros dropped)
-    // Clamped to [1, 4].
-    "maxUnitCount": 2,
-    // Emoji pair prepended to the "X ago" annotation when the fetch
-    // failed and we're serving a cached value. The broken glyph is
-    // what the user actually sees (no leading separator) — it's the
-    // indicator of network failure.
+    // Emoji pair for the "X ago" annotation. The broken glyph is what
+    // the user actually sees (no leading separator) — it's the
+    // indicator of network failure. Healthy is reserved for future use.
     "ageEmoji": { "healthy": "🔗", "broken": "⛓️‍💥" },
-    // Smallest unit shown on the reset countdown.
-    //   "m" (default): sub-minute shows as "<1m" — the "<" prefix
-    //                  signals "less than 1 minute" so the user can
-    //                  tell a window is about to reset (vs "0m" which
-    //                  would imply a definite wait).
-    //   "s":           sub-minute shows as actual seconds (e.g. "47s").
-    "minUnit": "m",
     // Glyphs appended to the reset countdown (e.g. "2h3m🕛"). The picker
     // indexes by `remainingMs / resetDurationMs`, so the array reads
     // left-to-right as "few remaining → many remaining" (i.e. ascending
@@ -326,6 +308,28 @@ A reference with every field is at [config.example.json](./config.example.json).
     "width": 8, // 3..64
     "filled": "▓",
     "empty": "░",
+  },
+  "timeFormat": {
+    // Top-level knobs — govern ALL time rendering in the plugin
+    // (reset countdown AND stale-age suffix). Keeping them out of the
+    // `stale` block means a user who wants second-level granularity
+    // anywhere gets it everywhere consistently.
+    //
+    // Smallest unit shown on time countdowns.
+    //   "m" (default): sub-minute shows as "<1m" — the "<" prefix
+    //                  signals "less than 1 minute" so the user can
+    //                  tell a window is about to reset (vs "0m" which
+    //                  would imply a definite wait).
+    //   "s":           sub-minute shows as actual seconds (e.g. "47s").
+    "minUnit": "m",
+    // How many non-zero units to show. Drops LEADING zero units first,
+    // then takes up to maxUnitCount from the start — including any
+    // internal/trailing zero units. Clamped to [1, 4].
+    //   1d2h3m4s → "1d2h"
+    //   2h3m4s   → "2h3m"
+    //   2h0m     → "2h0m"   (NOT "2h" — internal zeros preserved)
+    //   0d0h5m   → "5m"     (leading zeros dropped)
+    "maxUnitCount": 2,
   },
 }
 ```

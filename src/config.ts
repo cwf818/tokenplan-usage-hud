@@ -53,31 +53,15 @@ const DEFAULT_CURRENCY: {
 };
 
 const DEFAULT_STALE = {
-  // Separator between the data line and the " · Xm ago" suffix. (Legacy:
+  // Separator between the data line and the stale annotation. (Legacy:
   // the v0.2.11 design drops this — the broken-chain emoji IS the
-  // separator. Kept in DEFAULT_STALE in case a user re-introduces a
-  // custom separator.)
+  // indicator. Kept in DEFAULT_STALE for users who want to reintroduce
+  // a custom separator.)
   separator: " · ",
-  // Number of units to display in time countdowns (reset countdown AND
-  // stale suffix). Drops leading zero units first, then takes up to
-  // maxUnitCount from the start — including any internal/trailing zero
-  // units. Examples with default maxUnitCount=2:
-  //   1d2h3m4s → "1d2h"
-  //   2h3m4s   → "2h3m"
-  //   2h0m     → "2h0m"   (NOT "2h" — internal zeros preserved)
-  //   0d0h5m   → "5m"     (leading zeros dropped)
-  maxUnitCount: 2,
-  // Emoji pair for the "X ago" suffix. Healthy never appears in
-  // v0.2.11 — the broken emoji IS the indicator.
+  // Emoji pair prepended to the "X ago" annotation when the fetch
+  // failed. The broken glyph is what the user actually sees (no
+  // leading separator) — it's the indicator of network failure.
   ageEmoji: { healthy: "🔗", broken: "⛓️‍💥" },
-  // Smallest unit shown on the reset countdown.
-  //   "m" (default): sub-minute shows as "<1m<arrow>" — the "<" prefix
-  //                  signals "less than" so a window about to reset is
-  //                  visually distinct from one with a full minute left.
-  //   "s":           sub-minute shows as actual seconds (e.g. "47s<arrow>").
-  //                  Opt in if you want fine-grained "about to reset"
-  //                  visibility at the cost of a chatty line.
-  minUnit: "m" as "m" | "s",
   // Glyphs appended to the reset countdown (e.g. "2h3m🕛"). The picker
   // indexes into this array by `remainingMs / resetDurationMs`, so the
   // array reads left-to-right as "few remaining → many remaining":
@@ -113,6 +97,33 @@ const DEFAULT_BAR = {
 
 type DisplayMode = "used" | "remaining";
 
+// Top-level time-format knobs. They govern ALL time rendering in the
+// plugin — reset countdown AND stale-age suffix AND any future caller
+// (e.g. an "elapsed since session start" line). Keeping them at top
+// level (rather than buried under `stale`) means a user who wants
+// second-level granularity anywhere gets it everywhere consistently.
+type TimeFormat = {
+  // Smallest unit shown on time countdowns.
+  //   "m" (default): sub-unit shows as "<1m" — the "<" prefix signals
+  //                  "less than 1 minute" so a window about to reset is
+  //                  visually distinct from one with a full minute left.
+  //   "s":           sub-unit shows as actual seconds (e.g. "47s").
+  minUnit: "m" | "s";
+  // How many non-zero units to display. Drops LEADING zero units
+  // first, then takes up to maxUnitCount from the start — including
+  // any internal/trailing zero units. Clamped to [1, 4]. Examples:
+  //   1d2h3m4s → "1d2h"
+  //   2h3m4s   → "2h3m"
+  //   2h0m     → "2h0m"   (NOT "2h" — internal zeros preserved)
+  //   0d0h5m   → "5m"     (leading zeros dropped)
+  maxUnitCount: number;
+};
+
+const DEFAULT_TIME_FORMAT: TimeFormat = {
+  minUnit: "m",
+  maxUnitCount: 2,
+};
+
 const DEFAULT_CONFIG: {
   cacheTtlMs: number;
   fetchTimeoutMs: number;
@@ -123,6 +134,7 @@ const DEFAULT_CONFIG: {
   currency: typeof DEFAULT_CURRENCY;
   stale: typeof DEFAULT_STALE;
   bar: typeof DEFAULT_BAR;
+  timeFormat: TimeFormat;
 } = {
   cacheTtlMs: 60_000,
   fetchTimeoutMs: 5_000,
@@ -133,6 +145,7 @@ const DEFAULT_CONFIG: {
   currency: DEFAULT_CURRENCY,
   stale: DEFAULT_STALE,
   bar: DEFAULT_BAR,
+  timeFormat: DEFAULT_TIME_FORMAT,
 };
 
 export type Config = typeof DEFAULT_CONFIG;
@@ -408,11 +421,6 @@ function mergeConfig(raw: Record<string, unknown>): Config {
           out.stale.separator = sm.separator;
         else warn("stale.separator must be a string; using default");
       }
-      if ("minUnit" in sm) {
-        if (sm.minUnit === "m" || sm.minUnit === "s")
-          out.stale.minUnit = sm.minUnit;
-        else warn('stale.minUnit must be "m" or "s"; using default');
-      }
       if ("resetArrows" in sm) {
         const arr = sm.resetArrows;
         if (
@@ -429,6 +437,29 @@ function mergeConfig(raw: Record<string, unknown>): Config {
       }
     } else {
       warn("stale must be an object; using default");
+    }
+  }
+
+  // timeFormat — top-level (governs reset countdown AND stale suffix).
+  if ("timeFormat" in raw) {
+    const tf = raw.timeFormat;
+    if (tf && typeof tf === "object" && !Array.isArray(tf)) {
+      const t = tf as Record<string, unknown>;
+      if ("minUnit" in t) {
+        if (t.minUnit === "m" || t.minUnit === "s")
+          out.timeFormat.minUnit = t.minUnit;
+        else warn('timeFormat.minUnit must be "m" or "s"; using default');
+      }
+      if ("maxUnitCount" in t) {
+        if (isFiniteNumber(t.maxUnitCount))
+          out.timeFormat.maxUnitCount = Math.max(
+            1,
+            Math.min(4, Math.floor(t.maxUnitCount)),
+          );
+        else warn("timeFormat.maxUnitCount must be a number; using default");
+      }
+    } else {
+      warn("timeFormat must be an object; using default");
     }
   }
 
