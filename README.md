@@ -59,6 +59,19 @@ If your active `settings.json` doesn't exist at the project level, install creat
 
 Replaces the active `settings.json` with the most recent `settings.json.bak.<ts>`. Useful if you want to roll back an edit that wasn't made by us.
 
+## Commands
+
+Four slash commands ship with the plugin:
+
+| Command                                  | What it does                                                                                    |
+| ---------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `/tokenplan-usage-hud:install`           | Wire the wrapper into `settings.json` (or `--uninstall` / `--restore`).                          |
+| `/tokenplan-usage-hud:uninstall`         | Restore `settings.json`, wipe cache + marketplace + loader rows.                                   |
+| `/tokenplan-usage-hud:clean`             | Trim old `.bak.<ts>` files (keeps the most recent per file).                                      |
+| `/tokenplan-usage-hud:clean-cache`       | Remove stale version dirs from the plugin cache, keeping only the newest.                          |
+
+Each is a Pattern B2 slash command — the body is a `!`-fenced shell block that loads `scripts/<name>.sh` directly via `${CLAUDE_PLUGIN_ROOT}`, with `allowed-tools` scoped to that script. See [Project layout](#project-layout) for the file map.
+
 ## Uninstall
 
 ```
@@ -112,6 +125,18 @@ The uninstall slash command already runs `clean.sh` as its final step, so explic
 
 For dev iteration, `npm run settings:clean` (or `npm run settings:clean:dry`) does the same thing from the command line.
 
+## Clean cache
+
+```
+/tokenplan-usage-hud:clean-cache
+```
+
+Every `/plugin install` rolls the cache forward — Claude Code creates a new `<version>` directory under `<cache>/tokenplan-usage-hud/` but does **not** remove the previous one. Old version dirs pile up over time (~40-50 MB each: full source tree + node_modules). The `statusLine.command` written by `:install` is already version-independent — it `ls -d`s every version dir, sorts by version, and `exec`s the highest — so old dirs are pure dead weight.
+
+`/tokenplan-usage-hud:clean-cache` walks the cache, finds all `^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$` version directories, sorts numerically (so `0.2.10` sorts AFTER `0.2.9`, not lexically), keeps the newest, and removes the rest.
+
+**Safety:** non-version entries (`.in_use`, `.orphaned_at_*`, hidden dirs, files, anything not matching the version regex) are left untouched. Idempotent: re-running is a no-op once only the newest remains. Add `--dry-run` to preview.
+
 ## How it composes with other statuslines
 
 - The wrapper script is `scripts/wrapper.sh`. If `TOKENPLAN_UPSTREAM_CMD` is set, it runs that path as a bash script (`bash "$TOKENPLAN_UPSTREAM_CMD"`), captures stdout, and exposes it to the plugin entry as the `TOKENPLAN_UPSTREAM` env var. If unset, the wrapper runs the plugin as the sole statusline.
@@ -134,10 +159,32 @@ Both endpoints are called with `Authorization: Bearer $ANTHROPIC_AUTH_TOKEN` —
 
 <pre>
  Usage: ▓▓▓▓▓░░░ 38% (47m🕖 5h) · ▓▓▓░░░░░ 39% (4d47m🕓 7d)
-Remain: ░░░░░▓▓▓ 62% (47m🕖 5h) · ░░░▓▓▓▓▓ 61% (4d47m🕓 7d)
+Remain: ░░░░░▓▓ 62% (47m🕖 5h) · ░░░▓▓▓▓ 61% (4d47m🕓 7d)
 </pre>
 
-Two windows (5-hour + weekly), split-bar with colored percentage, reset countdown in parentheses, window label after the slash.
+Two windows (5-hour + weekly), split-bar with colored percentage, reset
+countdown in parentheses, window label after the countdown. The bar
+glyphs flip in remaining mode — both modes read left-to-right as
+"what's spent → what's left":
+
+- `used` mode: `▓▓▓▓▓░░░` — `▓` is consumed (colored), `░` is remaining (plain)
+- `remaining` mode: `░░░░░▓▓` — `░` is consumed (plain), `▓` is remaining (colored)
+
+The reset countdown uses the shared time-formatting template:
+
+| Remaining | Rendered  | Note                                       |
+| --------- | --------- | ------------------------------------------ |
+| `-1ms`    | `0m`      | past-due, explicit "this window has reset" |
+| `30s`     | `<1m`     | sub-minUnit floor                          |
+| `5m`      | `5m`      |                                            |
+| `60m`     | `1h0m`    | internal zero preserved                    |
+| `90m`     | `1h30m`   |                                            |
+| `24h`     | `1d0h`    |                                            |
+
+`maxUnitCount` (default `2`) controls how many units are shown. Leading
+zeros are dropped (`0d0h5m` → `5m`); internal and trailing zeros are
+kept (`2h0m` → `2h0m`, NOT `2h`). See `stale.maxUnitCount` in the
+config schema for the full set of options.
 
 ### DeepSeek balance line
 
@@ -211,7 +258,7 @@ A reference with every field is at [config.example.json](./config.example.json).
     "yellow": "yellow",
     "orange": "orange",
     "red": "red",
-    "stale": "brightBlack", // dim-gray for " · Xm ago"
+    "stale": "brightBlack", // dim-gray for the "⛓️‍💥 X ago" suffix
   },
   "thresholds": {
     // band cutoffs (4 ascending numbers each)
@@ -227,7 +274,21 @@ A reference with every field is at [config.example.json](./config.example.json).
   "stale": {
     // stale-on-error annotation + reset arrow
     "separator": " · ",
-    "minMinutes": 1, // sub-minute ages round UP to this
+    // How many non-zero units to show in time countdowns (reset
+    // countdown AND stale-age suffix). Drops LEADING zero units
+    // first, then takes up to maxUnitCount from the start —
+    // including any internal/trailing zero units.
+    //   1d2h3m4s maxUnitCount=2 → "1d2h"
+    //   2h3m4s   maxUnitCount=2 → "2h3m"
+    //   2h0m     maxUnitCount=2 → "2h0m"   (NOT "2h" — internal zeros preserved)
+    //   0d0h5m   maxUnitCount=2 → "5m"     (leading zeros dropped)
+    // Clamped to [1, 4].
+    "maxUnitCount": 2,
+    // Emoji pair prepended to the "X ago" annotation when the fetch
+    // failed and we're serving a cached value. The broken glyph is
+    // what the user actually sees (no leading separator) — it's the
+    // indicator of network failure.
+    "ageEmoji": { "healthy": "🔗", "broken": "⛓️‍💥" },
     // Smallest unit shown on the reset countdown.
     //   "m" (default): sub-minute shows as "<1m" — the "<" prefix
     //                  signals "less than 1 minute" so the user can
@@ -343,13 +404,26 @@ DeepSeek balance uses a separate cache key (`"balance"`) so the two providers do
 
 Three outcomes when the provider API is called:
 
-| Outcome                    | What you see on the statusline                                                                                                                                       |
-| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Fresh fetch                | The normal `Usage: …` / `Balance: …` line, no suffix.                                                                                                                |
-| Fetch failed, cache exists | The last good value, **with a dim ` · Xm ago` suffix** at the end (e.g. `Balance: ￥110 · 5m ago`). Color is dim gray so it doesn't compete with the 5-band palette. |
-| Fetch failed, no cache     | `Usage: not available!` (MiniMax) or `Balance: not available!` (DeepSeek) in red. Plugin is alive but the provider is unreachable.                                   |
+| Outcome                    | What you see on the statusline                                                                                                                                                |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Fresh fetch                | The normal `Usage: …` / `Balance: …` line, no suffix.                                                                                                                         |
+| Fetch failed, cache exists | The last good value, **with a dim `⛓️‍💥 X ago` suffix** at the end (e.g. `Balance: ￥110 ⛓️‍💥 5m ago`). The broken-chain emoji IS the indicator (no leading separator).   |
+| Fetch failed, no cache     | `Usage: not available!` (MiniMax) or `Balance: not available!` (DeepSeek) in red. Plugin is alive but the provider is unreachable.                                            |
 
-The `Xm` / `Xh` / `Xd` units follow the same convention as the reset suffix elsewhere on the line — `30s` rounds up to `1m ago` (never shows `0m ago`), `90m` collapses to `1h ago`, `25h` to `1d ago`. The hard-fail `not available!` line intentionally has no age suffix because there is no cached value to be stale-OF.
+The `X ago` format uses the **same template as the reset countdown**:
+d/h/m units, `maxUnitCount=2` default, drop leading zeros but keep
+internal/trailing zeros. Sub-minute rounds UP to `1m ago` (never shows
+`0m ago`). Examples:
+
+| Cached age  | Rendered suffix        |
+| ----------- | ---------------------- |
+| 30 s        | `⛓️‍💥 1m ago`           |
+| 5 min       | `⛓️‍💥 5m ago`           |
+| 90 min      | `⛓️‍💥 1h30m ago`         |
+| 24 h        | `⛓️‍💥 1d0h ago`          |
+
+The hard-fail `not available!` line intentionally has no age suffix
+because there is no cached value to be stale-OF.
 
 ## Develop
 
