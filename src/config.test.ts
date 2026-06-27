@@ -394,18 +394,31 @@ describe("loadConfig — separators (top-level)", () => {
     assert.deepEqual(cfg.separators, ["\n"]);
   });
 
-  it("rejects separators with non-\\n control chars (JSON mistake guard)", async () => {
-    // v0.4.0+: '\n' alone is allowed (multi-line separator), but
-    // anything with a stray non-\n control char ('\\r', NUL, '\\t',
-    // etc.) is almost certainly a JSON mistake and gets dropped.
-    // Build the strings via String.fromCharCode so the TypeScript
-    // source itself doesn't contain literal control bytes that
-    // would be silently consumed by tooling.
-    const TAB = String.fromCharCode(9);
+  it("accepts '\\t' as a separator (terminal renders tab stops)", async () => {
+    // '\t' is intentionally allowed so the terminal can align to its
+    // configured tab stops. The byte passes through to stdout verbatim;
+    // we don't try to interpret or translate it.
+    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
+      separators: ["\t"],
+    }));
+    const cfg = await loadConfig();
+    assert.deepEqual(cfg.separators, ["\t"]);
+  });
+
+  it("rejects separators with non-\\n/\\t control chars (JSON mistake guard)", async () => {
+    // v0.4.0+: '\n' (line break) and '\t' (tab) are allowed as real
+    // values. Any other control char ('\\r', NUL, '\\b', '\\f',
+    // '\\v', etc.) is almost certainly a JSON mistake and gets
+    // dropped. Build the strings via String.fromCharCode so the
+    // TypeScript source itself doesn't contain literal control
+    // bytes that would be silently consumed by tooling.
     const CR = String.fromCharCode(13);
     const NUL = String.fromCharCode(0);
+    const BS = String.fromCharCode(8);
+    const FF = String.fromCharCode(12);
+    const VT = String.fromCharCode(11);
     writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
-      separators: [" ", `Y${TAB}TAB`, `Z${CR}CR`, `W${NUL}NUL`],
+      separators: [" ", `Z${CR}CR`, `W${NUL}NUL`, `B${BS}BS`, `F${FF}FF`, `V${VT}VT`],
     }));
     const cfg = await loadConfig();
     assert.deepEqual(cfg.separators, [" "]);
