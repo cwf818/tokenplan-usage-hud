@@ -227,12 +227,14 @@ const DEFAULT_PROVIDERS: Record<string, ProviderEntry> = {
     BASE_URL_COMPARED_TO: "https://api.minimaxi.com/anthropic",
     COMPARE_METHOD: "EXACT",
     ENDPOINT: "https://www.minimaxi.com/v1/token_plan/remains",
+    config: {},
   },
   deepseek: {
     TYPE: "BALANCE",
     BASE_URL_COMPARED_TO: "https://api.deepseek.com/anthropic",
     COMPARE_METHOD: "EXACT",
     ENDPOINT: "https://api.deepseek.com/user/balance",
+    config: {},
   },
 };
 
@@ -370,6 +372,38 @@ export async function loadConfig(): Promise<Config> {
   return _current;
 }
 
+// v0.4.0+ — apply a provider-specific Config override on top of the
+// active snapshot. Called from index.ts:main() after loadConfig() and
+// matchProvider() so the active Config seen by every consumer
+// (configStore.get()) is already the merged view:
+//
+//   defaults  ⊕  config.json top-level  ⊕  providerEntry.config
+//             (lowest)                  (highest)
+//
+// Implementation: deep-clone the current snapshot, run the same
+// per-field validators on top of the provider.config object, replace
+// the active snapshot. Reusing the validators (rather than merging
+// provider.config as JSON and re-running mergeConfig) keeps the
+// precedence math explicit and avoids re-cloning defaults.
+//
+// Stale-on-error behavior: the active snapshot may have been built
+// from a malformed user config (some fields silently fell back to
+// defaults with a stderr warn). Re-validating provider.config on top
+// of that snapshot means the provider layer's overrides get the SAME
+// per-field validation as the top-level config — typos in
+// provider.config still produce stderr warns, never silent acceptance.
+export function applyProviderOverrides(raw: Record<string, unknown>): void {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return;
+  if ("providers" in raw) {
+    warn(
+      "provider.config must not contain a nested 'providers' key (would recurse); ignoring",
+    );
+    delete (raw as Record<string, unknown>).providers;
+  }
+  const base = JSON.parse(JSON.stringify(_current)) as Config;
+  _current = applyOverrides(base, raw);
+}
+
 function warn(msg: string): void {
   process.stderr.write(`tokenplan-usage-hud: config ${msg}\n`);
 }
@@ -419,10 +453,37 @@ function normalizeColor(v: unknown): string | null {
   return null;
 }
 
-function mergeConfig(raw: Record<string, unknown>): Config {
-  // Deep-clone defaults into a fresh mutable object. JSON round-trip is
-  // fine here — Config is plain data, no functions / Dates / Maps.
-  const out = JSON.parse(JSON.stringify(DEFAULT_CONFIG)) as Config;
+// v0.4.0+ — internal helper that applies a raw override object on
+// top of an existing Config snapshot. Used by both mergeConfig (the
+// config.json loader) and applyProviderOverrides (the provider-level
+// config overlay). Per-field validators are identical between the
+// two callers, so the precedence is:
+//
+//   defaults  ⊕  config.json  ⊕  providerEntry.config
+//
+// where each step runs the same validators in sequence.
+//
+// Why a separate helper: extracting this from mergeConfig keeps the
+// validation logic in ONE place. If we re-ran mergeConfig from scratch
+// for the provider layer, we'd lose the user-config fixes (e.g. a
+// top-level `cacheTtlMs` that was repaired with a stderr warn would
+// get re-clobbered by an unrelated bad value in provider.config).
+// Re-validating on top of the merged snapshot keeps each layer's
+// effect independent.
+function applyOverrides(base: Config, raw: Record<string, unknown>): Config {
+  // Deep-clone the input Config — we mutate freely and don't want to
+  // touch the caller's object. JSON round-trip is fine here: Config
+  // is plain data, no functions / Dates / Maps.
+  const out = JSON.parse(JSON.stringify(base)) as Config;
+
+  // cacheTtlMs
+  if ("cacheTtlMs" in raw) {
+    if (isFinitePositiveNumber(raw.cacheTtlMs)) {
+      out.cacheTtlMs = raw.cacheTtlMs;
+    } else {
+      warn("cacheTtlMs must be a positive number; using default");
+    }
+  }
 
   // cacheTtlMs
   if ("cacheTtlMs" in raw) {
@@ -823,6 +884,22 @@ function mergeConfig(raw: Record<string, unknown>): Config {
     }
   }
 
+  // Note: the `providers` block is handled separately by mergeConfig
+  // (the only caller that processes user-provided provider entries).
+  // applyProviderOverrides rejects `providers` at the top of the
+  // function, so this helper intentionally doesn't touch it.
+
+  return out;
+}
+
+// v0.4.0+ — top-level config.json loader. Wraps applyOverrides with
+// the `providers` block handling that lives only at the top layer.
+function mergeConfig(raw: Record<string, unknown>): Config {
+  const out = applyOverrides(
+    JSON.parse(JSON.stringify(DEFAULT_CONFIG)) as Config,
+    raw,
+  );
+
   // providers — Record<string, ProviderEntry>. User config is
   // deep-merged on top of DEFAULT_PROVIDERS: existing keys have
   // their fields overridden; new keys are appended. Per-entry
@@ -917,11 +994,42 @@ function validateProviderEntry(v: unknown): ProviderEntry | null {
     warn("provider ENDPOINT must be an http(s) URL; dropping");
     return null;
   }
+  // v0.4.0+ — optional provider-specific Config overrides. Validated
+  // here only for shape (must be a plain object, no nested `providers`
+  // key to avoid recursion). The fields inside `config` are merged
+  // into the active Config snapshot at startup via
+  // configStore.applyProviderOverrides(provider); per-field validators
+  // are applied at THAT time so a typo still produces a stderr warn.
+  if ("config" in e && e.config !== undefined) {
+    const c = e.config;
+    if (!c || typeof c !== "object" || Array.isArray(c)) {
+      warn(`provider.config must be an object (got ${typeof c}); dropping the entry`);
+      return null;
+    }
+    const cm = c as Record<string, unknown>;
+    if ("providers" in cm) {
+      warn(
+        "provider.config must not contain a nested 'providers' key (would recurse); dropping the entry",
+      );
+      return null;
+    }
+  }
+  // Forward the validated `config` block (or omit it entirely if
+  // the user didn't supply one) so downstream readers see a
+  // consistent shape.
+  const validatedConfig =
+    "config" in e &&
+    e.config &&
+    typeof e.config === "object" &&
+    !Array.isArray(e.config)
+      ? (e.config as Record<string, unknown>)
+      : undefined;
   return {
     TYPE: t as ProviderType,
     BASE_URL_COMPARED_TO: base,
     COMPARE_METHOD: cm as CompareMethod,
     ENDPOINT: ep,
+    ...(validatedConfig ? { config: validatedConfig } : {}),
   };
 }
 

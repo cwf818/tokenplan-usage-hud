@@ -11,6 +11,16 @@
 //     startup; every tunable (cache TTL, fetch timeout, colors, display
 //     mode, …) reads from there via the configStore singleton.
 //
+// v0.4.0+: three-layer config precedence
+//   defaults  ⊕  config.json top-level  ⊕  providerEntry.config
+// with providerEntry.config having the highest priority. After
+// matchProvider() resolves the active provider, main() invokes
+// applyProviderOverrides(providerEntry.config) so every downstream
+// cfg() call sees the merged view. Useful for per-provider tuning
+// (e.g. "minimax needs fetchTimeoutMs=3000 because the API is slow;
+// deepseek uses the default 5000") without restating the global
+// config for each provider.
+//
 // v0.2.21: provider dispatch is data-driven via the providers config
 // block. The hardcoded `getRemainsData` / `getBalanceData` split is
 // replaced by a single `fetchProviderData(provider, …)` that picks
@@ -22,7 +32,7 @@ import { type Balance } from "./api.deepseek.ts";
 import type { Provider, TokenSample } from "./types.ts";
 import { compose } from "./composition.ts";
 import { type FetchResult, buildProviderLine } from "./dispatch.ts";
-import { configStore, loadConfig } from "./config.ts";
+import { applyProviderOverrides, configStore, loadConfig } from "./config.ts";
 import {
   fetchForProvider,
   getProviderEntry,
@@ -189,6 +199,19 @@ async function main(): Promise<void> {
   if (provider === null) {
     process.stdout.write(compose(upstream, null));
     return;
+  }
+
+  // v0.4.0+ — apply the active provider's `config` overlay on top of
+  // the just-loaded config snapshot. Three-layer precedence becomes
+  //   defaults  ⊕  config.json top-level  ⊕  providerEntry.config
+  // with providerEntry.config having the highest priority. Runs once
+  // per tick (the plugin is a per-tick child process) so the active
+  // Config seen by every cfg() call downstream is already the merged
+  // view. If the matched provider has no `config` block, this is a
+  // no-op (applyProviderOverrides early-returns on undefined input).
+  const entry = getProviderEntry(provider);
+  if (entry?.config) {
+    applyProviderOverrides(entry.config);
   }
 
   const token = process.env.ANTHROPIC_AUTH_TOKEN;
