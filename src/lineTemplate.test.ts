@@ -130,6 +130,44 @@ describe("lineTemplate — forced visibility of m_age on stale", () => {
     assert.ok(strip(line).endsWith("⛓️‍💥 5m ago"), `got: ${line}`);
   });
 
+  it("appends the broken-chain suffix when a separator happens to contain ' ago'", () => {
+    // v0.4.0 dedup is template-level (template.includes('m_age')),
+    // NOT output-scanning. A separator string containing ' ago'
+    // must NOT cause the forced fallback to skip — the dedup check
+    // would have misfired under the old 'joined.includes(" ago")'
+    // heuristic. Confirms the refactor.
+    __resetForTest({
+      separators: [" ago"],
+      lineTemplate: {
+        plan: [
+          "m_label", "s_0",
+          "m_window5h", "s_0", "m_countdown5h",
+          "s_0", "s_1", "s_0",
+          "m_window7d", "s_0", "m_countdown7d",
+        ],
+        balance: ["m_label", "s_0", "m_balance"],
+      },
+    });
+    try {
+      const line = renderProviderLine("minimax", {
+        mode: "used",
+        nowMs: Date.now(),
+        fiveHour: { pct: 38, resetAt: null },
+        weekly: { pct: 60, resetAt: null },
+        ageMs: 5 * 60_000,
+        stale: true,
+        version: "",
+      });
+      // Forced fallback must still fire — exactly one ⛓️‍💥 5m ago
+      // suffix appended to the rendered output.
+      const stripped = strip(line);
+      const occurrences = (stripped.match(/⛓️‍💥 5m ago/g) ?? []).length;
+      assert.equal(occurrences, 1, `expected 1, got ${occurrences}: ${stripped}`);
+    } finally {
+      __resetForTest();
+    }
+  });
+
   it("does NOT double-append when m_age IS in the template", () => {
     __resetForTest({
       lineTemplate: {
