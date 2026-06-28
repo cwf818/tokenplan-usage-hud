@@ -360,30 +360,29 @@ function pickResetArrow(
 }
 
 // Compact "age of cached value" formatter for the trailing annotation.
-// Returns e.g. "⛓️‍💥 5m ago" (broken, fetch failed and we're showing
-// stale data — the typical case for this suffix). SGR-wrapped in
-// STALE_COLOR and RESET-terminated. Returns "" when ageMs is not
-// positive — that's how fresh ticks suppress the suffix entirely.
+// The `healthy` flag toggles the emoji: 🔗 for fresh (data is current,
+// within-TTL cache hit) or ⛓️‍💥 for stale (fetch failed, showing
+// cached data). SGR-wrapped in STALE_COLOR and RESET-terminated.
+// Returns "" only when ageMs is non-finite (NaN / ±Infinity).
 //
-// The `healthy` parameter toggles the emoji: 🔗 vs ⛓️‍💥. The caller
-// (buildProviderLine) decides which by mapping FetchResult.kind:
-// fresh → healthy (but doesn't emit because ageMs is 0), stale →
-// broken. The data's age always means "time since last successful
-// fetch" (from cache.Entry.at via peekWithAge); no other time source.
-//
-// The X time itself uses the SAME template as the reset countdown
+// The X time uses the SAME template as the reset countdown
 // (formatRemainingMs) with the same `timeFormat.minUnit` and
-// `timeFormat.maxUnitCount` knobs. Sub-minute:
+// `timeFormat.maxUnitCount` knobs:
+//   ageMs = 0          → "0<minUnit> ago"   (e.g. "0m ago", "0s ago")
+//   sub-minute (0..59s) → "<1<minUnit> ago" or "${seconds}s ago"
 //   minUnit="m" → "<1m ago"  (the "<" floor reads "less than 1 minute")
 //   minUnit="s" → "${seconds}s ago" (no spurious round-up — second
 //                                  granularity is fine-grained enough
 //                                  that we don't need to lie about it)
+//
+// Visibility is gated by the caller: the m_age module emits whenever
+// `ageMs != null` (the user explicitly opted in by listing it in the
+// lineTemplate); renderProviderLine's forced-visibility block emits
+// only when `stale === true` (the user did NOT list m_age but the
+// renderer still wants a broken-chain indicator on real outages).
 export function formatStaleSuffix(ageMs: number, healthy: boolean = false): string {
   if (!Number.isFinite(ageMs)) return "";
   const emoji = healthy ? cfg().stale.ageEmoji.healthy : cfg().stale.ageEmoji.broken;
-  // ageMs == 0: render the emoji alone (no "0s ago" — that would be
-  // noise; the emoji alone marks "data is from this instant").
-  if (ageMs <= 0) return `${STALE_COLOR}${emoji}${RESET}`;
   const label = `${formatRemainingMs(ageMs)} ago`;
   return `${STALE_COLOR}${emoji} ${label}${RESET}`;
 }
@@ -578,12 +577,12 @@ const MODULES: Record<string, Module> = {
   // to render (unavailable / empty / no min) so the template can
   // opt out of showing it.
   m_balance: (c) => (c.balance ? formatBalanceEntriesColored(c.balance) || null : null),
-  // Stale-age annotation. Hidden only when ageMs is missing (caller
-  // didn't supply it). ageMs == 0 still renders the bare emoji —
-  // visually marking "data is from this instant" without printing
-  // a spurious "0s ago" label. The forced-age append path in
-  // renderProviderLine covers the case where the user removed
-  // m_age from the template.
+  // Stale-age annotation. When present in the lineTemplate, this is
+  // the primary render path — it emits unconditionally (no stale
+  // gating). The emoji reflects the fetch state: 🔗 for fresh ticks
+  // (showing the cache age), ⛓️‍💥 for stale (showing the time since
+  // the last successful fetch). Returns null when ageMs is missing
+// — that's the only signal that "no age info is available".
   m_age: (c) =>
     c.ageMs != null ? formatStaleSuffix(c.ageMs, !c.stale) : null,
   // Plugin version (e.g. "v0.2.17"). Hidden when version is empty
@@ -903,22 +902,21 @@ export function renderProviderLine(
   const templateKey = templateKeyForProvider(provider);
   const template = cfg().lineTemplate[templateKey];
   const lines = renderTemplate(template, fullCtx);
-  // Forced visibility for the age annotation: append whenever
-  // ageMs > 0 AND the template didn't already emit it. This matches
-  // v0.2.16 behavior exactly — `formatLine` always called
-  // `formatStaleSuffix(ageMs, !stale)` when ageMs was positive; the
-  // `stale` flag only controlled the emoji (healthy vs broken), not
-  // whether to emit. The marker is the STALE_COLOR SGR opening
-  // followed by the appropriate emoji, which is unique to
-  // formatStaleSuffix output.
-  if (ctx.ageMs != null && ctx.ageMs > 0) {
-    const emoji = ctx.stale
-      ? cfg().stale.ageEmoji.broken
-      : cfg().stale.ageEmoji.healthy;
-    const staleMarker = `${STALE_COLOR}${emoji}`;
+  // Forced visibility for the age annotation (stale-only fallback):
+// when the user did NOT put m_age in their lineTemplate AND the fetch
+// was stale, append the broken-chain suffix to the rendered line. This
+// preserves the v0.2.16 invariant that a network failure is always
+// visible, no matter what the user put in their template.
+//
+// Dedup: if m_age already emitted (any emoji variant — 🔗 or ⛓️‍💥
+// — followed by "<unit> ago"), skip. The check looks for the literal
+// " ago" tail of formatStaleSuffix's output rather than a specific
+// emoji marker, because the template-rendered m_age may use 🔗 on
+// fresh or ⛓️‍💥 on stale and we must dedup both.
+  if (ctx.ageMs != null && ctx.stale) {
     const joined = lines.join("\n");
-    if (!joined.includes(staleMarker)) {
-      const suffix = formatStaleSuffix(ctx.ageMs, !ctx.stale);
+    if (!joined.includes(" ago")) {
+      const suffix = formatStaleSuffix(ctx.ageMs, false);
       // The suffix carries its own SGR close, so it slots onto the
       // last line regardless of how many lines the template emitted.
       if (lines.length === 0) {

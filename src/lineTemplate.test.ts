@@ -175,17 +175,34 @@ describe("lineTemplate — forced visibility of m_age on stale", () => {
     assert.ok(!line.includes("ago"));
   });
 
-  it("uses healthy emoji when stale=false and ageMs > 0", () => {
-    const line = renderProviderLine("minimax", {
-      mode: "used",
-      nowMs: Date.now(),
-      fiveHour: { pct: 38, resetAt: null },
-      weekly: { pct: 60, resetAt: null },
-      ageMs: 30_000,
-      stale: false,
-      version: "",
+  it("uses healthy emoji when stale=false and ageMs > 0 (m_age is in template)", () => {
+    // v0.4.0 priority: template presence wins. When m_age is listed
+    // in the lineTemplate, the module emits unconditionally. Fresh +
+    // ageMs > 0 → 🔗 X ago.
+    __resetForTest({
+      lineTemplate: {
+        plan: [
+          "m_label", "s_0",
+          "m_window5h", "s_0", "m_countdown5h",
+          "s_0", "m_age",
+        ],
+        balance: ["m_label", "s_0", "m_balance", "s_0", "m_age"],
+      },
     });
-    assert.ok(strip(line).includes("🔗 <1m ago"), `got: ${line}`);
+    try {
+      const line = renderProviderLine("minimax", {
+        mode: "used",
+        nowMs: Date.now(),
+        fiveHour: { pct: 38, resetAt: null },
+        weekly: { pct: 60, resetAt: null },
+        ageMs: 30_000,
+        stale: false,
+        version: "",
+      });
+      assert.ok(strip(line).includes("🔗 <1m ago"), `got: ${line}`);
+    } finally {
+      __resetForTest();
+    }
   });
 });
 

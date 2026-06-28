@@ -469,7 +469,7 @@ Recognized modules:
 | `m_window7d`       | 7-day bar + colored percentage                                   |
 | `m_countdown7d`    | 7-day reset suffix: `(4d16h🕛 7d)` or just `7d`                  |
 | `m_balance`        | The DeepSeek balance chunk (e.g. `$25 · ￥110`), single SGR-wrapped block |
-| `m_age`            | The stale-age annotation: `⛓️‍💥 5m ago` (broken) or `🔗 5m ago` (healthy) |
+| `m_age`            | The age annotation: `🔗 5m ago` (fresh, in-template) or `⛓️‍💥 5m ago` (stale, in-template or forced fallback). Emits unconditionally when listed in the lineTemplate; returns `null` only when `ageMs` is missing. |
 | `m_version`        | The plugin version: `v0.2.17` (auto-loaded from `.claude-plugin/plugin.json`) |
 | `m_tokenIn`        | Session cumulative input tokens — e.g. `in:163k`. Reads stdin `context_window.total_input_tokens`. Hidden when stdin lacks the field. |
 | `m_tokenOut`       | Session cumulative output tokens — e.g. `out:155`. Reads stdin `context_window.total_output_tokens`. |
@@ -482,7 +482,9 @@ Recognized modules:
 | `m_tokenInSpeed`   | Session-average input speed — e.g. dim-gray `in:42.5 t/s`. Reads `total_input_tokens / cost.total_duration_ms × 1000`. Hidden when session duration is 0. |
 | `m_tokenOutSpeed`  | Same for output tokens. |
 
-**Forced visibility of `m_age`:** when the fetch result is **stale** (network failure with a cached value), the broken-chain age annotation is appended to the rendered line **unconditionally** — even if your `lineTemplate` doesn't list `m_age`. This preserves the invariant that a network failure is always visible, no matter what the user puts in their template. On `fresh` ticks, no annotation is shown. The `m_age` module itself only emits when `ageMs > 0`, so a user who *does* include `m_age` in their template gets exactly one annotation, not two.
+**Visibility of `m_age` (priority: template-driven, stale fallback):**
+- If your `lineTemplate` includes `m_age`, the module emits **unconditionally** (no stale gating). Emoji reflects the fetch state: `🔗 X ago` on fresh ticks (showing the cache age), `⛓️‍💥 X ago` on stale (showing time since last successful fetch). Hidden only when `ageMs` is missing.
+- If your `lineTemplate` does NOT include `m_age`, the **stale fallback** kicks in: when the fetch result is **stale** (network failure with a cached value), the broken-chain annotation is appended to the rendered line. On fresh ticks, no annotation is shown — the broken-chain indicator is reserved for real outages. The dedup check looks for any `" ago"` tail on the rendered lines, so a user who *does* include `m_age` in their template gets exactly one annotation, not two.
 
 ### Recipes
 
@@ -662,7 +664,7 @@ Three outcomes when the provider API is called:
 
 | Outcome                    | What you see on the statusline                                                                                                                                                |
 | -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Fresh fetch                | The normal `Usage: …` / `Balance: …` line, no suffix.                                                                                                                         |
+| Fresh fetch                | The normal `Usage: …` / `Balance: …` line, no suffix on the default template. (Includes within-TTL cache hits — the broken-chain suffix is reserved for stale state. If your template includes `m_age`, you'll see a healthy `🔗 X ago` here instead.) |
 | Fetch failed, cache exists | The last good value, **with a dim `⛓️‍💥 X ago` suffix** at the end (e.g. `Balance: ￥110 ⛓️‍💥 5m ago`). The broken-chain emoji IS the indicator (no leading separator).   |
 | Fetch failed, no cache     | `Usage: not available!` (MiniMax) or `Balance: not available!` (DeepSeek) in red. Plugin is alive but the provider is unreachable.                                            |
 

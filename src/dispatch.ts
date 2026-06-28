@@ -6,14 +6,13 @@
 // Three outcomes the provider data layer can report:
 //   fresh — we successfully obtained the data (from network or from a
 //           within-TTL cache hit); `ageMs` is the time since the entry
-//           was cached. The renderer short-circuits when ageMs <= 0, so
-//           a brand-new fetch (ageMs ≈ 0) suppresses the X-ago suffix
-//           entirely. A within-TTL cache hit (e.g. ageMs = 30_000) is
-//           semantically fresh but still carries an age that the
-//           lineTemplate's m_age module may surface.
+//           was cached. The renderer's m_age module and forced-visibility
+//           append both gate on `stale === true`, so fresh ticks render
+//           no age suffix regardless of ageMs.
 //   stale — fetch failed but a cached value exists; `ageMs` is how long
 //           it's been since the last successful fetch (from cache.Entry.at).
-//           `stale=true` flips the suffix emoji from 🔗 to ⛓️‍💥.
+//           `stale=true` triggers the broken-chain suffix (e.g. "⛓️‍💥 5m ago")
+//           via either the m_age module or the forced-visibility append.
 //   fail  — fetch failed AND no cached value; caller renders "not available!"
 //
 // v0.2.21: switched from provider-name literals ("minimax" /
@@ -41,9 +40,9 @@ export type FetchResult<T> =
   | { kind: "fail" };
 
 // Render the MiniMax-style two-window line from a Remains payload.
-// The `stale` flag controls the healthy/broken emoji in the suffix;
-// ageMs <= 0 suppresses the suffix entirely (no point telling the user
-// "0s ago" — they can see the line render in real time).
+// The `stale` flag drives the broken-chain suffix visibility — fresh
+// ticks render no age suffix regardless of ageMs. When stale=true,
+// the suffix shows the broken emoji + age (e.g. "⛓️‍💥 5m ago").
 //
 // v0.2.21: kept the named helper (rather than inlining) because
 // dispatch.ts:buildProviderLine and the lower-level tests still call
@@ -134,13 +133,11 @@ export function buildProviderLine(
     const mode = resolveDisplayMode();
     // ageMs is carried on BOTH the fresh and stale variants:
     //   fresh.ageMs : 0 for a just-fetched tick; the cache age for a
-    //                 within-TTL cache hit (so a user template can opt
-    //                 into showing "🔗 30s ago" via the m_age module).
+    //                 within-TTL cache hit. Renderer suppresses the
+    //                 suffix on fresh ticks (stale=false gate).
     //   stale.ageMs : how long since the last successful fetch.
-    // The renderer's m_age module returns null when ageMs <= 0, so
-    // the suffix is auto-suppressed on a brand-new fetch — preserving
-    // the v0.2.16 "fresh ticks skip suffix" behavior. The stale
-    // boolean continues to flip the emoji (healthy ↔ broken).
+    //                 Renderer appends "⛓️‍💥 Xm ago" (or "0s ago" if the
+    //                 fetch just failed).
     return renderPlanLine(
       result.data as Remains,
       mode,
@@ -151,8 +148,8 @@ export function buildProviderLine(
   }
   if (entry.TYPE === "BALANCE") {
     // BALANCE providers have no window concept; same ageMs contract
-    // as the TOKEN_PLAN path. Fresh cache hits carry the cache age;
-    // fresh network fetches carry 0 (auto-suppressed by the renderer).
+    // as the TOKEN_PLAN path. Fresh ticks render no suffix; stale
+    // ticks render the broken-chain "X ago" annotation.
     return formatBalanceLine(
       result.data as Balance,
       result.ageMs,
