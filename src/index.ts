@@ -53,14 +53,13 @@ async function readStdin(): Promise<string> {
 // Three outcomes the provider data layer can report:
 //   fresh — we successfully obtained the data (from network or from a
 //           within-TTL cache hit); `ageMs` is the time since the entry
-//           was cached. The renderer short-circuits when ageMs <= 0, so
-//           a brand-new fetch (ageMs ≈ 0) suppresses the X-ago suffix
-//           entirely. A within-TTL cache hit (e.g. ageMs = 30_000) is
-//           semantically fresh but still carries an age that the
-//           lineTemplate's m_age module may surface.
+//           was cached. The renderer's m_age module and forced-visibility
+//           append both gate on `stale === true`, so fresh ticks render
+//           no age suffix regardless of ageMs.
 //   stale — fetch failed but a cached value exists; `ageMs` is how long
 //           it's been since the last successful fetch (from cache.Entry.at).
-//           `stale=true` flips the suffix emoji from 🔗 to ⛓️‍💥.
+//           `stale=true` triggers the broken-chain suffix (e.g. "⛓️‍💥 5m ago")
+//           via either the m_age module or the forced-visibility append.
 //   fail  — fetch failed AND no cached value; caller renders "not available!"
 //
 // FetchResult and buildProviderLine live in src/dispatch.ts so tests can
@@ -131,8 +130,8 @@ async function fetchProviderData(
     );
     if (data) {
       cache.set(cacheKey, data);
-      // ageMs=0 on a brand-new fetch — the renderer's m_age module
-      // short-circuits on ageMs <= 0, so the suffix is suppressed.
+      // ageMs=0 on a brand-new fetch — the renderer suppresses the
+      // suffix on fresh ticks (stale=false gate).
       return { kind: "fresh", data, ageMs: 0 };
     }
     // Fetcher returned null (e.g. base_resp.status_code != 0). Treat

@@ -709,21 +709,21 @@ describe("formatBalanceLine — unavailable", () => {
 });
 
 describe("formatStaleSuffix", () => {
-  it("returns empty only for non-finite ageMs; ageMs <= 0 renders the bare emoji", () => {
-    // v0.2.20: a brand-new fetch (ageMs = 0) renders the stale-color
-    // emoji alone, without "0s ago" — visually marking "data is from
-    // this instant" without spurious text. Negative ageMs (shouldn't
-    // happen in practice — guard rail) is treated the same.
+  it("returns empty only for non-finite ageMs; ageMs = 0 renders the X-ago label", () => {
+    // v0.4.0: formatStaleSuffix no longer short-circuits on ageMs <= 0.
+    // It now always falls through to formatRemainingMs so a stale-on-
+    // error tick at ageMs=0 produces "⛓️‍💥 0m ago" (default minUnit=m)
+    // or "⛓️‍💥 0s ago" (minUnit=s). The visibility gate moved up to
+    // the m_age module / forced-visibility append, which only call
+    // this function when stale=true.
     assert.equal(formatStaleSuffix(Number.NaN), "");
     assert.equal(formatStaleSuffix(Number.POSITIVE_INFINITY), "");
     assert.equal(formatStaleSuffix(Number.NEGATIVE_INFINITY), "");
-    // ageMs = 0 (and below) → STALE_COLOR + healthy/broken emoji + RESET.
-    const fresh = formatStaleSuffix(0);
-    assert.ok(fresh.includes("⛓️‍💥") || fresh.includes("🔗"));
-    assert.ok(fresh.includes(RESET));
-    assert.ok(!fresh.includes(" ago"));
-    // Negative ageMs: same treatment (emoji only, no "0s ago" / "-1s ago").
-    assert.equal(formatStaleSuffix(-1), fresh);
+    // ageMs = 0 → "0<minUnit> ago" (default minUnit=m → "0m ago").
+    assert.equal(strip(formatStaleSuffix(0)), "⛓️‍💥 0m ago");
+    // Negative ageMs: formatRemainingMs returns "0<minUnit>" too
+    // (the helper clamps to "0m" / "0s" / "0h" for past-due inputs).
+    assert.equal(strip(formatStaleSuffix(-1)), "⛓️‍💥 0m ago");
   });
 
   it("sub-minute uses minUnit floor: 'm' → '<1m ago', 's' → '${seconds}s ago'", () => {
@@ -787,17 +787,22 @@ describe("formatLine — stale suffix integration", () => {
     assert.ok(strip(line).endsWith("⛓️‍💥 5m ago"), `stripped: ${strip(line)}`);
   });
 
-  it("appends the stale suffix with healthy emoji when stale=false", () => {
+  it("appends the stale suffix with healthy emoji when stale=false (forced fallback)", () => {
+    // v0.4.0: priority is template-driven. When the user did NOT put
+    // m_age in their lineTemplate, the forced-visibility fallback
+    // fires only on stale. A fresh tick (default plan template has
+    // no m_age) renders no suffix — the broken-chain indicator is
+    // reserved for real outages.
     const line = formatLine(
       { pct: 38, resetAt: null },
       { pct: 39, resetAt: null },
       "used",
       Date.now(),
       30_000,
-      false,  // fresh → healthy emoji
+      false,
     );
-    assert.ok(line.endsWith(`${STALE_COLOR}🔗 <1m ago${RESET}`));
-    assert.ok(strip(line).endsWith("🔗 <1m ago"));
+    assert.ok(!line.includes("ago"), `got: ${line}`);
+    assert.ok(!line.includes(STALE_COLOR), `got: ${line}`);
   });
 
   it("does NOT append the stale suffix when ageMs is omitted", () => {
@@ -806,7 +811,7 @@ describe("formatLine — stale suffix integration", () => {
     assert.ok(!line.includes(STALE_COLOR));
   });
 
-  it("does NOT append the stale suffix when ageMs is 0", () => {
+  it("does NOT append the stale suffix when ageMs is 0 and stale=false", () => {
     const line = formatLine(
       { pct: 38, resetAt: null },
       { pct: 39, resetAt: null },
@@ -815,6 +820,21 @@ describe("formatLine — stale suffix integration", () => {
       0
     );
     assert.ok(!line.includes("ago"));
+  });
+
+  it("DOES append the broken-chain suffix when stale=true even if ageMs is 0", () => {
+    // v0.4.0: formatStaleSuffix no longer short-circuits on ageMs=0.
+    // A just-failed fetch shows "⛓️‍💥 0m ago" (forced fallback, since
+    // the default template doesn't include m_age).
+    const line = formatLine(
+      { pct: 38, resetAt: null },
+      { pct: 39, resetAt: null },
+      "used",
+      Date.now(),
+      0,
+      true,
+    );
+    assert.ok(strip(line).endsWith("⛓️‍💥 0m ago"), `got: ${line}`);
   });
 });
 

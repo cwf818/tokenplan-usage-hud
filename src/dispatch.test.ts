@@ -56,12 +56,12 @@ describe("buildProviderLine — fresh (no age suffix; data just arrived)", () =>
     assert.ok(!line!.includes("ago"));
   });
 
-  it("MiniMax: within-TTL cache hit (ageMs>0) renders healthy emoji suffix", () => {
-    // v0.2.20: the fresh variant now carries ageMs so a within-TTL
-    // cache hit (e.g. a same-process repeat call) surfaces its age
-    // via the forced-age append path. The renderer treats it like a
-    // fresh tick (healthy 🔗 emoji), distinct from a stale-on-error
-    // (broken ⛓️‍💥 emoji).
+  it("MiniMax: within-TTL cache hit (ageMs>0) renders NO age suffix (default template has no m_age)", () => {
+    // v0.4.0 priority: template presence wins. Default plan/balance
+    // templates do NOT include m_age, so a within-TTL cache hit
+    // (fresh, ageMs > 0) renders no suffix — the broken-chain
+    // indicator is reserved for stale state. Users opt in to the
+    // healthy-emoji path by listing m_age in their lineTemplate.
     pinDefaults();
     const result: FetchResult<Remains> = {
       kind: "fresh",
@@ -70,10 +70,11 @@ describe("buildProviderLine — fresh (no age suffix; data just arrived)", () =>
     };
     const line = buildProviderLine("minimax", result);
     assert.ok(line);
-    assert.ok(strip(line!).endsWith("🔗 <1m ago"), `got: ${line}`);
+    assert.ok(!line!.includes("ago"), `got: ${line}`);
+    assert.ok(!line!.includes(STALE_COLOR), `got: ${line}`);
   });
 
-  it("DeepSeek: within-TTL cache hit (ageMs>0) renders healthy emoji suffix", () => {
+  it("DeepSeek: within-TTL cache hit (ageMs>0) renders NO age suffix (default template has no m_age)", () => {
     pinDefaults();
     const result: FetchResult<Balance> = {
       kind: "fresh",
@@ -82,7 +83,37 @@ describe("buildProviderLine — fresh (no age suffix; data just arrived)", () =>
     };
     const line = buildProviderLine("deepseek", result);
     assert.ok(line);
-    assert.ok(strip(line!).endsWith("🔗 5m ago"), `got: ${line}`);
+    assert.ok(!line!.includes("ago"), `got: ${line}`);
+    assert.ok(!line!.includes(STALE_COLOR), `got: ${line}`);
+  });
+
+  it("MiniMax: fresh cache hit WITH m_age in template renders healthy 🔗", () => {
+    // v0.4.0 priority: template presence wins. When the user lists
+    // m_age in their lineTemplate, the module emits unconditionally
+    // (no stale gating). Fresh + ageMs > 0 → 🔗 X ago.
+    pinDefaults();
+    __resetForTest({
+      lineTemplate: {
+        plan: [
+          "m_label", "s_0",
+          "m_window5h", "s_0", "m_countdown5h",
+          "s_0", "m_age",
+        ],
+        balance: ["m_label", "s_0", "m_balance"],
+      },
+    });
+    try {
+      const result: FetchResult<Remains> = {
+        kind: "fresh",
+        data: MINI_DATA,
+        ageMs: 30_000,
+      };
+      const line = buildProviderLine("minimax", result);
+      assert.ok(line);
+      assert.ok(strip(line!).endsWith("🔗 <1m ago"), `got: ${line}`);
+    } finally {
+      __resetForTest();
+    }
   });
 
   it("null provider: returns null even with fresh data", () => {
@@ -133,7 +164,11 @@ describe("buildProviderLine — stale (fetch failed, cache reused; broken emoji)
     assert.ok(!strip(line!).includes("not available"));
   });
 
-  it("MiniMax: stale ageMs=0 also suppresses suffix (defensive — formatter short-circuits)", () => {
+  it("MiniMax: stale ageMs=0 renders '⛓️‍💥 0m ago' (just-failed fetch)", () => {
+    // v0.4.0: formatStaleSuffix no longer short-circuits on ageMs=0.
+    // A fetch that just failed at this instant now shows
+    // "⛓️‍💥 0m ago" (or "<1s ago" with minUnit=s) instead of a bare
+    // emoji. The visibility gate is now stale=true at the renderer.
     pinDefaults();
     const result: FetchResult<Remains> = {
       kind: "stale",
@@ -142,7 +177,7 @@ describe("buildProviderLine — stale (fetch failed, cache reused; broken emoji)
     };
     const line = buildProviderLine("minimax", result);
     assert.ok(line);
-    assert.ok(!line!.includes("ago"));
+    assert.ok(strip(line!).endsWith("⛓️‍💥 0m ago"), `got: ${line}`);
   });
 });
 
