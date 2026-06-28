@@ -17,6 +17,13 @@
 import { configStore } from "./config.ts";
 import { templateKeyForProvider } from "./providers.ts";
 import type { TokenSnapshot } from "./types.ts";
+import {
+  buildRainbow,
+  buildHue,
+  pickQuote,
+  quoteIndex,
+  type QuoteFreq,
+} from "./quotes.ts";
 import { readSamples } from "./token-store.ts";
 
 export type Window = {
@@ -745,6 +752,13 @@ const MODULES: Record<string, Module> = {
     const tps = (t.totals.output / durMs) * 1000;
     return `${STALE_COLOR}out:${formatSpeed(tps)}${RESET}`;
   },
+  // v0.3.5+ — bare `m_quote` (no inline args). Picks a quote from
+  // the hourly window and renders it plain (no SGR wrapper). Opt-in
+  // — the default plan / balance templates do NOT include it.
+  m_quote: (c) => {
+    const freq: QuoteFreq = "h";
+    return pickQuote(freq, c.nowMs);
+  },
 };
 
 // Cap unknown-module warnings to once per process so a template typo
@@ -890,10 +904,107 @@ const LABEL_COLOR_SHORTCUTS: Record<string, string> = (() => {
 // Pure resolver for `<colorvalue>`. Accepts shortcut names and raw
 // SGR strings (`\x1b[…m`). Returns null on anything else so the
 // caller can warn + soft-fallback to plain text.
+//
+// v0.3.5+: the SPECIAL shortcut set (rainbow / rand-rainbow / hue)
+// is NOT returned by this resolver — those need per-text processing
+// (buildRainbow / buildHue from src/quotes.ts), not a single SGR
+// string. They're handled at a higher level by `applyColor` below.
+// This resolver only validates shortcut-as-SGR and raw-SGR strings.
 function resolveColor(value: string): string | null {
   if (LABEL_COLOR_SHORTCUTS[value]) return LABEL_COLOR_SHORTCUTS[value];
   if (/^\x1b\[[0-9;]*m$/.test(value)) return value;
   return null;
+}
+
+// Tagged result for the higher-level `resolveColorParam` (used by
+// m_quote and any other future module that wants the
+// rainbow/hue shortcuts). Not exported via INLINE_SCHEMAS's
+// `ParamResolver` return type (which is `ResolvedValue | null`,
+// i.e. string | number | null) — the m_quote schema's `color`
+// resolver does a string-tag instead, and the renderer recognizes
+// the 3 magic strings as "apply buildRainbow / buildHue".
+export type ColorParam =
+  | { kind: "sgr"; value: string } // wrap text with `<sgr>…<RESET>`
+  | { kind: "rainbow"; salt: number } // per-char SGR; salt offsets the rotation
+  | { kind: "hue" } // single-hue wrap from buildHue
+  | { kind: "none" };
+
+// Resolve the full `<colorvalue>` namespace: shortcut names, raw
+// SGR strings, plus the 3 special values. Returns a tagged result
+// the renderer pattern-matches against. Same null-on-bad-value
+// contract as `resolveColor` so the dispatcher can warn + drop.
+export function resolveColorParam(value: string): ColorParam | null {
+  if (value === "rainbow") return { kind: "rainbow", salt: 0 };
+  if (value === "rand-rainbow") return { kind: "rainbow", salt: 1 };
+  if (value === "hue") return { kind: "hue" };
+  const sgr = resolveColor(value);
+  if (sgr === null) return null;
+  return { kind: "sgr", value: sgr };
+}
+
+// Apply a resolved ColorParam to a plain-text body. Used by
+// m_quote (and any future module that opts into the full color
+// grammar). Safe ONLY for plain-text bodies — colored bodies must
+// use their override-aware helpers (e.g. formatOneChunkColored).
+//
+// The `seed` argument seeds rainbow / hue color generation so a
+// caller can tie color choice to a frequency window (same window
+// → same color). Callers that don't care about per-window color
+// stability can pass 0.
+export function applyColor(
+  body: string,
+  param: ColorParam,
+  seed: number,
+): string {
+  if (body === "") return body;
+  switch (param.kind) {
+    case "sgr":
+      return `${param.value}${body}${RESET}`;
+    case "rainbow":
+      return buildRainbow(body, seed + param.salt);
+    case "hue":
+      return buildHue(body, seed);
+    case "none":
+      return body;
+  }
+}
+
+// Encode a ColorParam as a string so it round-trips through the
+// generic `params.color: string` channel that INLINE_RENDERERS uses.
+// The decoder is `paramFromString`. This keeps the existing
+// ResolvedValue = string | number contract intact.
+const COLOR_KIND_SGR = "\x00COLOR:sgr:";
+const COLOR_KIND_RAINBOW = "\x00COLOR:rainbow:";
+const COLOR_KIND_HUE = "\x00COLOR:hue:";
+
+export function encodeColorParam(p: ColorParam): string {
+  switch (p.kind) {
+    case "sgr":
+      return COLOR_KIND_SGR + p.value;
+    case "rainbow":
+      return COLOR_KIND_RAINBOW + String(p.salt);
+    case "hue":
+      return COLOR_KIND_HUE;
+    case "none":
+      return "";
+  }
+}
+
+export function decodeColorParam(encoded: string | undefined): ColorParam {
+  if (encoded === undefined || encoded === "") return { kind: "none" };
+  if (encoded.startsWith(COLOR_KIND_SGR)) {
+    return { kind: "sgr", value: encoded.slice(COLOR_KIND_SGR.length) };
+  }
+  if (encoded.startsWith(COLOR_KIND_RAINBOW)) {
+    const salt = Number(encoded.slice(COLOR_KIND_RAINBOW.length));
+    return { kind: "rainbow", salt: Number.isFinite(salt) ? salt : 0 };
+  }
+  if (encoded.startsWith(COLOR_KIND_HUE)) {
+    return { kind: "hue" };
+  }
+  // Fallback: treat the string as a raw SGR. (Shouldn't happen
+  // since the resolver validates, but defensive.)
+  return { kind: "sgr", value: encoded };
 }
 
 type ResolvedValue = string | number;
@@ -936,6 +1047,36 @@ type InlineSchema = {
 const COLOR_PARAM = {
   named: {
     color: (raw: string) => resolveColor(raw),
+  },
+} as const;
+
+// Extended-color schema used by `m_quote`. Accepts the standard
+// 7 shortcuts + raw SGR + the 3 special shortcuts (rainbow /
+// rand-rainbow / hue). The resolver encodes the tagged ColorParam
+// as a string (using NUL-prefix sentinels in `encodeColorParam`)
+// so it round-trips through the generic INLINE_SCHEMAS contract
+// (`params.color: string | undefined`). The m_quote renderer
+// decodes via `decodeColorParam`.
+const QUOTE_COLOR_PARAM = {
+  named: {
+    color: (raw: string) => {
+      const p = resolveColorParam(raw);
+      if (p === null) return null;
+      return encodeColorParam(p);
+    },
+  },
+} as const;
+
+const QUOTE_FREQ_PARAM = {
+  named: {
+    freq: (raw: string) => {
+      // Allowed: "d" | "hd" | "h" | "hh" | "m". Anything else → null
+      // so the dispatcher drops the token + warns once.
+      if (raw === "d" || raw === "hd" || raw === "h" || raw === "hh" || raw === "m") {
+        return raw;
+      }
+      return null;
+    },
   },
 } as const;
 
@@ -982,6 +1123,17 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
   m_token7d: { named: { ...COLOR_PARAM.named } },
   m_tokenInSpeed: { named: { ...COLOR_PARAM.named } },
   m_tokenOutSpeed: { named: { ...COLOR_PARAM.named } },
+  // v0.3.5+ — quote module. Accepts `:freq:<d|hd|h|hh|m>` and
+  // `:color:<sgr|shortcut|rainbow|rand-rainbow|hue>`. The default
+  // freq (`h`) is applied at the RENDERER level (params.freq may
+  // be undefined when the token is just `m_quote` or
+  // `m_quote:color:red`).
+  m_quote: {
+    named: {
+      ...QUOTE_FREQ_PARAM.named,
+      ...QUOTE_COLOR_PARAM.named,
+    },
+  },
   // m_model: { … }  // future
 };
 
@@ -1144,6 +1296,16 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     const tps = (t.totals.output / durMs) * 1000;
     const color = (params.color as string | undefined) ?? STALE_COLOR;
     return `${color}out:${formatSpeed(tps)}${RESET}`;
+  },
+  m_quote: (params, ctx) => {
+    // Default freq = "h" (per-hour window). An empty / undefined
+    // `freq` param means the user didn't supply one.
+    const freq = (params.freq ?? "h") as QuoteFreq;
+    const seed = quoteIndex(freq, ctx.nowMs);
+    const text = pickQuote(freq, ctx.nowMs);
+    if (text === "") return null;
+    const color = decodeColorParam(params.color as string | undefined);
+    return applyColor(text, color, seed);
   },
 };
 
@@ -1320,6 +1482,9 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
         inline = expandInlineToken(tok, "m_tokenInSpeed", 15, ctx);
       } else if (tok.startsWith("m_tokenOutSpeed:")) {
         inline = expandInlineToken(tok, "m_tokenOutSpeed", 16, ctx);
+      } else if (tok.startsWith("m_quote:")) {
+        // m_quote:freq:<…>:color:<…> → skip "m_quote:" (length 8).
+        inline = expandInlineToken(tok, "m_quote", 8, ctx);
       }
       // Parse failure (bad :color:, unknown param, odd segment count)
       // → warn + drop. Renderer returning null for valid args (e.g.

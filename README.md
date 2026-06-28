@@ -482,6 +482,7 @@ Recognized modules:
 | `m_token7d`        | Same, for the last 7 days. |
 | `m_tokenInSpeed`   | Session-average input speed — e.g. dim-gray `in:42.5 t/s`. Reads `total_input_tokens / cost.total_duration_ms × 1000`. Hidden when session duration is 0. |
 | `m_tokenOutSpeed`  | Same for output tokens. |
+| `m_quote`          | An inspirational short quote from a 100+ entry bilingual pool (English + 中文). See the [m_quote section](#m_quote-v035) below for the `:freq:` and `:color:` parameters. |
 
 **Visibility of `m_age` (priority: template-driven, stale fallback):**
 - If your `lineTemplate` includes `m_age`, the module emits **unconditionally** (no stale gating). Emoji reflects the fetch state: `🔗 X ago` on fresh ticks (showing the cache age), `⛓️‍💥 X ago` on stale (showing time since last successful fetch). Hidden only when `ageMs` is missing.
@@ -556,6 +557,69 @@ Examples:
 The bare forms (`m_window5h`, `m_age`, `m_tokenIn`, …) still go through the original `MODULES` path, so users on the default template see no diff on upgrade.
 
 **Extension point:** future parameterized modules (`m_model:...`, …) plug in by adding an entry to `INLINE_SCHEMAS` and `INLINE_RENDERERS` in `src/render.ts`. No new top-level config keys needed.
+
+### `m_quote` (v0.3.5+)
+
+An inspirational short quote, drawn from a 100+ entry bilingual pool (English + 中文). Opt-in — the default `lineTemplate` does NOT include it; add it where you want it.
+
+**Token forms**
+
+| Form                       | Default freq | Default color | Description |
+| -------------------------- | ------------ | ------------- | ----------- |
+| `m_quote`                  | `h`          | none          | Plain quote, no SGR wrap. |
+| `m_quote:freq:<d\|hd\|h\|hh\|m>` | (the one supplied) | none | Pick how often the quote rotates (see below). |
+| `m_quote:color:<c>`        | `h`          | (the one supplied) | Tint the quote (see below). |
+| `m_quote:freq:<…>:color:<…>` | — | — | Combine both. |
+
+**Frequency (`freq`)**
+
+The quote is stable within a window of size determined by `freq`, and rolls over when the window does:
+
+| `freq` | Window size | Use case |
+| ------ | ----------- | -------- |
+| `d`    | 24h (anchored to UTC midnight) | "One quote a day" — pick a daily mantra |
+| `hd`   | 12h (anchored to UTC midnight) | AM vs PM rotation |
+| `h`    | 1h  | Default. A fresh quote each hour. |
+| `hh`   | 30m | Half-hour rotation. |
+| `m`    | 1m  | Per-minute — actively refreshing. |
+
+The window is keyed off Unix ms / bucket-size (NOT your local timezone for `d`/`hd`). Two ticks within the same window always produce the same quote.
+
+**Color (`color`)**
+
+Accepts the standard 7 shortcuts (`brightGreen`, `darkGreen`, `yellow`, `orange`, `red`, `stale`, `brightBlack`), any raw SGR string (`\x1b[36m`), and three special values unique to `m_quote`:
+
+| Color value     | Effect |
+| --------------- | ------ |
+| `rainbow`       | Per-character 256-color SGR using a 6-hue palette (cyan → blue → purple → magenta → orange → yellow). Rotates through the palette for each character of the quote. |
+| `rand-rainbow`  | Same as `rainbow`, but the palette rotation starts at a different offset. Two adjacent `freq` windows with the same quote but different `rand-rainbow` renders will look distinct. |
+| `hue`           | Single-hue SGR wrap for the whole quote. The hue is picked from the 6×6×6 256-color cube using a hash of the quote text, so each quote gets a deterministic but varied color. |
+
+Rainbow / rand-rainbow / hue colors are also stable within a `freq` window — same window, same colors — so a tick-by-tick refresh of the statusline never visually strobes.
+
+**Example template**
+
+```jsonc
+{
+  "lineTemplate": {
+    "plan": [
+      "m_modeLabel", "s_0",
+      "m_window5h", "s_0", "m_countdown5h",
+      "s_0", "s_1", "s_0",
+      "m_window7d", "s_0", "m_countdown7d",
+      "s_2",                          // newline separator (see "Module tokens")
+      "m_quote:freq:h:color:rainbow"  // hourly rotating rainbow quote on a new line
+    ],
+    "balance": ["m_modeLabel", "s_0", "m_balance", "s_2", "m_quote:color:hue"]
+  }
+}
+```
+
+**Behavior notes**
+
+- The pool has 110+ entries; the renderer is deterministic per `(freq, nowMs)` so the same window always shows the same quote. No Math.random / no Date.now inside the renderer.
+- An invalid `freq` value (e.g. `m_quote:freq:yearly`) drops the token with a one-shot stderr warn, same as any malformed inline-args token.
+- An invalid `color` value drops the token with a one-shot stderr warn.
 
 ### Recipes
 
