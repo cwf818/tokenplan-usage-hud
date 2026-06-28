@@ -14,6 +14,10 @@
 # User-named backups (e.g. `settings.json.bak-pre-v0.1.8`) are NOT touched —
 # only the script-generated `.bak.YYYYMMDDTHHMMSS` pattern.
 #
+# Optionally purges the diagnostics log and token-samples cache
+# (`--purge-runtime`). These are not backups, but they accumulate over
+# weeks of use and benefit from the same "housekeeping" command.
+#
 # Idempotent: if there is 0 or 1 backup per file, nothing happens.
 # Local-only. Never reads ANTHROPIC_AUTH_TOKEN. No network access.
 #
@@ -21,6 +25,7 @@
 #   clean.sh                  # user-level (default)
 #   clean.sh --project        # project-level (cwd's .claude/settings.json)
 #   clean.sh --dry-run        # print what would be removed, change nothing
+#   clean.sh --purge-runtime  # also wipe state/diagnostics.jsonl + token-samples cache
 #   clean.sh -h | --help
 #
 # Portable: Linux, macOS, Git Bash on Windows.
@@ -29,22 +34,24 @@ set -u
 
 PROJECT_LEVEL=0
 DRY_RUN=0
+PURGE_RUNTIME=0
 
 print_help() {
-  sed -n '2,40p' "$0"
+  sed -n '2,46p' "$0"
 }
 
 for arg in "$@"; do
   case "$arg" in
     --project) PROJECT_LEVEL=1 ;;
     --dry-run) DRY_RUN=1 ;;
+    --purge-runtime) PURGE_RUNTIME=1 ;;
     -h|--help)
       print_help
       exit 0
       ;;
     *)
       echo "clean.sh: unknown argument: $arg" >&2
-      echo "  usage: clean.sh [--project] [--dry-run]" >&2
+      echo "  usage: clean.sh [--project] [--dry-run] [--purge-runtime]" >&2
       exit 2
       ;;
   esac
@@ -122,3 +129,31 @@ for f in "${REMOVE_LIST[@]}"; do
 done
 
 echo "clean.sh: removed ${#REMOVE_LIST[@]} old backup(s)"
+
+# Optional runtime-state purge. Off by default — most users never
+# look at the diagnostics log or token-samples cache, and we don't
+# want to nuke them silently. `--purge-runtime` is the explicit
+# "yes, wipe it" toggle. Lives at the plugin's state dir (sibling
+# of upstream-cmd.sh; survives cache wipes, dies on uninstall).
+#
+# Only available at user-level scope: the state dir is a user-level
+# concept (no project-level state dir exists).
+if [ "$PURGE_RUNTIME" = 1 ]; then
+  if [ "$PROJECT_LEVEL" = 1 ]; then
+    echo "clean.sh: --purge-runtime ignored under --project (state is user-level)" >&2
+  else
+    RUNTIME_TARGETS=(
+      "${PLUGINS_DIR}/tokenplan-usage-hud/state/diagnostics.jsonl"
+      "${PLUGINS_DIR}/tokenplan-usage-hud/state/token-samples"
+      "${PLUGINS_DIR}/tokenplan-usage-hud/state/cache.json"
+    )
+    for f in "${RUNTIME_TARGETS[@]}"; do
+      if [ -e "$f" ]; then
+        echo "  rm $f"
+        if [ "$DRY_RUN" = 0 ]; then
+          rm -rf "$f"
+        fi
+      fi
+    done
+  fi
+fi
