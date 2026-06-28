@@ -20,8 +20,8 @@ describe("lineTemplate — custom template (drop the 7d window)", () => {
   beforeEach(() => {
     __resetForTest({
       lineTemplate: {
-        plan: ["m_label", "s_0", "m_window5h", "s_0", "m_countdown5h"],
-        balance: ["m_label", "s_0", "m_balance"],
+        plan: ["m_modeLabel", "s_0", "m_window5h", "s_0", "m_countdown5h"],
+        balance: ["m_modeLabel", "s_0", "m_balance"],
       },
     });
   });
@@ -49,12 +49,12 @@ describe("lineTemplate — custom separators", () => {
       separators: [" ", " / "],
       lineTemplate: {
         plan: [
-          "m_label", "s_0",
+          "m_modeLabel", "s_0",
           "m_window5h", "s_0", "m_countdown5h",
           "s_0", "s_1", "s_0",
           "m_window7d", "s_0", "m_countdown7d",
         ],
-        balance: ["m_label", "s_0", "m_balance"],
+        balance: ["m_modeLabel", "s_0", "m_balance"],
       },
     });
     try {
@@ -80,8 +80,8 @@ describe("lineTemplate — unknown module token", () => {
     __resetUnknownModuleWarnForTest();
     __resetForTest({
       lineTemplate: {
-        plan: ["m_label", "s_0", "m_window5h", "s_0", "m_foo"],
-        balance: ["m_label", "s_0", "m_balance"],
+        plan: ["m_modeLabel", "s_0", "m_window5h", "s_0", "m_foo"],
+        balance: ["m_modeLabel", "s_0", "m_balance"],
       },
     });
     // Capture stderr.
@@ -140,12 +140,12 @@ describe("lineTemplate — forced visibility of m_age on stale", () => {
       separators: [" ago"],
       lineTemplate: {
         plan: [
-          "m_label", "s_0",
+          "m_modeLabel", "s_0",
           "m_window5h", "s_0", "m_countdown5h",
           "s_0", "s_1", "s_0",
           "m_window7d", "s_0", "m_countdown7d",
         ],
-        balance: ["m_label", "s_0", "m_balance"],
+        balance: ["m_modeLabel", "s_0", "m_balance"],
       },
     });
     try {
@@ -172,13 +172,13 @@ describe("lineTemplate — forced visibility of m_age on stale", () => {
     __resetForTest({
       lineTemplate: {
         plan: [
-          "m_label", "s_0",
+          "m_modeLabel", "s_0",
           "m_window5h", "s_0", "m_countdown5h",
           "s_0", "s_1", "s_0",
           "m_window7d", "s_0", "m_countdown7d",
           "s_0", "m_age",
         ],
-        balance: ["m_label", "s_0", "m_balance", "s_0", "m_age"],
+        balance: ["m_modeLabel", "s_0", "m_balance", "s_0", "m_age"],
       },
     });
     try {
@@ -220,11 +220,11 @@ describe("lineTemplate — forced visibility of m_age on stale", () => {
     __resetForTest({
       lineTemplate: {
         plan: [
-          "m_label", "s_0",
+          "m_modeLabel", "s_0",
           "m_window5h", "s_0", "m_countdown5h",
           "s_0", "m_age",
         ],
-        balance: ["m_label", "s_0", "m_balance", "s_0", "m_age"],
+        balance: ["m_modeLabel", "s_0", "m_balance", "s_0", "m_age"],
       },
     });
     try {
@@ -248,8 +248,8 @@ describe("lineTemplate — m_version module", () => {
   it("renders 'v' + ctx.version when m_version is in the template", () => {
     __resetForTest({
       lineTemplate: {
-        plan: ["m_label", "s_0", "m_window5h", "s_0", "m_version"],
-        balance: ["m_label", "s_0", "m_balance", "s_0", "m_version"],
+        plan: ["m_modeLabel", "s_0", "m_window5h", "s_0", "m_version"],
+        balance: ["m_modeLabel", "s_0", "m_balance", "s_0", "m_version"],
       },
     });
     try {
@@ -271,8 +271,8 @@ describe("lineTemplate — m_version module", () => {
   it("renders nothing when version is empty (m_version module returns null)", () => {
     __resetForTest({
       lineTemplate: {
-        plan: ["m_label", "s_0", "m_window5h", "s_0", "m_version"],
-        balance: ["m_label", "s_0", "m_balance", "s_0", "m_version"],
+        plan: ["m_modeLabel", "s_0", "m_window5h", "s_0", "m_version"],
+        balance: ["m_modeLabel", "s_0", "m_balance", "s_0", "m_version"],
       },
     });
     try {
@@ -293,7 +293,7 @@ describe("lineTemplate — m_version module", () => {
   });
 });
 
-describe("lineTemplate — m_label picks modeLabels.balance for the deepseek path", () => {
+describe("lineTemplate — m_modeLabel picks modeLabels.balance for the deepseek path", () => {
   it("uses 'Balance:' by default (preserves v0.2.16 label)", () => {
     const line = renderProviderLine("deepseek", {
       mode: "used",

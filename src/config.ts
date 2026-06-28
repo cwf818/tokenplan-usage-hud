@@ -43,12 +43,12 @@ const DEFAULT_LINE_TEMPLATE: {
   balance: string[];
 } = {
   plan: [
-    "m_label", "s_0",
+    "m_modeLabel", "s_0",
     "m_window5h", "s_0", "m_countdown5h",
     "s_0", "s_1", "s_0",
     "m_window7d", "s_0", "m_countdown7d",
   ],
-  balance: ["m_label", "s_0", "m_balance"],
+  balance: ["m_modeLabel", "s_0", "m_balance"],
 };
 
 // 256-color SGR sequences. The colors are kept as plain ANSI strings
@@ -278,7 +278,7 @@ const DEFAULT_CONFIG: {
   fetchTimeoutMs: 5_000,
   display: "used",
   // "balance" was added in v0.2.17 alongside the lineTemplate refactor
-  // so the m_label module for the DeepSeek path can pick it up. Defaults
+  // so the m_modeLabel module for the DeepSeek path can pick it up. Defaults
   // to "Balance:" to preserve the v0.2.16 hardcoded literal.
   modeLabels: { used: "Usage:", remaining: "Remain:", balance: "Balance:" },
   colors: DEFAULT_COLORS,
@@ -532,7 +532,7 @@ function applyOverrides(base: Config, raw: Record<string, unknown>): Config {
         out.modeLabels.remaining = m.remaining;
       else if ("remaining" in m)
         warn("modeLabels.remaining must be a string; using default");
-      // v0.2.17: added alongside the lineTemplate refactor so m_label
+      // v0.2.17: added alongside the lineTemplate refactor so m_modeLabel
       // can pick it up for the DeepSeek (balance) path. Replaces the
       // hardcoded "Balance: " literal in the old formatBalanceLine.
       if (typeof m.balance === "string") out.modeLabels.balance = m.balance;

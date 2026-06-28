@@ -234,7 +234,7 @@ describe("renderTemplate — newline separator (v0.4.0+ multi-line layout)", () 
       separators: [" ", " · ", "\n"],
       lineTemplate: {
         plan: ["m_tokenIn", "s_2", "m_ctx"],
-        balance: ["m_label", "s_0", "m_balance"],
+        balance: ["m_modeLabel", "s_0", "m_balance"],
       },
     });
   });

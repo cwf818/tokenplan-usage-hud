@@ -101,7 +101,7 @@ export function buildProviderLine(
     // look the same on screen.
     //
     // v0.2.21: `failLabelForProvider` returns the modeLabel verbatim
-    // (no trailing space — m_label module relies on s_0 separators in
+    // (no trailing space — m_modeLabel module relies on s_0 separators in
     // the lineTemplate). The fail-line path doesn't go through the
     // template, so we re-attach the space here to preserve the
     // v0.2.20 output ("Usage: not available!" / "Balance: not available!").

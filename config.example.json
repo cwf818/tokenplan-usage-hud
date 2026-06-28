@@ -42,12 +42,12 @@
   "separators": [" ", "·"],
   "lineTemplate": {
     "plan": [
-      "m_label", "s_0",
+      "m_modeLabel", "s_0",
       "m_window5h", "s_0", "m_countdown5h",
       "s_0", "s_1", "s_0",
       "m_window7d", "s_0", "m_countdown7d"
     ],
-    "balance": ["m_label", "s_0", "m_balance"]
+    "balance": ["m_modeLabel", "s_0", "m_balance"]
   },
   "providers": {
     "minimax": {

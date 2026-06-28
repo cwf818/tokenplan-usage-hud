@@ -7,7 +7,7 @@
 // today's hardcoded values exactly.
 //
 // v0.2.17: the line layout is now driven by a `lineTemplate` config
-// field — an ordered list of display-module tokens (m_label,
+// field — an ordered list of display-module tokens (m_modeLabel,
 // m_window5h, m_countdown5h, m_window7d, m_countdown7d, m_balance,
 // m_age, m_version) and separator references (s_0, s_1, …).
 // `formatLine` and `formatBalanceLine` are preserved as compatibility
@@ -559,7 +559,7 @@ const MODULES: Record<string, Module> = {
   // is the dedicated modeLabels.balance entry (default "Balance:").
   // Returns the label WITHOUT a trailing space — the surrounding
   // s_0 separator token provides spacing.
-  m_label: (c) => {
+  m_modeLabel: (c) => {
     if (c.balance) return cfg().modeLabels.balance;
     return cfg().modeLabels[c.mode];
   },
