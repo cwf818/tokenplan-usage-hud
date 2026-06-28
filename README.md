@@ -489,19 +489,20 @@ Recognized modules:
 
 ### Inline-args grammar (v0.3.3+)
 
-Three token forms take colon-delimited parameters:
+Token forms that take colon-delimited parameters:
 
 | Token form                  | Required params         | Optional params | Description |
 | --------------------------- | ----------------------- | --------------- | ----------- |
 | `m_label:<string>`          | `string` (literal text) | `color`         | Emit `<string>` verbatim, optionally wrapped in `<color>` SGR. |
 | `m_modeLabel[:color:<c>]`   | (string from `ctx`)     | `color`         | Same as today's bare `m_modeLabel`, optionally tinted. The string is derived from `modeLabels.used`/`remaining`/`balance` based on `ctx.mode` and `ctx.balance`. |
 | `s_<n>[:color:<c>]`         | `index`                 | `color`         | The separator at index `n` (from `separators[]`), optionally tinted. |
+| `m_<name>[:color:<c>]` (v0.3.4+, any module) | — | `color` | Tint the natural output of any other module. See [Per-module `:color:` override](#per-module-color-override-v034) below. |
 
 The grammar after the prefix is `<param1>:<value1>[:<param2>:<value2>…]`. The **first segment is the value of the implicit first parameter** (`string` for `m_label`, `index` for `s_<n>`); subsequent segments come in `name:value` pairs. Both halves are validated against the per-prefix schema (`INLINE_SCHEMAS` in `src/render.ts`); any malformed token is dropped with a one-shot stderr warn.
 
 `<color>` accepts either a shortcut name (`brightGreen`, `darkGreen`, `yellow`, `orange`, `red`, `stale`, `brightBlack`) or a raw SGR string (`\x1b[36m`). Anything else triggers the same one-shot warn.
 
-The bare forms (`m_modeLabel`, `s_0`) keep working exactly as today — the inline-args path only fires when the token contains `:`. So upgrading to v0.3.3 does NOT change the default `lineTemplate` output. Examples (opt-in — add to your `lineTemplate` to enable):
+The bare forms (`m_modeLabel`, `s_0`, `m_window5h`, `m_tokenIn`, …) keep working exactly as today — the inline-args path only fires when the token contains `:`. So upgrading to v0.3.4 does NOT change the default `lineTemplate` output. Examples (opt-in — add to your `lineTemplate` to enable):
 
 ```jsonc
 {
@@ -522,6 +523,37 @@ The bare forms (`m_modeLabel`, `s_0`) keep working exactly as today — the inli
   }
 }
 ```
+
+### Per-module `:color:` override (v0.3.4+)
+
+Every existing module — `m_window5h`, `m_window7d`, `m_countdown5h`, `m_countdown7d`, `m_balance`, `m_age`, `m_version`, `m_tokenIn`, `m_tokenOut`, `m_tokenTotal`, `m_tokenSession`, `m_ctx`, `m_cacheHitRate`, `m_cacheRead`, `m_token5h`, `m_token7d`, `m_tokenInSpeed`, `m_tokenOutSpeed` — also accepts an optional `:color:<c>` segment. Two cases:
+
+- **Plain-text modules** (e.g. `m_version`, `m_tokenIn`, `m_countdown5h`, `m_ctx`): the override simply wraps the natural output in `<color>…<RESET>` SGR. The module's own body is unchanged.
+- **Already-colored modules** (e.g. `m_window5h`, `m_balance`, `m_cacheHitRate`, `m_cacheRead`, `m_age`, `m_tokenInSpeed`, `m_tokenOutSpeed`): the override **replaces** the natural color choice — band-based, cache-hit-band, or fixed `stale` color — with your `<color>`. The user's color always wins; if you didn't say `:color:`, the module keeps its existing coloring and the default `lineTemplate` output is byte-for-byte identical to v0.3.3.
+
+Conflict rule: **if a `:color:` is supplied, the natural color is ignored** (per your spec — "如果与现有颜色方案冲突，则无视该参数" — the override always wins when present).
+
+Examples:
+
+```jsonc
+{
+  "lineTemplate": {
+    "plan": [
+      "m_modeLabel:color:brightGreen",   // tint the leading prefix
+      "s_0",
+      "m_window5h:color:red",            // force the 5h bar/percent to red
+      "s_0", "m_countdown5h",
+      "s_0", "s_1", "s_0",
+      "m_window7d", "s_0", "m_countdown7d",
+      "s_0", "m_age:color:yellow",       // tint the stale annotation
+      "s_0", "m_tokenIn:color:darkGreen" // tint the session input-token chunk
+    ],
+    "balance": ["m_modeLabel", "s_0", "m_balance:color:red"]
+  }
+}
+```
+
+The bare forms (`m_window5h`, `m_age`, `m_tokenIn`, …) still go through the original `MODULES` path, so users on the default template see no diff on upgrade.
 
 **Extension point:** future parameterized modules (`m_model:...`, …) plug in by adding an entry to `INLINE_SCHEMAS` and `INLINE_RENDERERS` in `src/render.ts`. No new top-level config keys needed.
 
