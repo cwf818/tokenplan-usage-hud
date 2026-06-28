@@ -381,12 +381,12 @@ A reference with every field is at [config.example.json](./config.example.json).
     // their surrounding s_N tokens to disappear too, so a hidden
     // window doesn't leave orphan separators in the output.
     "plan": [
-      "m_label", "s_0",
+      "m_modeLabel", "s_0",
       "m_window5h", "s_0", "m_countdown5h",
       "s_0", "s_1", "s_0",
       "m_window7d", "s_0", "m_countdown7d",
     ],
-    "balance": ["m_label", "s_0", "m_balance"],
+    "balance": ["m_modeLabel", "s_0", "m_balance"],
   },
   "providers": {
     // v0.2.21: declarative provider registry. The plugin picks a
@@ -463,7 +463,7 @@ Recognized modules:
 
 | Token              | Renders                                                          |
 | ------------------ | ---------------------------------------------------------------- |
-| `m_label`          | The leading prefix: `modeLabels.used` (plan) or `modeLabels.balance` (DeepSeek) |
+| `m_modeLabel`          | The leading prefix: `modeLabels.used` (plan) or `modeLabels.balance` (DeepSeek) |
 | `m_window5h`       | 5-hour bar + colored percentage (e.g. `▓▓▓░░░ 38%`)             |
 | `m_countdown5h`    | 5-hour reset suffix: `(2h3m🕛 5h)` when reset time known, or just `5h` otherwise |
 | `m_window7d`       | 7-day bar + colored percentage                                   |
@@ -533,7 +533,7 @@ In addition to the tokenplan 5h/7d window percentages, the plugin reads Claude C
 {
   "lineTemplate": {
     "plan": [
-      "m_label", "s_0",
+      "m_modeLabel", "s_0",
       "m_window5h", "s_0", "m_countdown5h",
       "s_0", "s_1", "s_0",
       "m_window7d", "s_0", "m_countdown7d",
@@ -580,8 +580,8 @@ Renders (example): `Usage: ▓░░░░░░░ 9% (4h47m🕔 5h) · ▓▓�
 ```json
 {
   "lineTemplate": {
-    "plan": ["m_label", "s_0", "m_window5h", "s_0", "m_countdown5h"],
-    "balance": ["m_label", "s_0", "m_balance"]
+    "plan": ["m_modeLabel", "s_0", "m_window5h", "s_0", "m_countdown5h"],
+    "balance": ["m_modeLabel", "s_0", "m_balance"]
   }
 }
 ```
@@ -593,12 +593,12 @@ Renders (example): `Usage: ▓░░░░░░░ 9% (4h47m🕔 5h) · ▓▓�
   "separators": [" ", " / "],
   "lineTemplate": {
     "plan": [
-      "m_label", "s_0",
+      "m_modeLabel", "s_0",
       "m_window5h", "s_0", "m_countdown5h",
       "s_0", "s_1", "s_0",
       "m_window7d", "s_0", "m_countdown7d"
     ],
-    "balance": ["m_label", "s_0", "m_balance"]
+    "balance": ["m_modeLabel", "s_0", "m_balance"]
   }
 }
 ```
@@ -609,13 +609,13 @@ Renders (example): `Usage: ▓░░░░░░░ 9% (4h47m🕔 5h) · ▓▓�
 {
   "lineTemplate": {
     "plan": [
-      "m_label", "s_0",
+      "m_modeLabel", "s_0",
       "m_window5h", "s_0", "m_countdown5h",
       "s_0", "s_1", "s_0",
       "m_window7d", "s_0", "m_countdown7d",
       "s_0", "m_version"
     ],
-    "balance": ["m_label", "s_0", "m_balance", "s_0", "m_version"]
+    "balance": ["m_modeLabel", "s_0", "m_balance", "s_0", "m_version"]
   }
 }
 ```

@@ -95,11 +95,11 @@ describe("buildProviderLine — fresh (no age suffix; data just arrived)", () =>
     __resetForTest({
       lineTemplate: {
         plan: [
-          "m_label", "s_0",
+          "m_modeLabel", "s_0",
           "m_window5h", "s_0", "m_countdown5h",
           "s_0", "m_age",
         ],
-        balance: ["m_label", "s_0", "m_balance"],
+        balance: ["m_modeLabel", "s_0", "m_balance"],
       },
     });
     try {

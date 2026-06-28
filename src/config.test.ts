@@ -445,40 +445,40 @@ describe("loadConfig — lineTemplate (top-level)", () => {
   it("defaults reproduce the v0.2.16 layout (plan/balance)", () => {
     const cfg = __testing.DEFAULT_CONFIG;
     assert.deepEqual(cfg.lineTemplate.plan, [
-      "m_label", "s_0",
+      "m_modeLabel", "s_0",
       "m_window5h", "s_0", "m_countdown5h",
       "s_0", "s_1", "s_0",
       "m_window7d", "s_0", "m_countdown7d",
     ]);
-    assert.deepEqual(cfg.lineTemplate.balance, ["m_label", "s_0", "m_balance"]);
+    assert.deepEqual(cfg.lineTemplate.balance, ["m_modeLabel", "s_0", "m_balance"]);
   });
 
   it("accepts a custom plan/balance pair of string arrays", async () => {
     writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
       lineTemplate: {
-        plan: ["m_label", "s_0", "m_window5h"],
-        balance: ["m_label", "s_0", "m_balance"],
+        plan: ["m_modeLabel", "s_0", "m_window5h"],
+        balance: ["m_modeLabel", "s_0", "m_balance"],
       },
     }));
     const cfg = await loadConfig();
-    assert.deepEqual(cfg.lineTemplate.plan, ["m_label", "s_0", "m_window5h"]);
-    assert.deepEqual(cfg.lineTemplate.balance, ["m_label", "s_0", "m_balance"]);
+    assert.deepEqual(cfg.lineTemplate.plan, ["m_modeLabel", "s_0", "m_window5h"]);
+    assert.deepEqual(cfg.lineTemplate.balance, ["m_modeLabel", "s_0", "m_balance"]);
   });
 
   it("drops non-string entries silently (renderer validates at use time)", async () => {
     writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
       lineTemplate: {
-        plan: ["m_label", 42, "m_window5h"],
-        balance: ["m_label", "s_0", "m_balance"],
+        plan: ["m_modeLabel", 42, "m_window5h"],
+        balance: ["m_modeLabel", "s_0", "m_balance"],
       },
     }));
     const cfg = await loadConfig();
-    assert.deepEqual(cfg.lineTemplate.plan, ["m_label", "m_window5h"]);
+    assert.deepEqual(cfg.lineTemplate.plan, ["m_modeLabel", "m_window5h"]);
   });
 
   it("falls back to default when an array is empty", async () => {
     writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
-      lineTemplate: { plan: [], balance: ["m_label", "s_0", "m_balance"] },
+      lineTemplate: { plan: [], balance: ["m_modeLabel", "s_0", "m_balance"] },
     }));
     const cfg = await loadConfig();
     // plan rejected, default restored.
@@ -497,13 +497,13 @@ describe("loadConfig — lineTemplate (top-level)", () => {
     writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
       lineTemplate: {
         plan: "broken", // not an array
-        balance: ["m_label", "s_0", "m_balance"],
+        balance: ["m_modeLabel", "s_0", "m_balance"],
       },
     }));
     const cfg = await loadConfig();
     // plan fell back to default, balance was applied.
     assert.equal(cfg.lineTemplate.plan.length, 11);
-    assert.deepEqual(cfg.lineTemplate.balance, ["m_label", "s_0", "m_balance"]);
+    assert.deepEqual(cfg.lineTemplate.balance, ["m_modeLabel", "s_0", "m_balance"]);
     assert.match(capturedStderr, /lineTemplate\.plan/);
   });
 });
@@ -826,12 +826,12 @@ describe("applyProviderOverrides — three-layer precedence", () => {
     __resetForTest();
     applyProviderOverrides({
       lineTemplate: {
-        plan: ["m_label", "s_0", "m_window5h"],
-        balance: ["m_label", "s_0", "m_balance"],
+        plan: ["m_modeLabel", "s_0", "m_window5h"],
+        balance: ["m_modeLabel", "s_0", "m_balance"],
       },
     });
     const cfg = configStore.get();
-    assert.deepEqual(cfg.lineTemplate.plan, ["m_label", "s_0", "m_window5h"]);
+    assert.deepEqual(cfg.lineTemplate.plan, ["m_modeLabel", "s_0", "m_window5h"]);
     // Other fields untouched.
     assert.equal(cfg.cacheTtlMs, DEFAULT_CONFIG.cacheTtlMs);
   });

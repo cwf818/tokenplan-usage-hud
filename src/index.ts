@@ -33,7 +33,6 @@ import type { Provider, TokenSample } from "./types.ts";
 import { compose } from "./composition.ts";
 import { type FetchResult, buildProviderLine } from "./dispatch.ts";
 import { applyProviderOverrides, configStore, loadConfig } from "./config.ts";
-import * as diagnostics from "./diagnostics.ts";
 import {
   fetchForProvider,
   getProviderEntry,
