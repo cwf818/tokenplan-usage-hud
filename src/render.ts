@@ -197,6 +197,39 @@ function formatOneChunk(
   return `${bar.leftChunk}${bar.rightChunk} ${bar.color}${displayedPct}%${RESET}`;
 }
 
+// v0.3.3+ variant: same layout, but the colored side of the bar AND
+// the percentage are wrapped in `override` instead of the band-based
+// color. The plain (uncolored) side of the bar stays plain. Used by
+// the inline-args path when the user supplied a `:color:<c>` override
+// on m_window5h / m_window7d — the user's color REPLACES the natural
+// band-based color (no "ignore on conflict" carve-out; the override
+// always wins). Returns the same string shape as `formatOneChunk`.
+function formatOneChunkColored(
+  w: Window,
+  mode: DisplayMode,
+  override: string,
+  width = cfg().bar.width,
+): string {
+  const usedPct = Math.max(0, Math.min(100, Math.round(w.pct)));
+  const remainingPct = 100 - usedPct;
+  const displayedPct = mode === "remaining" ? remainingPct : usedPct;
+  const filled = cfg().bar.filled;
+  const empty = cfg().bar.empty;
+  const coloredSize = Math.round((displayedPct / 100) * width);
+  const plainSize = Math.max(0, width - coloredSize);
+  if (mode === "used") {
+    const left = filled.repeat(coloredSize);
+    const right = empty.repeat(plainSize);
+    const leftChunk = coloredSize > 0 ? `${override}${left}${RESET}` : "";
+    return `${leftChunk}${right} ${override}${displayedPct}%${RESET}`;
+  }
+  // mode === "remaining"
+  const left = empty.repeat(plainSize);
+  const right = filled.repeat(coloredSize);
+  const rightChunk = coloredSize > 0 ? `${override}${right}${RESET}` : "";
+  return `${left}${rightChunk} ${override}${displayedPct}%${RESET}`;
+}
+
 // Reset-suffix portion of a window. Returns the parens-wrapped
 // `(countdown<arrow> label)` when resetAt is present, or just the
 // bare `label` (e.g. "5h") when resetAt is missing. The leading
@@ -380,11 +413,18 @@ function pickResetArrow(
 // lineTemplate); renderProviderLine's forced-visibility block emits
 // only when `stale === true` (the user did NOT list m_age but the
 // renderer still wants a broken-chain indicator on real outages).
-export function formatStaleSuffix(ageMs: number, healthy: boolean = false): string {
+export function formatStaleSuffix(
+  ageMs: number,
+  healthy: boolean = false,
+  override?: string,
+): string {
   if (!Number.isFinite(ageMs)) return "";
   const emoji = healthy ? cfg().stale.ageEmoji.healthy : cfg().stale.ageEmoji.broken;
   const label = `${formatRemainingMs(ageMs)} ago`;
-  return `${STALE_COLOR}${emoji} ${label}${RESET}`;
+  // v0.3.3+: `override` replaces the default STALE_COLOR (\x1b[90m)
+  // when supplied (used by the inline-args m_age path).
+  const color = override ?? STALE_COLOR;
+  return `${color}${emoji} ${label}${RESET}`;
 }
 
 // Read the configured display mode. The earlier TOKENPLAN_DISPLAY env
@@ -486,13 +526,16 @@ export type BalanceLike = {
 // wrapped in a single SGR block). Returns "" when there's nothing to
 // render so the m_balance module can return null and the template
 // renderer skips the surrounding s_0 separators cleanly.
-function formatBalanceEntriesColored(b: BalanceLike): string {
+//
+// v0.3.3+ `override` parameter: when supplied, replaces the band-based
+// `colorForBalance` choice (used by the inline-args m_balance path).
+function formatBalanceEntriesColored(b: BalanceLike, override?: string): string {
   if (!b.isAvailable || b.entries.length === 0 || b.minValue == null) {
     return "";
   }
   const chunks = b.entries.map((e) => formatBalanceChunk(e.currency, e.totalBalance));
   // Color follows the LOWEST entry — most urgent currency drives the hue.
-  const color = colorForBalance(b.minValue);
+  const color = override ?? colorForBalance(b.minValue);
   return `${color}${chunks.join(" · ")}${RESET}`;
 }
 
@@ -871,6 +914,24 @@ type InlineSchema = {
   named: Record<string, ParamResolver>;
 };
 
+// v0.3.3+: every existing module accepts an optional `:color:<c>`
+// override via inline-args. The named param is `color` for all of
+// them — same shortcut table and raw-SGR rules as `m_label`.
+//
+// For modules that emit plain text (no internal SGR), the override
+// is a simple wrap. For modules that already apply a band-based /
+// single-color SGR (m_window5h/7d, m_balance, m_cacheHitRate,
+// m_cacheRead, m_age, m_tokenInSpeed, m_tokenOutSpeed), the override
+// REPLACES the natural color choice — the user's `color` always wins.
+// (Per spec: "如果与现有颜色方案冲突，则无视该参数" — interpreted as
+// "if the user explicitly asked for a color, ignore the natural
+// scheme in favor of theirs".)
+const COLOR_PARAM = {
+  named: {
+    color: (raw: string) => resolveColor(raw),
+  },
+} as const;
+
 const INLINE_SCHEMAS: Record<string, InlineSchema> = {
   s_: {
     implicit: {
@@ -881,40 +942,61 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
         return n;
       },
     },
-    named: {
-      color: (raw) => resolveColor(raw),
-    },
+    named: { ...COLOR_PARAM.named },
   },
   m_label: {
     implicit: { name: "string", resolver: (raw) => raw },
-    named: {
-      color: (raw) => resolveColor(raw),
-    },
+    named: { ...COLOR_PARAM.named },
   },
   m_modeLabel: {
     // No implicit — the string is derived from ctx. The first segment,
     // if present, MUST be a name in `named` (i.e. starts a name:value
     // pair). Otherwise the token is malformed.
-    named: {
-      color: (raw) => resolveColor(raw),
-    },
+    named: { ...COLOR_PARAM.named },
   },
+  // v0.3.3+ — every existing module also accepts an optional :color:
+  // override. Schema is empty (`{}`) when the module takes no implicit
+  // param; the renderer just reads params.color and applies it.
+  m_window5h: { named: { ...COLOR_PARAM.named } },
+  m_window7d: { named: { ...COLOR_PARAM.named } },
+  m_countdown5h: { named: { ...COLOR_PARAM.named } },
+  m_countdown7d: { named: { ...COLOR_PARAM.named } },
+  m_balance: { named: { ...COLOR_PARAM.named } },
+  m_age: { named: { ...COLOR_PARAM.named } },
+  m_version: { named: { ...COLOR_PARAM.named } },
+  m_tokenIn: { named: { ...COLOR_PARAM.named } },
+  m_tokenOut: { named: { ...COLOR_PARAM.named } },
+  m_tokenTotal: { named: { ...COLOR_PARAM.named } },
+  m_tokenSession: { named: { ...COLOR_PARAM.named } },
+  m_ctx: { named: { ...COLOR_PARAM.named } },
+  m_cacheHitRate: { named: { ...COLOR_PARAM.named } },
+  m_cacheRead: { named: { ...COLOR_PARAM.named } },
+  m_token5h: { named: { ...COLOR_PARAM.named } },
+  m_token7d: { named: { ...COLOR_PARAM.named } },
+  m_tokenInSpeed: { named: { ...COLOR_PARAM.named } },
+  m_tokenOutSpeed: { named: { ...COLOR_PARAM.named } },
   // m_model: { … }  // future
 };
+
+// Pure helper: wrap a plain-text body in `<color>…<RESET>`. Returns
+// the body unchanged when `color` is undefined. Safe ONLY for bodies
+// that don't already contain SGR sequences — colored bodies must use
+// their override-aware helper (e.g. formatOneChunkColored).
+function wrapPlain(body: string, color: string | undefined): string {
+  return color ? `${color}${body}${RESET}` : body;
+}
 
 // Per-prefix renderer. Returns the chunk text (or null to drop).
 const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   s_: (params, _ctx) => {
     const sep = cfg().separators[params.index as number];
     if (sep === undefined) return null;
-    const color = params.color as string | undefined;
-    return color ? `${color}${sep}${RESET}` : sep;
+    return wrapPlain(sep, params.color as string | undefined);
   },
   m_label: (params, _ctx) => {
     const s = params.string as string;
     if (s === "") return null;
-    const color = params.color as string | undefined;
-    return color ? `${color}${s}${RESET}` : s;
+    return wrapPlain(s, params.color as string | undefined);
   },
   m_modeLabel: (params, ctx) => {
     // Mirrors the MODULES["m_modeLabel"] body: balance path → balance
@@ -924,10 +1006,160 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     const s = ctx.balance
       ? cfg().modeLabels.balance
       : cfg().modeLabels[ctx.mode];
+    return wrapPlain(s, params.color as string | undefined);
+  },
+  m_window5h: (params, ctx) => {
+    if (!ctx.fiveHour) return null;
     const color = params.color as string | undefined;
-    return color ? `${color}${s}${RESET}` : s;
+    if (color) return formatOneChunkColored(ctx.fiveHour, ctx.mode, color);
+    // No override → reproduce the bare-module output exactly.
+    return formatOneChunk(ctx.fiveHour, ctx.mode);
+  },
+  m_window7d: (params, ctx) => {
+    if (!ctx.weekly) return null;
+    const color = params.color as string | undefined;
+    if (color) return formatOneChunkColored(ctx.weekly, ctx.mode, color);
+    return formatOneChunk(ctx.weekly, ctx.mode);
+  },
+  m_countdown5h: (params, ctx) => {
+    if (!ctx.fiveHour) return null;
+    const body = formatOneResetSuffix("5h", ctx.fiveHour, ctx.nowMs);
+    if (body === "") return null;
+    return wrapPlain(body, params.color as string | undefined);
+  },
+  m_countdown7d: (params, ctx) => {
+    if (!ctx.weekly) return null;
+    const body = formatOneResetSuffix("7d", ctx.weekly, ctx.nowMs);
+    if (body === "") return null;
+    return wrapPlain(body, params.color as string | undefined);
+  },
+  m_balance: (params, ctx) => {
+    if (!ctx.balance) return null;
+    const color = params.color as string | undefined;
+    const text = formatBalanceEntriesColored(ctx.balance, color);
+    return text || null;
+  },
+  m_age: (params, ctx) => {
+    if (ctx.ageMs == null) return null;
+    const color = params.color as string | undefined;
+    return formatStaleSuffix(ctx.ageMs, !ctx.stale, color);
+  },
+  m_version: (params, ctx) => {
+    if (!ctx.version) return null;
+    return wrapPlain(`v${ctx.version}`, params.color as string | undefined);
+  },
+  m_tokenIn: (params, ctx) => {
+    const t = ctx.tokens;
+    if (!t || t.totals.input == null) return null;
+    return wrapPlain(
+      `in:${formatCompactToken(t.totals.input)}`,
+      params.color as string | undefined,
+    );
+  },
+  m_tokenOut: (params, ctx) => {
+    const t = ctx.tokens;
+    if (!t || t.totals.output == null) return null;
+    return wrapPlain(
+      `out:${formatCompactToken(t.totals.output)}`,
+      params.color as string | undefined,
+    );
+  },
+  m_tokenTotal: (params, ctx) => {
+    const body = inlineTokenTotalLabel(ctx);
+    if (body == null) return null;
+    return wrapPlain(body, params.color as string | undefined);
+  },
+  m_tokenSession: (params, ctx) => {
+    const body = inlineTokenSessionLabel(ctx);
+    if (body == null) return null;
+    return wrapPlain(body, params.color as string | undefined);
+  },
+  m_ctx: (params, ctx) => {
+    const t = ctx.tokens?.current;
+    if (!t) return null;
+    const len = (t.input ?? 0) + (t.cacheCreation ?? 0) + (t.cacheRead ?? 0);
+    if (len === 0) return null;
+    return wrapPlain(
+      `ctx:${formatCompactToken(len)}`,
+      params.color as string | undefined,
+    );
+  },
+  m_cacheHitRate: (params, ctx) => {
+    const t = ctx.tokens?.current;
+    if (!t) return null;
+    const read = t.cacheRead ?? 0;
+    const creation = t.cacheCreation ?? 0;
+    const denom = read + creation;
+    if (denom === 0) return null;
+    const pct = (read / denom) * 100;
+    const color = (params.color as string | undefined) ?? cacheHitColor(pct);
+    return `${color}cache:${pct.toFixed(cachePctPrecision())}%${RESET}`;
+  },
+  m_cacheRead: (params, ctx) => {
+    const t = ctx.tokens?.current;
+    if (!t) return null;
+    const read = t.cacheRead ?? 0;
+    if (read === 0) return null;
+    const denom = (t.input ?? 0) + read + (t.cacheCreation ?? 0);
+    const pct = denom > 0 ? (read / denom) * 100 : null;
+    const label = formatCompactToken(read);
+    const color = (params.color as string | undefined) ?? STALE_COLOR;
+    return pct == null
+      ? `${color}cache:${label}${RESET}`
+      : `${color}cache:${label} (${pct.toFixed(cachePctPrecision())}%)${RESET}`;
+  },
+  m_token5h: (params, ctx) => {
+    const body = windowedTokenLabel(ctx, 5 * 60 * 60 * 1000, "5h");
+    if (body == null) return null;
+    return wrapPlain(body, params.color as string | undefined);
+  },
+  m_token7d: (params, ctx) => {
+    const body = windowedTokenLabel(ctx, 7 * 24 * 60 * 60 * 1000, "7d");
+    if (body == null) return null;
+    return wrapPlain(body, params.color as string | undefined);
+  },
+  m_tokenInSpeed: (params, ctx) => {
+    const t = ctx.tokens;
+    if (!t || t.totals.input == null || t.cost.totalDurationMs == null)
+      return null;
+    const durMs = t.cost.totalDurationMs;
+    if (durMs <= 0) return null;
+    const tps = (t.totals.input / durMs) * 1000;
+    const color = (params.color as string | undefined) ?? STALE_COLOR;
+    return `${color}in:${formatSpeed(tps)}${RESET}`;
+  },
+  m_tokenOutSpeed: (params, ctx) => {
+    const t = ctx.tokens;
+    if (!t || t.totals.output == null || t.cost.totalDurationMs == null)
+      return null;
+    const durMs = t.cost.totalDurationMs;
+    if (durMs <= 0) return null;
+    const tps = (t.totals.output / durMs) * 1000;
+    const color = (params.color as string | undefined) ?? STALE_COLOR;
+    return `${color}out:${formatSpeed(tps)}${RESET}`;
   },
 };
+
+// Extract the `m_tokenTotal` body as a pure helper so the inline
+// renderer can call it without duplicating the computation.
+function inlineTokenTotalLabel(ctx: RenderContext): string | null {
+  const t = ctx.tokens;
+  if (!t) return null;
+  const inT = t.totals.input ?? 0;
+  const outT = t.totals.output ?? 0;
+  const cache = (t.current.cacheCreation ?? 0) + (t.current.cacheRead ?? 0);
+  return `tot:${formatCompactToken(inT + outT + cache)}`;
+}
+
+// Same for `m_tokenSession`.
+function inlineTokenSessionLabel(ctx: RenderContext): string | null {
+  const t = ctx.tokens;
+  if (!t) return null;
+  const inT = t.totals.input ?? 0;
+  const outT = t.totals.output ?? 0;
+  const cache = (t.current.cacheCreation ?? 0) + (t.current.cacheRead ?? 0);
+  return `session:${formatCompactToken(inT + outT + cache)}`;
+}
 
 // Parse the colon-delimited remainder after a token prefix into a
 // `{ param: value }` object. Pure; no side effects.
@@ -1006,9 +1238,10 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
     const tok = template[i];
     if (tok == null) continue;
     let piece: string | null = null;
-    // v0.3.3+ — inline-args tokens (s_<n>:…, m_label:…, m_modeLabel:…).
-    // Only fire when the token contains ":" so the bare forms (s_0,
-    // m_modeLabel) keep routing through MODULES as before.
+    // v0.3.3+ — inline-args tokens (s_<n>:…, m_label:…, m_modeLabel:…,
+    // and every other m_<name>:…). Only fire when the token contains
+    // ":" so the bare forms (s_0, m_modeLabel, m_window5h, …) keep
+    // routing through MODULES as before.
     if (tok.includes(":")) {
       if (tok.startsWith("s_")) {
         // s_<n>:… → skip "s_" (length 2), remainder starts at the index.
@@ -1020,6 +1253,43 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
       } else if (tok.startsWith("m_modeLabel:")) {
         // m_modeLabel:<args> → skip "m_modeLabel:" (length 12).
         piece = expandInlineToken(tok, "m_modeLabel", 12, ctx);
+      } else if (tok.startsWith("m_window5h:")) {
+        // m_window5h:color:<c> → skip "m_window5h:" (length 11).
+        piece = expandInlineToken(tok, "m_window5h", 11, ctx);
+      } else if (tok.startsWith("m_window7d:")) {
+        piece = expandInlineToken(tok, "m_window7d", 11, ctx);
+      } else if (tok.startsWith("m_countdown5h:")) {
+        piece = expandInlineToken(tok, "m_countdown5h", 14, ctx);
+      } else if (tok.startsWith("m_countdown7d:")) {
+        piece = expandInlineToken(tok, "m_countdown7d", 14, ctx);
+      } else if (tok.startsWith("m_balance:")) {
+        piece = expandInlineToken(tok, "m_balance", 10, ctx);
+      } else if (tok.startsWith("m_age:")) {
+        piece = expandInlineToken(tok, "m_age", 6, ctx);
+      } else if (tok.startsWith("m_version:")) {
+        piece = expandInlineToken(tok, "m_version", 10, ctx);
+      } else if (tok.startsWith("m_tokenIn:")) {
+        piece = expandInlineToken(tok, "m_tokenIn", 10, ctx);
+      } else if (tok.startsWith("m_tokenOut:")) {
+        piece = expandInlineToken(tok, "m_tokenOut", 11, ctx);
+      } else if (tok.startsWith("m_tokenTotal:")) {
+        piece = expandInlineToken(tok, "m_tokenTotal", 13, ctx);
+      } else if (tok.startsWith("m_tokenSession:")) {
+        piece = expandInlineToken(tok, "m_tokenSession", 15, ctx);
+      } else if (tok.startsWith("m_ctx:")) {
+        piece = expandInlineToken(tok, "m_ctx", 6, ctx);
+      } else if (tok.startsWith("m_cacheHitRate:")) {
+        piece = expandInlineToken(tok, "m_cacheHitRate", 15, ctx);
+      } else if (tok.startsWith("m_cacheRead:")) {
+        piece = expandInlineToken(tok, "m_cacheRead", 12, ctx);
+      } else if (tok.startsWith("m_token5h:")) {
+        piece = expandInlineToken(tok, "m_token5h", 10, ctx);
+      } else if (tok.startsWith("m_token7d:")) {
+        piece = expandInlineToken(tok, "m_token7d", 10, ctx);
+      } else if (tok.startsWith("m_tokenInSpeed:")) {
+        piece = expandInlineToken(tok, "m_tokenInSpeed", 15, ctx);
+      } else if (tok.startsWith("m_tokenOutSpeed:")) {
+        piece = expandInlineToken(tok, "m_tokenOutSpeed", 16, ctx);
       }
       // If we matched the prefix but the parse failed, piece is null
       // and we fall through to the unknown-module warn below.
@@ -1125,7 +1395,15 @@ export function renderProviderLine(
   // output for " ago" (which would misfire if a separator string
   // happens to contain " ago" or anything overlapping with
   // formatStaleSuffix's output tail).
-  if (ctx.ageMs != null && ctx.stale && !template.includes("m_age")) {
+  //
+  // v0.3.3+ also accepts the inline-args form "m_age:color:…" — the
+  // renderer would still emit the chunk, so we must treat that as
+  // "m_age is present" too. Match by prefix instead of by exact
+  // string equality.
+  const templateHasAgeModule = template.some(
+    (tok) => tok === "m_age" || tok.startsWith("m_age:"),
+  );
+  if (ctx.ageMs != null && ctx.stale && !templateHasAgeModule) {
     const suffix = formatStaleSuffix(ctx.ageMs, false);
     // The suffix carries its own SGR close, so it slots onto the
     // last line regardless of how many lines the template emitted.

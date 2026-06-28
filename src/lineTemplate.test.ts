@@ -630,6 +630,429 @@ describe("lineTemplate — m_modeLabel:color inline-args tokens", () => {
   });
 });
 
+// v0.3.3+ — every existing module accepts an optional `:color:<c>`
+// override. These tests cover both:
+//   - plain-text modules (m_version, m_tokenIn, …) — the override
+//     wraps the bare body in `<c>body<RESET>`.
+//   - already-colored modules (m_window5h/7d, m_balance, m_age,
+//     m_cacheHitRate, m_cacheRead, m_tokenInSpeed, m_tokenOutSpeed) —
+//     the override REPLACES the natural color (user always wins).
+//   - invalid :color: → hard noop (drop + warn), same as m_label.
+//   - bare `<module>` form is byte-for-byte identical to pre-v0.3.3.
+describe("lineTemplate — m_window5h / m_window7d :color override", () => {
+  beforeEach(() => __resetUnknownModuleWarnForTest());
+  afterEach(() => __resetForTest());
+
+  it("m_window5h:color:red replaces the band-based color with red", () => {
+    __resetForTest({
+      lineTemplate: {
+        plan: ["m_window5h:color:red"],
+        balance: ["m_window5h:color:red"],
+      },
+    });
+    const line = renderProviderLine("minimax", {
+      mode: "used", nowMs: Date.now(),
+      fiveHour: { pct: 38, resetAt: null },
+      weekly: null, balance: null,
+      ageMs: null, stale: false, version: "",
+    });
+    // The override color (\x1b[38;5;196m) must appear inside the chunk,
+    // and the percentage must use the override color (NOT the band color).
+    assert.ok(line.includes("\x1b[38;5;196m"), `got: ${JSON.stringify(line)}`);
+    assert.ok(line.includes("\x1b[38;5;196m38%"), `got: ${JSON.stringify(line)}`);
+  });
+
+  it("m_window7d:color:darkGreen replaces the band-based color with darkGreen", () => {
+    __resetForTest({
+      lineTemplate: {
+        plan: ["m_window7d:color:darkGreen"],
+        balance: ["m_window7d:color:darkGreen"],
+      },
+    });
+    const line = renderProviderLine("minimax", {
+      mode: "used", nowMs: Date.now(),
+      fiveHour: null,
+      weekly: { pct: 60, resetAt: null },
+      balance: null,
+      ageMs: null, stale: false, version: "",
+    });
+    // darkGreen = \x1b[38;5;29m (default palette); must wrap 60%.
+    assert.ok(line.includes("\x1b[38;5;29m60%"), `got: ${JSON.stringify(line)}`);
+  });
+
+  it("bare m_window5h is byte-for-byte unchanged when no :color: is supplied", () => {
+    __resetForTest({
+      lineTemplate: {
+        plan: ["m_window5h"],
+        balance: ["m_window5h"],
+      },
+    });
+    const line = renderProviderLine("minimax", {
+      mode: "used", nowMs: Date.now(),
+      fiveHour: { pct: 38, resetAt: null },
+      weekly: null, balance: null,
+      ageMs: null, stale: false, version: "",
+    });
+    // Default band color for 38% used is darkGreen (\x1b[38;5;29m).
+    // If the override path were mis-wired, we'd see no SGR or red instead.
+    assert.ok(line.includes("\x1b[38;5;29m38%"), `got: ${JSON.stringify(line)}`);
+  });
+
+  it("m_window5h:color:garbage is a hard noop (drops and warns)", () => {
+    __resetForTest({
+      lineTemplate: {
+        plan: ["m_window5h:color:garbage"],
+        balance: ["m_window5h:color:garbage"],
+      },
+    });
+    const { value: line, warns } = withCapturedStderr(() =>
+      renderProviderLine("minimax", {
+        mode: "used", nowMs: Date.now(),
+        fiveHour: { pct: 38, resetAt: null },
+        weekly: null, balance: null,
+        ageMs: null, stale: false, version: "",
+      }),
+    );
+    assert.equal(line, "", `got: ${JSON.stringify(line)}`);
+    assert.equal(warns.filter((w) => w.includes("unknown lineTemplate module")).length, 1);
+  });
+});
+
+describe("lineTemplate — plain-text modules :color override", () => {
+  beforeEach(() => __resetUnknownModuleWarnForTest());
+  afterEach(() => __resetForTest());
+
+  it("m_version:color:yellow wraps v0.2.17 in yellow SGR + RESET", () => {
+    __resetForTest({
+      lineTemplate: {
+        plan: ["m_version:color:yellow"],
+        balance: ["m_version:color:yellow"],
+      },
+    });
+    const line = renderProviderLine("minimax", {
+      mode: "used", nowMs: Date.now(),
+      fiveHour: null, weekly: null, balance: null,
+      ageMs: null, stale: false, version: "0.2.17",
+    });
+    // Yellow = \x1b[38;5;220m (default palette).
+    assert.equal(line, "\x1b[38;5;220mv0.2.17\x1b[0m", `got: ${JSON.stringify(line)}`);
+  });
+
+  it("m_version without :color: stays plain text (byte-for-byte identical)", () => {
+    __resetForTest({
+      lineTemplate: {
+        plan: ["m_version"],
+        balance: ["m_version"],
+      },
+    });
+    const line = renderProviderLine("minimax", {
+      mode: "used", nowMs: Date.now(),
+      fiveHour: null, weekly: null, balance: null,
+      ageMs: null, stale: false, version: "0.2.17",
+    });
+    // Bare path: no SGR wrapper.
+    assert.equal(line, "v0.2.17", `got: ${JSON.stringify(line)}`);
+  });
+
+  it("m_version:color:garbage is a hard noop (drops and warns)", () => {
+    __resetForTest({
+      lineTemplate: {
+        plan: ["m_version:color:garbage"],
+        balance: ["m_version:color:garbage"],
+      },
+    });
+    const { value: line, warns } = withCapturedStderr(() =>
+      renderProviderLine("minimax", {
+        mode: "used", nowMs: Date.now(),
+        fiveHour: null, weekly: null, balance: null,
+        ageMs: null, stale: false, version: "0.2.17",
+      }),
+    );
+    assert.equal(line, "", `got: ${JSON.stringify(line)}`);
+    assert.equal(warns.filter((w) => w.includes("unknown lineTemplate module")).length, 1);
+  });
+
+  it("m_countdown5h:color:darkGreen wraps the bare '5h' suffix in darkGreen", () => {
+    __resetForTest({
+      lineTemplate: {
+        plan: ["m_countdown5h:color:darkGreen"],
+        balance: ["m_countdown5h:color:darkGreen"],
+      },
+    });
+    const line = renderProviderLine("minimax", {
+      mode: "used", nowMs: Date.now(),
+      fiveHour: { pct: 38, resetAt: null },
+      weekly: null, balance: null,
+      ageMs: null, stale: false, version: "",
+    });
+    // No resetAt → formatOneResetSuffix emits just "5h", wrapped in darkGreen.
+    assert.equal(line, "\x1b[38;5;29m5h\x1b[0m", `got: ${JSON.stringify(line)}`);
+  });
+
+  it("m_countdown7d:color:red wraps the bare '7d' suffix in red", () => {
+    __resetForTest({
+      lineTemplate: {
+        plan: ["m_countdown7d:color:red"],
+        balance: ["m_countdown7d:color:red"],
+      },
+    });
+    const line = renderProviderLine("minimax", {
+      mode: "used", nowMs: Date.now(),
+      fiveHour: null,
+      weekly: { pct: 60, resetAt: null },
+      balance: null,
+      ageMs: null, stale: false, version: "",
+    });
+    assert.equal(line, "\x1b[38;5;196m7d\x1b[0m", `got: ${JSON.stringify(line)}`);
+  });
+});
+
+describe("lineTemplate — colored modules :color override (user wins)", () => {
+  beforeEach(() => __resetUnknownModuleWarnForTest());
+  afterEach(() => __resetForTest());
+
+  it("m_balance:color:red replaces the band-based color with red", () => {
+    __resetForTest({
+      lineTemplate: {
+        plan: [],
+        balance: ["m_balance:color:red"],
+      },
+    });
+    const line = renderProviderLine("deepseek", {
+      mode: "used", nowMs: Date.now(),
+      balance: { isAvailable: true, entries: [{ currency: "USD", totalBalance: 25 }], minValue: 25 },
+      ageMs: null, stale: false, version: "",
+    });
+    // Band color for $25 was brightGreen; override forces red.
+    assert.ok(line.includes("\x1b[38;5;196m"), `got: ${JSON.stringify(line)}`);
+    assert.ok(line.includes("\x1b[38;5;196m$25"), `got: ${JSON.stringify(line)}`);
+  });
+
+  it("bare m_balance keeps the band-based color", () => {
+    __resetForTest({
+      lineTemplate: {
+        plan: [],
+        balance: ["m_balance"],
+      },
+    });
+    const line = renderProviderLine("deepseek", {
+      mode: "used", nowMs: Date.now(),
+      balance: { isAvailable: true, entries: [{ currency: "USD", totalBalance: 25 }], minValue: 25 },
+      ageMs: null, stale: false, version: "",
+    });
+    // Band color for $25 with default thresholds is darkGreen (\x1b[38;5;29m),
+    // since 25 falls into the [20, 50) band.
+    assert.ok(line.includes("\x1b[38;5;29m$25"), `got: ${JSON.stringify(line)}`);
+  });
+
+  it("m_age:color:red replaces STALE_COLOR with red", () => {
+    __resetForTest({
+      lineTemplate: {
+        plan: ["m_age:color:red"],
+        balance: ["m_age:color:red"],
+      },
+    });
+    const line = renderProviderLine("minimax", {
+      mode: "used", nowMs: Date.now(),
+      fiveHour: null, weekly: null, balance: null,
+      ageMs: 5 * 60_000,
+      stale: true,
+      version: "",
+    });
+    // STALE_COLOR (\x1b[90m) must NOT appear; red (\x1b[38;5;196m) must.
+    assert.ok(!line.includes("\x1b[90m"), `got: ${JSON.stringify(line)}`);
+    assert.ok(line.includes("\x1b[38;5;196m⛓️‍💥 5m ago"), `got: ${JSON.stringify(line)}`);
+  });
+
+  it("bare m_age keeps STALE_COLOR", () => {
+    __resetForTest({
+      lineTemplate: {
+        plan: ["m_age"],
+        balance: ["m_age"],
+      },
+    });
+    const line = renderProviderLine("minimax", {
+      mode: "used", nowMs: Date.now(),
+      fiveHour: null, weekly: null, balance: null,
+      ageMs: 5 * 60_000,
+      stale: true,
+      version: "",
+    });
+    assert.ok(line.includes("\x1b[90m⛓️‍💥 5m ago"), `got: ${JSON.stringify(line)}`);
+  });
+
+  it("m_cacheRead:color:yellow replaces STALE_COLOR with yellow", () => {
+    __resetForTest({
+      lineTemplate: {
+        plan: ["m_cacheRead:color:yellow"],
+        balance: ["m_cacheRead:color:yellow"],
+      },
+    });
+    const line = renderProviderLine("minimax", {
+      mode: "used", nowMs: Date.now(),
+      fiveHour: null, weekly: null, balance: null,
+      ageMs: null, stale: false, version: "",
+      tokens: {
+        cwd: "C:\\fake",
+        sessionId: "sess-cache-read",
+        totals: { input: 1000, output: 500 },
+        current: { input: 100, output: 50, cacheCreation: 100, cacheRead: 900 },
+        cost: { totalDurationMs: 1000 },
+      },
+    });
+    // Yellow wraps the cache: chunk; STALE_COLOR must not appear.
+    assert.ok(line.includes("\x1b[38;5;220m"), `got: ${JSON.stringify(line)}`);
+    assert.ok(!line.includes("\x1b[90m"), `got: ${JSON.stringify(line)}`);
+  });
+
+  it("m_tokenInSpeed:color:red replaces STALE_COLOR with red", () => {
+    __resetForTest({
+      lineTemplate: {
+        plan: ["m_tokenInSpeed:color:red"],
+        balance: ["m_tokenInSpeed:color:red"],
+      },
+    });
+    const line = renderProviderLine("minimax", {
+      mode: "used", nowMs: Date.now(),
+      fiveHour: null, weekly: null, balance: null,
+      ageMs: null, stale: false, version: "",
+      tokens: {
+        cwd: "C:\\fake",
+        sessionId: "sess-speed",
+        totals: { input: 5000, output: 0 },
+        current: { input: 0, output: 0, cacheCreation: 0, cacheRead: 0 },
+        cost: { totalDurationMs: 5000 },
+      },
+    });
+    // STALE_COLOR must not appear; red must wrap the speed chunk.
+    assert.ok(!line.includes("\x1b[90m"), `got: ${JSON.stringify(line)}`);
+    assert.ok(line.includes("\x1b[38;5;196min:"), `got: ${JSON.stringify(line)}`);
+  });
+
+  it("m_cacheHitRate:color:brightGreen replaces the band-based cache color with brightGreen", () => {
+    __resetForTest({
+      lineTemplate: {
+        plan: ["m_cacheHitRate:color:brightGreen"],
+        balance: ["m_cacheHitRate:color:brightGreen"],
+      },
+    });
+    const line = renderProviderLine("minimax", {
+      mode: "used", nowMs: Date.now(),
+      fiveHour: null, weekly: null, balance: null,
+      ageMs: null, stale: false, version: "",
+      tokens: {
+        cwd: "C:\\fake",
+        sessionId: "sess-hit",
+        totals: { input: 0, output: 0 },
+        current: { input: 0, output: 0, cacheCreation: 100, cacheRead: 900 },
+        cost: { totalDurationMs: 1000 },
+      },
+    });
+    // Hit rate = 90% (read 900 / (900+100)). Default band color is "good"
+    // (\x1b[38;5;41m brightGreen). Override forces the same color (since
+    // 90% is already in the "good" band) — the assertion verifies the
+    // SGR wraps "cache:90%" with brightGreen.
+    assert.ok(line.includes("\x1b[38;5;41mcache:90.0%"), `got: ${JSON.stringify(line)}`);
+  });
+});
+
+describe("lineTemplate — plain token-usage modules :color override", () => {
+  beforeEach(() => __resetUnknownModuleWarnForTest());
+  afterEach(() => __resetForTest());
+
+  it("m_tokenIn:color:brightGreen wraps the 'in:N' chunk in brightGreen", () => {
+    __resetForTest({
+      lineTemplate: {
+        plan: ["m_tokenIn:color:brightGreen"],
+        balance: ["m_tokenIn:color:brightGreen"],
+      },
+    });
+    const line = renderProviderLine("minimax", {
+      mode: "used", nowMs: Date.now(),
+      fiveHour: null, weekly: null, balance: null,
+      ageMs: null, stale: false, version: "",
+      tokens: {
+        cwd: "C:\\fake",
+        sessionId: "sess-tok-in",
+        totals: { input: 1500, output: 0 },
+        current: { input: 0, output: 0, cacheCreation: 0, cacheRead: 0 },
+        cost: { totalDurationMs: 0 },
+      },
+    });
+    assert.equal(line, "\x1b[38;5;41min:1.5k\x1b[0m", `got: ${JSON.stringify(line)}`);
+  });
+
+  it("bare m_tokenIn stays plain (byte-for-byte identical)", () => {
+    __resetForTest({
+      lineTemplate: {
+        plan: ["m_tokenIn"],
+        balance: ["m_tokenIn"],
+      },
+    });
+    const line = renderProviderLine("minimax", {
+      mode: "used", nowMs: Date.now(),
+      fiveHour: null, weekly: null, balance: null,
+      ageMs: null, stale: false, version: "",
+      tokens: {
+        cwd: "C:\\fake",
+        sessionId: "sess-tok-in-bare",
+        totals: { input: 1500, output: 0 },
+        current: { input: 0, output: 0, cacheCreation: 0, cacheRead: 0 },
+        cost: { totalDurationMs: 0 },
+      },
+    });
+    assert.equal(line, "in:1.5k", `got: ${JSON.stringify(line)}`);
+  });
+
+  it("m_ctx:color:orange wraps the 'ctx:N' chunk in orange", () => {
+    __resetForTest({
+      lineTemplate: {
+        plan: ["m_ctx:color:orange"],
+        balance: ["m_ctx:color:orange"],
+      },
+    });
+    const line = renderProviderLine("minimax", {
+      mode: "used", nowMs: Date.now(),
+      fiveHour: null, weekly: null, balance: null,
+      ageMs: null, stale: false, version: "",
+      tokens: {
+        cwd: "C:\\fake",
+        sessionId: "sess-ctx",
+        totals: { input: 0, output: 0 },
+        current: { input: 800, output: 0, cacheCreation: 0, cacheRead: 200 },
+        cost: { totalDurationMs: 0 },
+      },
+    });
+    // Total ctx length = 800 + 0 + 200 = 1000 → "ctx:1.0k". Orange = \x1b[38;5;208m.
+    assert.equal(line, "\x1b[38;5;208mctx:1.0k\x1b[0m", `got: ${JSON.stringify(line)}`);
+  });
+
+  it("m_tokenIn:color:garbage is a hard noop (drops and warns)", () => {
+    __resetForTest({
+      lineTemplate: {
+        plan: ["m_tokenIn:color:garbage"],
+        balance: ["m_tokenIn:color:garbage"],
+      },
+    });
+    const { value: line, warns } = withCapturedStderr(() =>
+      renderProviderLine("minimax", {
+        mode: "used", nowMs: Date.now(),
+        fiveHour: null, weekly: null, balance: null,
+        ageMs: null, stale: false, version: "",
+        tokens: {
+          cwd: "C:\\fake",
+          sessionId: "sess-tok-in-bad",
+          totals: { input: 1500, output: 0 },
+          current: { input: 0, output: 0, cacheCreation: 0, cacheRead: 0 },
+          cost: { totalDurationMs: 0 },
+        },
+      }),
+    );
+    assert.equal(line, "", `got: ${JSON.stringify(line)}`);
+    assert.equal(warns.filter((w) => w.includes("unknown lineTemplate module")).length, 1);
+  });
+});
+
 describe("lineTemplate — inline-args regression / round-trip", () => {
   beforeEach(() => __resetUnknownModuleWarnForTest());
   afterEach(() => __resetForTest());
