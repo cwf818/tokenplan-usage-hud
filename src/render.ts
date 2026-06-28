@@ -903,27 +903,25 @@ export function renderProviderLine(
   const template = cfg().lineTemplate[templateKey];
   const lines = renderTemplate(template, fullCtx);
   // Forced visibility for the age annotation (stale-only fallback):
-// when the user did NOT put m_age in their lineTemplate AND the fetch
-// was stale, append the broken-chain suffix to the rendered line. This
-// preserves the v0.2.16 invariant that a network failure is always
-// visible, no matter what the user put in their template.
-//
-// Dedup: if m_age already emitted (any emoji variant — 🔗 or ⛓️‍💥
-// — followed by "<unit> ago"), skip. The check looks for the literal
-// " ago" tail of formatStaleSuffix's output rather than a specific
-// emoji marker, because the template-rendered m_age may use 🔗 on
-// fresh or ⛓️‍💥 on stale and we must dedup both.
-  if (ctx.ageMs != null && ctx.stale) {
-    const joined = lines.join("\n");
-    if (!joined.includes(" ago")) {
-      const suffix = formatStaleSuffix(ctx.ageMs, false);
-      // The suffix carries its own SGR close, so it slots onto the
-      // last line regardless of how many lines the template emitted.
-      if (lines.length === 0) {
-        lines.push(suffix);
-      } else {
-        lines[lines.length - 1] = (lines[lines.length - 1] ?? "") + suffix;
-      }
+  // when the user did NOT put m_age in their lineTemplate AND the
+  // fetch was stale, append the broken-chain suffix to the rendered
+  // line. This preserves the v0.2.16 invariant that a network
+  // failure is always visible, no matter what the user put in their
+  // template.
+  //
+  // Dedup is template-level: check whether "m_age" appears in the
+  // template tokens directly, rather than scanning the rendered
+  // output for " ago" (which would misfire if a separator string
+  // happens to contain " ago" or anything overlapping with
+  // formatStaleSuffix's output tail).
+  if (ctx.ageMs != null && ctx.stale && !template.includes("m_age")) {
+    const suffix = formatStaleSuffix(ctx.ageMs, false);
+    // The suffix carries its own SGR close, so it slots onto the
+    // last line regardless of how many lines the template emitted.
+    if (lines.length === 0) {
+      lines.push(suffix);
+    } else {
+      lines[lines.length - 1] = (lines[lines.length - 1] ?? "") + suffix;
     }
   }
   return lines.join("\n");
