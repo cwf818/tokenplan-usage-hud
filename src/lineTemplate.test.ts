@@ -1027,6 +1027,41 @@ describe("lineTemplate — plain token-usage modules :color override", () => {
     assert.equal(line, "\x1b[38;5;208mctx:1.0k\x1b[0m", `got: ${JSON.stringify(line)}`);
   });
 
+  it("m_tokenOut:color:yellow does NOT warn when totals.output is missing (v0.3.4 regression)", () => {
+    // v0.3.3 conflated "parse failed" with "renderer returned null for
+    // valid args but missing data" — the dispatcher warned
+    // "unknown lineTemplate module" on EVERY render where the
+    // stdin lacked total_output_tokens. v0.3.4+ distinguishes the
+    // two: parse failure warns; missing-data renderer null is silent.
+    __resetForTest({
+      lineTemplate: {
+        plan: ["m_tokenOut:color:yellow"],
+        balance: ["m_tokenOut:color:yellow"],
+      },
+    });
+    const { value: line, warns } = withCapturedStderr(() =>
+      renderProviderLine("minimax", {
+        mode: "used", nowMs: Date.now(),
+        fiveHour: null, weekly: null, balance: null,
+        ageMs: null, stale: false, version: "",
+        tokens: {
+          cwd: "C:\\fake",
+          sessionId: "sess-no-out",
+          totals: { input: 100, output: null },
+          current: { input: 0, output: 0, cacheCreation: 0, cacheRead: 0 },
+          cost: { totalDurationMs: 1000 },
+        },
+      }),
+    );
+    // No chunk, no warn — silent drop, same as the bare-module path.
+    assert.equal(line, "", `got: ${JSON.stringify(line)}`);
+    assert.equal(
+      warns.filter((w) => w.includes("unknown lineTemplate module")).length,
+      0,
+      `expected 0 warns, got: ${JSON.stringify(warns)}`,
+    );
+  });
+
   it("m_tokenIn:color:garbage is a hard noop (drops and warns)", () => {
     __resetForTest({
       lineTemplate: {

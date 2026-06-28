@@ -900,10 +900,17 @@ type ResolvedValue = string | number;
 
 type ParamResolver = (raw: string) => ResolvedValue | null;
 
+// Sentinel: renderers return this to signal "args parsed fine but
+// semantically invalid" (e.g. m_label with an empty string, s_<n>
+// with an out-of-range index). The dispatcher warns once on this;
+// a plain null is treated as "no data to show" (silent drop, same
+// as the bare MODULES path).
+const INLINE_BADARG = Symbol("inline-badarg");
+
 type InlineRenderer = (
   params: Record<string, ResolvedValue>,
   ctx: RenderContext,
-) => string | null;
+) => string | null | typeof INLINE_BADARG;
 
 // Per-prefix inline schema. The first segment after the prefix is the
 // value of the implicit param (`implicit`). Subsequent segments come in
@@ -990,12 +997,12 @@ function wrapPlain(body: string, color: string | undefined): string {
 const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   s_: (params, _ctx) => {
     const sep = cfg().separators[params.index as number];
-    if (sep === undefined) return null;
+    if (sep === undefined) return INLINE_BADARG; // out-of-range index
     return wrapPlain(sep, params.color as string | undefined);
   },
   m_label: (params, _ctx) => {
     const s = params.string as string;
-    if (s === "") return null;
+    if (s === "") return INLINE_BADARG; // empty payload is malformed
     return wrapPlain(s, params.color as string | undefined);
   },
   m_modeLabel: (params, ctx) => {
@@ -1211,23 +1218,40 @@ function parseInlineArgs(
   return out;
 }
 
-// Try to expand an inline-args token. Returns the chunk (possibly with
-// SGR wrappers) or null if the token is malformed / unrecognized.
+// Try to expand an inline-args token. Returns one of:
+//   - { kind: "ok",     value }    — chunk text (possibly empty)
+//   - { kind: "badarg" }            — parse failed (warn + drop)
+//   - undefined                     — no schema for this prefix (caller
+//                                     falls through to the unknown-module
+//                                     path; rare — only fires when a
+//                                     typo slips past the dispatcher).
 //
 // `key` is the bare prefix (used as the schema/renderer lookup key —
 // no trailing colon). `skipLen` is how many characters of the token
 // to consume before the remainder starts.
+//
+// v0.3.4+ — distinguish parse failure from "renderer returned null
+// for valid args but missing data". Previously the dispatcher warned
+// on ANY null return, which made modules like m_tokenOut (returns
+// null when stdin lacks total_output_tokens) wrongly warn on the
+// "unknown lineTemplate module" path.
+type InlineResult =
+  | { kind: "ok"; value: string | null }
+  | { kind: "badarg" };
+
 function expandInlineToken(
   tok: string,
   key: string,
   skipLen: number,
   ctx: RenderContext,
-): string | null {
+): InlineResult | undefined {
   const schema = INLINE_SCHEMAS[key];
-  if (schema === undefined) return null;
+  if (schema === undefined) return undefined;
   const params = parseInlineArgs(tok.slice(skipLen), schema);
-  if (params === null) return null;
-  return INLINE_RENDERERS[key]!(params, ctx);
+  if (params === null) return { kind: "badarg" };
+  const rendered = INLINE_RENDERERS[key]!(params, ctx);
+  if (rendered === INLINE_BADARG) return { kind: "badarg" };
+  return { kind: "ok", value: rendered };
 }
 
 export function renderTemplate(template: readonly string[], ctx: RenderContext): string[] {
@@ -1243,60 +1267,71 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
     // ":" so the bare forms (s_0, m_modeLabel, m_window5h, …) keep
     // routing through MODULES as before.
     if (tok.includes(":")) {
+      // The prefix → key/skipLen table. Keep them in sync with the
+      // INLINE_SCHEMAS / INLINE_RENDERERS entries above. A typo here
+      // means the token silently routes through MODULES (which won't
+      // match the literal colon-bearing string) and falls through
+      // to the unknown-module warn.
+      let inline: InlineResult | undefined;
       if (tok.startsWith("s_")) {
         // s_<n>:… → skip "s_" (length 2), remainder starts at the index.
-        piece = expandInlineToken(tok, "s_", 2, ctx);
+        inline = expandInlineToken(tok, "s_", 2, ctx);
       } else if (tok.startsWith("m_label:")) {
         // m_label:<args> → skip "m_label:" (length 8), remainder starts
         // at the string value.
-        piece = expandInlineToken(tok, "m_label", 8, ctx);
+        inline = expandInlineToken(tok, "m_label", 8, ctx);
       } else if (tok.startsWith("m_modeLabel:")) {
         // m_modeLabel:<args> → skip "m_modeLabel:" (length 12).
-        piece = expandInlineToken(tok, "m_modeLabel", 12, ctx);
+        inline = expandInlineToken(tok, "m_modeLabel", 12, ctx);
       } else if (tok.startsWith("m_window5h:")) {
         // m_window5h:color:<c> → skip "m_window5h:" (length 11).
-        piece = expandInlineToken(tok, "m_window5h", 11, ctx);
+        inline = expandInlineToken(tok, "m_window5h", 11, ctx);
       } else if (tok.startsWith("m_window7d:")) {
-        piece = expandInlineToken(tok, "m_window7d", 11, ctx);
+        inline = expandInlineToken(tok, "m_window7d", 11, ctx);
       } else if (tok.startsWith("m_countdown5h:")) {
-        piece = expandInlineToken(tok, "m_countdown5h", 14, ctx);
+        inline = expandInlineToken(tok, "m_countdown5h", 14, ctx);
       } else if (tok.startsWith("m_countdown7d:")) {
-        piece = expandInlineToken(tok, "m_countdown7d", 14, ctx);
+        inline = expandInlineToken(tok, "m_countdown7d", 14, ctx);
       } else if (tok.startsWith("m_balance:")) {
-        piece = expandInlineToken(tok, "m_balance", 10, ctx);
+        inline = expandInlineToken(tok, "m_balance", 10, ctx);
       } else if (tok.startsWith("m_age:")) {
-        piece = expandInlineToken(tok, "m_age", 6, ctx);
+        inline = expandInlineToken(tok, "m_age", 6, ctx);
       } else if (tok.startsWith("m_version:")) {
-        piece = expandInlineToken(tok, "m_version", 10, ctx);
+        inline = expandInlineToken(tok, "m_version", 10, ctx);
       } else if (tok.startsWith("m_tokenIn:")) {
-        piece = expandInlineToken(tok, "m_tokenIn", 10, ctx);
+        inline = expandInlineToken(tok, "m_tokenIn", 10, ctx);
       } else if (tok.startsWith("m_tokenOut:")) {
-        piece = expandInlineToken(tok, "m_tokenOut", 11, ctx);
+        inline = expandInlineToken(tok, "m_tokenOut", 11, ctx);
       } else if (tok.startsWith("m_tokenTotal:")) {
-        piece = expandInlineToken(tok, "m_tokenTotal", 13, ctx);
+        inline = expandInlineToken(tok, "m_tokenTotal", 13, ctx);
       } else if (tok.startsWith("m_tokenSession:")) {
-        piece = expandInlineToken(tok, "m_tokenSession", 15, ctx);
+        inline = expandInlineToken(tok, "m_tokenSession", 15, ctx);
       } else if (tok.startsWith("m_ctx:")) {
-        piece = expandInlineToken(tok, "m_ctx", 6, ctx);
+        inline = expandInlineToken(tok, "m_ctx", 6, ctx);
       } else if (tok.startsWith("m_cacheHitRate:")) {
-        piece = expandInlineToken(tok, "m_cacheHitRate", 15, ctx);
+        inline = expandInlineToken(tok, "m_cacheHitRate", 15, ctx);
       } else if (tok.startsWith("m_cacheRead:")) {
-        piece = expandInlineToken(tok, "m_cacheRead", 12, ctx);
+        inline = expandInlineToken(tok, "m_cacheRead", 12, ctx);
       } else if (tok.startsWith("m_token5h:")) {
-        piece = expandInlineToken(tok, "m_token5h", 10, ctx);
+        inline = expandInlineToken(tok, "m_token5h", 10, ctx);
       } else if (tok.startsWith("m_token7d:")) {
-        piece = expandInlineToken(tok, "m_token7d", 10, ctx);
+        inline = expandInlineToken(tok, "m_token7d", 10, ctx);
       } else if (tok.startsWith("m_tokenInSpeed:")) {
-        piece = expandInlineToken(tok, "m_tokenInSpeed", 15, ctx);
+        inline = expandInlineToken(tok, "m_tokenInSpeed", 15, ctx);
       } else if (tok.startsWith("m_tokenOutSpeed:")) {
-        piece = expandInlineToken(tok, "m_tokenOutSpeed", 16, ctx);
+        inline = expandInlineToken(tok, "m_tokenOutSpeed", 16, ctx);
       }
-      // If we matched the prefix but the parse failed, piece is null
-      // and we fall through to the unknown-module warn below.
-      if (piece === null) {
+      // Parse failure (bad :color:, unknown param, odd segment count)
+      // → warn + drop. Renderer returning null for valid args (e.g.
+      // m_tokenOut when stdin lacks total_output_tokens) is NOT a
+      // parse failure — silently skip the chunk, same as the bare
+      // MODULES path. (v0.3.4+: previously we conflated the two
+      // and wrongly warned "unknown module" on missing data.)
+      if (inline?.kind === "badarg") {
         warnUnknownModuleOnce(tok);
         continue;
       }
+      piece = inline?.kind === "ok" ? inline.value : null;
     } else if (tok.startsWith("s_")) {
       // Bare s_<n>: legacy fast path. Inline-args (with optional
       // color:) handles the `s_<n>` token via the new path above; the
