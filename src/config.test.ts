@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import {
   __resetForTest,
   __testing,
+  applyProviderOverrides,
   configStore,
   loadConfig,
 } from "./config.ts";
@@ -773,5 +774,207 @@ describe("loadConfig — providers (validation)", () => {
     assert.equal(cfg.providers.minimax, undefined);
     assert.deepEqual(cfg.providers.deepseek,
       __testing.DEFAULT_CONFIG.providers.deepseek);
+  });
+});
+
+describe("applyProviderOverrides — three-layer precedence", () => {
+  // v0.4.0+ — `providerEntry.config` lets a user override ANY top-level
+  // config key for one specific provider. Three-layer precedence:
+  //   defaults  ⊕  config.json top-level  ⊕  providerEntry.config
+  //             (lowest)                  (highest)
+  // Tests below use __resetForTest to set a known baseline (the
+  // "user-level config" layer), then call applyProviderOverrides to
+  // simulate index.ts:main() merging the provider layer on top.
+
+  it("provider.config overrides a top-level field (cacheTtlMs)", () => {
+    __resetForTest({ cacheTtlMs: 30_000 });
+    assert.equal(configStore.get().cacheTtlMs, 30_000);
+    applyProviderOverrides({ cacheTtlMs: 5_000 });
+    assert.equal(configStore.get().cacheTtlMs, 5_000, "provider override wins");
+  });
+
+  it("provider.config preserves fields it does NOT override", () => {
+    __resetForTest({
+      cacheTtlMs: 30_000,
+      display: "remaining",
+      timeFormat: { minUnit: "s", maxUnitCount: 4 },
+    });
+    applyProviderOverrides({ fetchTimeoutMs: 9_000 });
+    const cfg = configStore.get();
+    // Overridden → new value
+    assert.equal(cfg.fetchTimeoutMs, 9_000);
+    // Untouched → user-level value preserved
+    assert.equal(cfg.cacheTtlMs, 30_000);
+    assert.equal(cfg.display, "remaining");
+    assert.equal(cfg.timeFormat.minUnit, "s");
+    assert.equal(cfg.timeFormat.maxUnitCount, 4);
+  });
+
+  it("provider.config can override nested object fields (colors)", () => {
+    __resetForTest();
+    applyProviderOverrides({
+      colors: { red: "\x1b[38;5;201m" },
+    });
+    const cfg = configStore.get();
+    // Overridden → new value
+    assert.equal(cfg.colors.red, "\x1b[38;5;201m");
+    // Untouched → default preserved
+    assert.equal(cfg.colors.brightGreen, DEFAULT_CONFIG.colors.brightGreen);
+  });
+
+  it("provider.config can override lineTemplate (full array)", () => {
+    __resetForTest();
+    applyProviderOverrides({
+      lineTemplate: {
+        plan: ["m_label", "s_0", "m_window5h"],
+        balance: ["m_label", "s_0", "m_balance"],
+      },
+    });
+    const cfg = configStore.get();
+    assert.deepEqual(cfg.lineTemplate.plan, ["m_label", "s_0", "m_window5h"]);
+    // Other fields untouched.
+    assert.equal(cfg.cacheTtlMs, DEFAULT_CONFIG.cacheTtlMs);
+  });
+
+  it("rejects a nested 'providers' key and warns", () => {
+    __resetForTest();
+    // Capture baseline before the bad override.
+    const before = JSON.stringify(configStore.get().colors);
+    applyProviderOverrides({
+      providers: { evil: {} }, // should be stripped with a warn
+    });
+    const after = JSON.stringify(configStore.get().colors);
+    assert.equal(after, before, "providers key must not affect the snapshot");
+    assert.match(capturedStderr, /must not contain a nested 'providers'/);
+  });
+
+  it("invalid field values fall back to the prior layer (not defaults)", () => {
+    __resetForTest({ cacheTtlMs: 30_000 });
+    applyProviderOverrides({ cacheTtlMs: -1 }); // invalid: not positive
+    // After provider-config rejects -1, the active value should be the
+    // user-level 30_000 (the layer beneath provider-config), NOT the
+    // hardcoded default of 60_000. Three-layer semantics: each layer
+    // falls back to the layer below it, not to the bottom.
+    assert.equal(configStore.get().cacheTtlMs, 30_000);
+    assert.match(capturedStderr, /cacheTtlMs must be a positive number/);
+  });
+
+  it("empty provider.config is a no-op", () => {
+    __resetForTest({ cacheTtlMs: 42_000 });
+    applyProviderOverrides({});
+    assert.equal(configStore.get().cacheTtlMs, 42_000);
+  });
+
+  it("stale-on-error: bad provider.config field leaves other fields intact", () => {
+    __resetForTest({
+      cacheTtlMs: 30_000,
+      fetchTimeoutMs: 9_000,
+    });
+    applyProviderOverrides({
+      // Valid override on one field…
+      timeFormat: { minUnit: "s" },
+      // …alongside an invalid override on another field (bad value).
+      cacheTtlMs: -1, // invalid: not positive
+    });
+    const cfg = configStore.get();
+    // timeFormat.minUnit: provider override wins.
+    assert.equal(cfg.timeFormat.minUnit, "s");
+    // cacheTtlMs: bad value rejected → falls back to the user-level
+    // value (30_000), not the hardcoded default.
+    assert.equal(cfg.cacheTtlMs, 30_000);
+    // fetchTimeoutMs: untouched → user-level value preserved.
+    assert.equal(cfg.fetchTimeoutMs, 9_000);
+    assert.match(capturedStderr, /cacheTtlMs must be a positive number/);
+  });
+});
+
+describe("validateProviderEntry — config block (v0.4.0+)", () => {
+  // The shape validator (called by mergeConfig during config.json load)
+  // ensures the `config` key is a plain object and rejects a nested
+  // `providers` key. Per-field validation happens later, when
+  // applyProviderOverrides runs the merged view through the same
+  // validators as the top-level config.
+
+  it("drops a provider entry whose config is not an object", async () => {
+    writeFileSync(
+      join(tmpDir, "config.json"),
+      JSON.stringify({
+        providers: {
+          minimax: {
+            TYPE: "TOKEN_PLAN",
+            BASE_URL_COMPARED_TO: "x",
+            COMPARE_METHOD: "EXACT",
+            ENDPOINT: "https://x.example/foo",
+            config: "not-an-object",
+          },
+        },
+      }),
+    );
+    const cfg = await loadConfig();
+    assert.equal(cfg.providers.minimax, undefined);
+    assert.match(capturedStderr, /provider\.config must be an object/);
+  });
+
+  it("drops a provider entry whose config contains a nested 'providers' key", async () => {
+    writeFileSync(
+      join(tmpDir, "config.json"),
+      JSON.stringify({
+        providers: {
+          minimax: {
+            TYPE: "TOKEN_PLAN",
+            BASE_URL_COMPARED_TO: "x",
+            COMPARE_METHOD: "EXACT",
+            ENDPOINT: "https://x.example/foo",
+            config: { providers: { evil: {} } },
+          },
+        },
+      }),
+    );
+    const cfg = await loadConfig();
+    assert.equal(cfg.providers.minimax, undefined);
+    assert.match(capturedStderr, /must not contain a nested 'providers'/);
+  });
+
+  it("accepts a provider entry with an empty config block", async () => {
+    writeFileSync(
+      join(tmpDir, "config.json"),
+      JSON.stringify({
+        providers: {
+          minimax: {
+            TYPE: "TOKEN_PLAN",
+            BASE_URL_COMPARED_TO: "x",
+            COMPARE_METHOD: "EXACT",
+            ENDPOINT: "https://x.example/foo",
+            config: {},
+          },
+        },
+      }),
+    );
+    const cfg = await loadConfig();
+    assert.ok(cfg.providers.minimax);
+    assert.deepEqual(cfg.providers.minimax.config, {});
+  });
+
+  it("forwards a valid config block onto the validated entry", async () => {
+    writeFileSync(
+      join(tmpDir, "config.json"),
+      JSON.stringify({
+        providers: {
+          minimax: {
+            TYPE: "TOKEN_PLAN",
+            BASE_URL_COMPARED_TO: "x",
+            COMPARE_METHOD: "EXACT",
+            ENDPOINT: "https://x.example/foo",
+            config: { cacheTtlMs: 5_000, fetchTimeoutMs: 3_000 },
+          },
+        },
+      }),
+    );
+    const cfg = await loadConfig();
+    assert.ok(cfg.providers.minimax);
+    assert.deepEqual(cfg.providers.minimax.config, {
+      cacheTtlMs: 5_000,
+      fetchTimeoutMs: 3_000,
+    });
   });
 });

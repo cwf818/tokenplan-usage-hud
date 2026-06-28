@@ -71,9 +71,24 @@ export type TokenSnapshot = {
 // the mergeConfig validator drops malformed entries (with a stderr
 // warn) rather than auto-filling them, so a typo can't silently
 // produce a half-configured provider.
+//
+// v0.4.0+ — added optional `config` block: a per-provider override
+// of any top-level Config field (cacheTtlMs, colors, timeFormat,
+// lineTemplate, etc.). Merged into the active Config at startup in
+// main() via configStore.applyProviderOverrides(provider). The
+// `providers` key is forbidden inside `config` to avoid recursion;
+// other top-level keys can be safely overridden on a per-provider
+// basis (e.g. "minimax needs fetchTimeoutMs=3000 because the API is
+// slow; deepseek uses the default 5000").
 export type ProviderEntry = {
   TYPE: ProviderType;
   BASE_URL_COMPARED_TO: string;
   COMPARE_METHOD: CompareMethod;
   ENDPOINT: string;
+  // Provider-specific Config overrides. Same shape as the top-level
+  // config.json (minus the `providers` key itself). Validated at
+  // config-load time: must be a plain object; unknown keys are
+  // forwarded to the existing per-field validators (same warn
+  // behavior as the top-level config).
+  config?: Record<string, unknown>;
 };
