@@ -808,6 +808,196 @@ export function __resetUnknownModuleWarnForTest(): void {
 // s_N tokens to be skipped too — see the comment on RenderContext for
 // the reasoning. Empty segments from the splitting pass get the same
 // treatment.
+// ----- v0.3.3+ inline-args tokens -----
+//
+// Three token forms now take colon-delimited parameters:
+//
+//   s_<n>[:color:<c>]
+//   m_label:<string>[:color:<c>]
+//   m_modeLabel[:color:<c>]
+//
+// General grammar: <prefix>(:<param>:<value>)*. Even segment count is
+// required after the prefix; odd counts drop the token. Every
+// (param, value) pair must be in the prefix's registered schema;
+// unknown params drop the token. The renderer for the prefix takes the
+// resolved { param: value } object plus the render context and returns
+// the chunk text (or null to drop).
+//
+// Future parameterized modules (m_model, …) plug in by adding an entry
+// to both INLINE_SCHEMAS and INLINE_RENDERERS. The bare <prefix> form
+// (no colon) still routes through MODULES as before — so existing
+// templates using bare `m_modeLabel` / `s_0` keep working byte-for-byte.
+
+// Snapshot of `cfg().colors` + the `brightBlack` input shortcut. Read
+// once at module load so render hot paths don't touch configStore per
+// call. Mirrors the pattern at lines 56-63.
+const LABEL_COLOR_SHORTCUTS: Record<string, string> = (() => {
+  const c = configStore.get().colors;
+  return {
+    brightGreen: c.brightGreen,
+    darkGreen: c.darkGreen,
+    yellow: c.yellow,
+    orange: c.orange,
+    red: c.red,
+    stale: c.stale,
+    brightBlack: "\x1b[90m",
+  };
+})();
+
+// Pure resolver for `<colorvalue>`. Accepts shortcut names and raw
+// SGR strings (`\x1b[…m`). Returns null on anything else so the
+// caller can warn + soft-fallback to plain text.
+function resolveColor(value: string): string | null {
+  if (LABEL_COLOR_SHORTCUTS[value]) return LABEL_COLOR_SHORTCUTS[value];
+  if (/^\x1b\[[0-9;]*m$/.test(value)) return value;
+  return null;
+}
+
+type ResolvedValue = string | number;
+
+type ParamResolver = (raw: string) => ResolvedValue | null;
+
+type InlineRenderer = (
+  params: Record<string, ResolvedValue>,
+  ctx: RenderContext,
+) => string | null;
+
+// Per-prefix inline schema. The first segment after the prefix is the
+// value of the implicit param (`implicit`). Subsequent segments come in
+// `name:value` pairs resolved against `named`. Future parameterized
+// modules (m_model, …) plug in here.
+type InlineSchema = {
+  implicit?: { name: string; resolver: ParamResolver };
+  named: Record<string, ParamResolver>;
+};
+
+const INLINE_SCHEMAS: Record<string, InlineSchema> = {
+  s_: {
+    implicit: {
+      name: "index",
+      resolver: (raw) => {
+        const n = Number(raw);
+        if (!Number.isInteger(n) || n < 0) return null;
+        return n;
+      },
+    },
+    named: {
+      color: (raw) => resolveColor(raw),
+    },
+  },
+  m_label: {
+    implicit: { name: "string", resolver: (raw) => raw },
+    named: {
+      color: (raw) => resolveColor(raw),
+    },
+  },
+  m_modeLabel: {
+    // No implicit — the string is derived from ctx. The first segment,
+    // if present, MUST be a name in `named` (i.e. starts a name:value
+    // pair). Otherwise the token is malformed.
+    named: {
+      color: (raw) => resolveColor(raw),
+    },
+  },
+  // m_model: { … }  // future
+};
+
+// Per-prefix renderer. Returns the chunk text (or null to drop).
+const INLINE_RENDERERS: Record<string, InlineRenderer> = {
+  s_: (params, _ctx) => {
+    const sep = cfg().separators[params.index as number];
+    if (sep === undefined) return null;
+    const color = params.color as string | undefined;
+    return color ? `${color}${sep}${RESET}` : sep;
+  },
+  m_label: (params, _ctx) => {
+    const s = params.string as string;
+    if (s === "") return null;
+    const color = params.color as string | undefined;
+    return color ? `${color}${s}${RESET}` : s;
+  },
+  m_modeLabel: (params, ctx) => {
+    // Mirrors the MODULES["m_modeLabel"] body: balance path → balance
+    // label, else the mode-aware label. The colored wrapper is added
+    // here only (not in MODULES) so the bare `m_modeLabel` form keeps
+    // its existing byte-for-byte output.
+    const s = ctx.balance
+      ? cfg().modeLabels.balance
+      : cfg().modeLabels[ctx.mode];
+    const color = params.color as string | undefined;
+    return color ? `${color}${s}${RESET}` : s;
+  },
+};
+
+// Parse the colon-delimited remainder after a token prefix into a
+// `{ param: value }` object. Pure; no side effects.
+//
+// Layout:
+//   - If the schema has an `implicit` param, the FIRST segment is its
+//     value. Remaining segments (if any) must form name:value pairs.
+//   - If the schema has no `implicit`, the FIRST segment (if any) must
+//     be a name in `named` — i.e. segment 0 is the name of a pair,
+//     segment 1 is its value, etc.
+//
+// Returns null on:
+//   - any resolver returning null (bad value)
+//   - unknown param name in the named section
+//   - odd number of named segments (last segment has no value)
+function parseInlineArgs(
+  remainder: string,
+  schema: InlineSchema,
+): Record<string, ResolvedValue> | null {
+  if (remainder === "") {
+    // Empty remainder with an implicit param means "missing required
+    // param" → null. Empty remainder without an implicit is fine.
+    return schema.implicit ? null : {};
+  }
+  const parts = remainder.split(":");
+
+  let out: Record<string, ResolvedValue> = {};
+  let startIdx = 0;
+
+  if (schema.implicit) {
+    const v = parts[0]!;
+    const r = schema.implicit.resolver(v);
+    if (r === null) return null;
+    out[schema.implicit.name] = r;
+    startIdx = 1;
+  }
+
+  // Trailing segments must form name:value pairs (even count).
+  const tail = parts.length - startIdx;
+  if (tail % 2 !== 0) return null;
+  for (let i = startIdx; i < parts.length; i += 2) {
+    const name = parts[i]!;
+    const raw = parts[i + 1]!;
+    if (!(name in schema.named)) return null;
+    const r = schema.named[name]!(raw);
+    if (r === null) return null;
+    out[name] = r;
+  }
+  return out;
+}
+
+// Try to expand an inline-args token. Returns the chunk (possibly with
+// SGR wrappers) or null if the token is malformed / unrecognized.
+//
+// `key` is the bare prefix (used as the schema/renderer lookup key —
+// no trailing colon). `skipLen` is how many characters of the token
+// to consume before the remainder starts.
+function expandInlineToken(
+  tok: string,
+  key: string,
+  skipLen: number,
+  ctx: RenderContext,
+): string | null {
+  const schema = INLINE_SCHEMAS[key];
+  if (schema === undefined) return null;
+  const params = parseInlineArgs(tok.slice(skipLen), schema);
+  if (params === null) return null;
+  return INLINE_RENDERERS[key]!(params, ctx);
+}
+
 export function renderTemplate(template: readonly string[], ctx: RenderContext): string[] {
   const seps = cfg().separators;
   const lines: string[] = [];
@@ -816,10 +1006,31 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
     const tok = template[i];
     if (tok == null) continue;
     let piece: string | null = null;
-    if (tok.startsWith("s_")) {
-      // Separator reference: parse the index. Out-of-range and
-      // non-numeric references expand to "" (with a one-shot warn on
-      // the FIRST bad reference, not per-token).
+    // v0.3.3+ — inline-args tokens (s_<n>:…, m_label:…, m_modeLabel:…).
+    // Only fire when the token contains ":" so the bare forms (s_0,
+    // m_modeLabel) keep routing through MODULES as before.
+    if (tok.includes(":")) {
+      if (tok.startsWith("s_")) {
+        // s_<n>:… → skip "s_" (length 2), remainder starts at the index.
+        piece = expandInlineToken(tok, "s_", 2, ctx);
+      } else if (tok.startsWith("m_label:")) {
+        // m_label:<args> → skip "m_label:" (length 8), remainder starts
+        // at the string value.
+        piece = expandInlineToken(tok, "m_label", 8, ctx);
+      } else if (tok.startsWith("m_modeLabel:")) {
+        // m_modeLabel:<args> → skip "m_modeLabel:" (length 12).
+        piece = expandInlineToken(tok, "m_modeLabel", 12, ctx);
+      }
+      // If we matched the prefix but the parse failed, piece is null
+      // and we fall through to the unknown-module warn below.
+      if (piece === null) {
+        warnUnknownModuleOnce(tok);
+        continue;
+      }
+    } else if (tok.startsWith("s_")) {
+      // Bare s_<n>: legacy fast path. Inline-args (with optional
+      // color:) handles the `s_<n>` token via the new path above; the
+      // branch below only fires for the no-colon shorthand.
       const n = Number(tok.slice(2));
       if (!Number.isInteger(n) || n < 0) {
         warnUnknownModuleOnce(tok);
