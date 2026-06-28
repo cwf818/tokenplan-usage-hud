@@ -631,6 +631,54 @@ echo '{ "display": "remaining" }' > ~/.claude/plugins/tokenplan-usage-hud/config
 
 Restart Claude Code (or run `/reload-plugins`) for the change to take effect.
 
+## Diagnostics log
+
+When the plugin encounters something worth telling you about — a malformed
+config field, a fetcher that returned an unexpected status code — it can
+append a JSONL entry to:
+
+```
+~/.claude/plugins/tokenplan-usage-hud/state/diagnostics.jsonl
+```
+
+Each line is a structured record:
+
+```jsonl
+{"at":1782576199672,"level":"warning","source":"config","msg":"invalid 'bar.width' value (got abc); using default 8"}
+{"at":1782576200103,"level":"error","source":"api","msg":"MiniMax /v1/token_plan/remains returned non-zero base_resp.status_code (status_code=1008)"}
+```
+
+Use it as a postmortem trail — `tail -f` while debugging, or `grep` by level
+and source when something went wrong yesterday. JSONL is greppable and
+structured (timestamp + level + source + message).
+
+### Opt-in gate
+
+The log is **OFF by default** — set `TOKENPLAN_DIAGNOSTICS_ENABLE=1` (or
+`true` / `yes`, case-insensitive) in your shell to enable file writes:
+
+```bash
+export TOKENPLAN_DIAGNOSTICS_ENABLE=1
+```
+
+The rationale: the file lives in your plugins dir and may contain sensitive
+fragments (config paths, error text from upstream libraries). We don't write
+unless you explicitly ask. The stderr noise for append failures stays
+independent of the gate — silent when the write succeeds, present when it
+doesn't.
+
+### Size policy
+
+Capped at the last 200 entries (~40KB). Anything older than 200 events is
+uninteresting by definition — we just want a tail. Trim is best-effort and
+runs after every append.
+
+### Wiping the log
+
+`/tokenplan-usage-hud:clean --purge-runtime` wipes the diagnostics log plus
+the token-samples cache and the on-disk fetch cache. Preview first with
+`/tokenplan-usage-hud:clean --purge-runtime --dry-run`.
+
 ## Auth
 
 The plugin reuses `process.env.ANTHROPIC_AUTH_TOKEN` to call the provider's plan endpoint. **No new env vars.** See [SECURITY.md](./SECURITY.md) for how the token is handled.
@@ -768,6 +816,8 @@ src/
   render.ts           # pure: pctBar + ANSI color thresholds + formatLine + formatBalanceLine
   cache.ts            # 60s TTL + stale-on-error; getWithAge returns cache age on within-TTL hit
   composition.ts      # reads TOKENPLAN_UPSTREAM, prepends (preserving ANSI/multi-line) and appends line
+  diagnostics.ts      # JSONL append logger (opt-in via TOKENPLAN_DIAGNOSTICS_ENABLE)
+  token-store.ts      # append-only JSONL state file for m_token5h / m_token7d (v0.4.0+)
   __fixtures__/       # remains.real.json, balance.real.json, balance.multi.json, …
   *.test.ts           # node:test unit tests
 .claude-plugin/
@@ -781,7 +831,7 @@ scripts/
   wrapper.sh          # bash wrapper: TOKENPLAN_UPSTREAM_CMD → TOKENPLAN_UPSTREAM → us
   install.sh          # settings.json patcher (install + thin shim for --uninstall)
   uninstall.sh        # self-contained uninstaller (used by :uninstall and dev:uninstall)
-  clean.sh            # trim old .bak.<ts> files, keeping only the most recent per file
+  clean.sh            # trim old .bak.<ts> files; --purge-runtime also wipes state/diagnostics.jsonl + token-samples
   lib/edit-settings.mjs  # ESM helper used by install.sh
   dev-uninstall.sh    # DEV-ONLY thin shim → exec uninstall.sh
 settings.example.json # template (NEVER commit real settings.json)

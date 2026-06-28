@@ -15,6 +15,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { CompareMethod, ProviderEntry, ProviderType } from "./types.ts";
+import * as diagnostics from "./diagnostics.ts";
 
 // ----- Defaults — must match today's hardcoded values exactly -----
 
@@ -406,6 +407,12 @@ export function applyProviderOverrides(raw: Record<string, unknown>): void {
 
 function warn(msg: string): void {
   process.stderr.write(`tokenplan-usage-hud: config ${msg}\n`);
+  // v0.4.0+ — also append to the diagnostics JSONL log so the
+  // m_warning module can surface the latest signal and the user can
+  // postmortem the plugin's recent history. Stderr stays the
+  // primary surface for live debugging; the log is the persistent
+  // record. Disk errors are swallowed inside diagnostics.append.
+  diagnostics.append("warning", "config", msg);
 }
 
 // ----- Per-field validation + merge -----
