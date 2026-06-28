@@ -454,10 +454,11 @@ The cache key for a provider's response is its name (so two TOKEN_PLAN providers
 
 ### Module tokens
 
-The line layout is declared as an ordered list of tokens in `lineTemplate.plan` (MiniMax) and `lineTemplate.balance` (DeepSeek). Two token kinds:
+The line layout is declared as an ordered list of tokens in `lineTemplate.plan` (MiniMax) and `lineTemplate.balance` (DeepSeek). Three token shapes:
 
 - **`m_<name>`** — a display module, rendered in order. Modules that have no content in the current context (e.g. `m_window7d` when the weekly data is missing) emit nothing, AND their immediately adjacent `s_N` tokens are skipped too — so a hidden window doesn't leave orphan separators in the output.
 - **`s_<n>`** — a separator reference, looked up in `separators[n]`. Out-of-range references expand to `""` and trigger a one-time stderr warning.
+- **Inline-args tokens** (v0.3.3+) — `m_<name>:<args>`, `s_<n>:<args>` — see the [Inline-args grammar](#inline-args-grammar-v033) below for the full syntax. Lets you emit arbitrary literal text (`m_label:<string>`) and tint separators (`s_<n>:color:<c>`) without registering a new module.
 
 Recognized modules:
 
@@ -470,7 +471,7 @@ Recognized modules:
 | `m_countdown7d`    | 7-day reset suffix: `(4d16h🕛 7d)` or just `7d`                  |
 | `m_balance`        | The DeepSeek balance chunk (e.g. `$25 · ￥110`), single SGR-wrapped block |
 | `m_age`            | The age annotation: `🔗 5m ago` (fresh, in-template) or `⛓️‍💥 5m ago` (stale, in-template or forced fallback). Emits unconditionally when listed in the lineTemplate; returns `null` only when `ageMs` is missing. |
-| `m_version`        | The plugin version: `v0.2.17` (auto-loaded from `.claude-plugin/plugin.json`) |
+| `m_version`        | The plugin version: `v0.3.3` (auto-loaded from `.claude-plugin/plugin.json`) |
 | `m_tokenIn`        | Session cumulative input tokens — e.g. `in:163k`. Reads stdin `context_window.total_input_tokens`. Hidden when stdin lacks the field. |
 | `m_tokenOut`       | Session cumulative output tokens — e.g. `out:155`. Reads stdin `context_window.total_output_tokens`. |
 | `m_tokenTotal` / `m_tokenSession` | Session cumulative total (`input + output + cache`) — e.g. `tot:163k` / `session:163k`. Two names for the same metric; pick whichever reads better in your template. |
@@ -485,6 +486,44 @@ Recognized modules:
 **Visibility of `m_age` (priority: template-driven, stale fallback):**
 - If your `lineTemplate` includes `m_age`, the module emits **unconditionally** (no stale gating). Emoji reflects the fetch state: `🔗 X ago` on fresh ticks (showing the cache age), `⛓️‍💥 X ago` on stale (showing time since last successful fetch). Hidden only when `ageMs` is missing.
 - If your `lineTemplate` does NOT include `m_age`, the **stale fallback** kicks in: when the fetch result is **stale** (network failure with a cached value), the broken-chain annotation is appended to the rendered line. On fresh ticks, no annotation is shown — the broken-chain indicator is reserved for real outages. The dedup check looks for any `" ago"` tail on the rendered lines, so a user who *does* include `m_age` in their template gets exactly one annotation, not two.
+
+### Inline-args grammar (v0.3.3+)
+
+Three token forms take colon-delimited parameters:
+
+| Token form                  | Required params         | Optional params | Description |
+| --------------------------- | ----------------------- | --------------- | ----------- |
+| `m_label:<string>`          | `string` (literal text) | `color`         | Emit `<string>` verbatim, optionally wrapped in `<color>` SGR. |
+| `m_modeLabel[:color:<c>]`   | (string from `ctx`)     | `color`         | Same as today's bare `m_modeLabel`, optionally tinted. The string is derived from `modeLabels.used`/`remaining`/`balance` based on `ctx.mode` and `ctx.balance`. |
+| `s_<n>[:color:<c>]`         | `index`                 | `color`         | The separator at index `n` (from `separators[]`), optionally tinted. |
+
+The grammar after the prefix is `<param1>:<value1>[:<param2>:<value2>…]`. The **first segment is the value of the implicit first parameter** (`string` for `m_label`, `index` for `s_<n>`); subsequent segments come in `name:value` pairs. Both halves are validated against the per-prefix schema (`INLINE_SCHEMAS` in `src/render.ts`); any malformed token is dropped with a one-shot stderr warn.
+
+`<color>` accepts either a shortcut name (`brightGreen`, `darkGreen`, `yellow`, `orange`, `red`, `stale`, `brightBlack`) or a raw SGR string (`\x1b[36m`). Anything else triggers the same one-shot warn.
+
+The bare forms (`m_modeLabel`, `s_0`) keep working exactly as today — the inline-args path only fires when the token contains `:`. So upgrading to v0.3.3 does NOT change the default `lineTemplate` output. Examples (opt-in — add to your `lineTemplate` to enable):
+
+```jsonc
+{
+  "lineTemplate": {
+    "plan": [
+      "m_modeLabel:color:brightGreen",  // tint the leading Usage: prefix
+      "s_0",                            // plain space (no color)
+      "m_window5h", "s_0", "m_countdown5h",
+      "s_0:color:darkGreen",            // tint the middle separator
+      "s_1", "s_0",
+      "m_window7d", "s_0", "m_countdown7d"
+    ],
+    "balance": [
+      "m_label:$:color:yellow",         // emit "$" in yellow, then space, then balance
+      "s_0",
+      "m_balance"
+    ]
+  }
+}
+```
+
+**Extension point:** future parameterized modules (`m_model:...`, …) plug in by adding an entry to `INLINE_SCHEMAS` and `INLINE_RENDERERS` in `src/render.ts`. No new top-level config keys needed.
 
 ### Recipes
 
