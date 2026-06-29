@@ -1292,7 +1292,7 @@ const MODULES: Record<string, Module> = {
     if (denom === 0) return null;
     const pct = (avg.sumCache / denom) * 100;
     const color = cacheHitColor(pct);
-    return `${color}cache:${pct.toFixed(cachePctPrecision())}%${RESET}`;
+    return `${color}hit:${pct.toFixed(cachePctPrecision())}%${RESET}`;
   },
   // Cache read tokens + context share (ccstatusline-style: "163k (99.2%)").
   // Single-color (STALE_COLOR); the percentage is informational, not
@@ -1967,6 +1967,7 @@ const PLACEHOLDERS: Record<string, PlaceholderBody> = {
   m_totalTokenWithCacheIn: placeholderNA("cache:"),
   m_ctx: placeholderNA("ctx:"),
   m_cacheRead: placeholderNA("cache:"),
+  m_cacheHitRate: placeholderNA("hit:"),
   m_contextSize: placeholderNA(""),
   m_contextUsed: placeholderNA(""),
   // number+unit — placeholder shape is the module's normal body
@@ -2301,7 +2302,7 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     if (denom === 0) return placeholderWithColor("m_cacheHitRate", params, ctx);
     const pct = (avg.sumCache / denom) * 100;
     const color = (params.color as string | undefined) ?? cacheHitColor(pct);
-    return `${color}cache:${pct.toFixed(cachePctPrecision())}%${RESET}`;
+    return `${color}hit:${pct.toFixed(cachePctPrecision())}%${RESET}`;
   },
   m_cacheRead: (params, ctx) => {
     const t = ctx.tokens?.current;
