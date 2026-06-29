@@ -1437,6 +1437,17 @@ const MODULES: Record<string, Module> = {
   // m_ccVersion). Inline :nulldrop:false forces a "branch:n/a"
   // placeholder so the slot stays stable.
   m_branch: (c) => readGitInfo(c.tokens?.cwd)?.branch ?? null,
+  // Git working-tree cleanliness indicator. Returns "clean" /
+  // "dirty" strings from the dirty bit in readGitInfo() (the rest
+  // of the snapshot — branch name etc. — is intentionally NOT
+  // surfaced here; use m_branch for that). Null when cwd is
+  // missing / not a git repo / detached HEAD, matching m_branch's
+  // drop semantics.
+  m_gitStatus: (c) => {
+    const info = readGitInfo(c.tokens?.cwd);
+    if (info == null) return null;
+    return info.dirty ? "dirty" : "clean";
+  },
   // Deprecated alias — see m_ccVersion above. Same body.
   m_ccversion: (c) => c.tokens?.ccversion ?? null,
   // Session elapsed wall-clock (stdin.cost.total_duration_ms). Formatted
@@ -2003,6 +2014,7 @@ const PLACEHOLDERS: Record<string, PlaceholderBody> = {
   m_effort: placeholderNA(""),
   m_repo: placeholderNA(""),
   m_branch: placeholderNA("branch:"),
+  m_gitStatus: placeholderNA("git:"),
   m_ccVersion: placeholderNA(""),
   m_ccversion: placeholderNA(""),
 };
@@ -2166,6 +2178,7 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
   m_effort: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_repo: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_branch: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
+  m_gitStatus: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_ccVersion: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_ccversion: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_sessionDuration: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
@@ -2439,6 +2452,11 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     const branch = readGitInfo(ctx.tokens?.cwd)?.branch;
     if (branch == null) return placeholderWithColor("m_branch", params, ctx);
     return wrapPlain(branch, params.color as string | undefined);
+  },
+  m_gitStatus: (params, ctx) => {
+    const info = readGitInfo(ctx.tokens?.cwd);
+    if (info == null) return placeholderWithColor("m_gitStatus", params, ctx);
+    return wrapPlain(info.dirty ? "dirty" : "clean", params.color as string | undefined);
   },
   m_ccVersion: (params, ctx) => {
     const v = ctx.tokens?.ccversion;
@@ -2726,6 +2744,9 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
       } else if (tok.startsWith("m_branch:")) {
         // m_branch:color:<c> → skip "m_branch:" (length 9).
         inline = expandInlineToken(tok, "m_branch", 9, ctx);
+      } else if (tok.startsWith("m_gitStatus:")) {
+        // m_gitStatus:color:<c> → skip "m_gitStatus:" (length 12).
+        inline = expandInlineToken(tok, "m_gitStatus", 12, ctx);
       } else if (tok.startsWith("m_ccVersion:")) {
         // m_ccVersion:color:<c> → skip "m_ccVersion:" (length 12).
         inline = expandInlineToken(tok, "m_ccVersion", 12, ctx);
