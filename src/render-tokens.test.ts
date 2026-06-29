@@ -765,6 +765,54 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
     assert.equal(strip(out), "github.com/cwf818/tokenplan-usage-hud");
   });
 
+  it("m_branch: drops when cwd is not a git repo (default fakeSnapshot cwd='D:\\\\test')", () => {
+    // The default fakeSnapshot cwd is "D:\\test" which doesn't exist,
+    // so readGitInfo returns null and m_branch drops — same drop
+    // policy as m_repo / m_ccVersion.
+    const out = renderTemplate(["m_branch"], ctxFor(fakeSnapshot()));
+    assert.deepEqual(out, []);
+  });
+
+  it("m_branch: drops when cwd is missing entirely", () => {
+    const out = renderTemplate(
+      ["m_branch"],
+      ctxFor(fakeSnapshot({ cwd: null })),
+    );
+    assert.deepEqual(out, []);
+  });
+
+  it("m_branch: renders the current branch when cwd is a real repo", () => {
+    // process.cwd() is the repo root when tests run, so readGitInfo
+    // returns the actual branch (e.g. "main"). The 60s cache may
+    // already hold a stale value from another test, but the cache
+    // value reflects whatever git says NOW for this cwd — which is
+    // exactly what the renderer should display.
+    const out = renderTemplate(
+      ["m_branch"],
+      ctxFor(fakeSnapshot({ cwd: process.cwd() })),
+    ).join("\n");
+    assert.ok(out.length > 0, "expected m_branch to render the branch");
+    assert.ok(!out.startsWith(" "), `m_branch should not be padded: ${JSON.stringify(out)}`);
+  });
+
+  it("m_branch:color:brightGreen wraps the branch in brightGreen", () => {
+    const out = renderTemplate(
+      ["m_branch:color:brightGreen"],
+      ctxFor(fakeSnapshot({ cwd: process.cwd() })),
+    ).join("\n");
+    assert.ok(out.includes("\x1b[38;5;41m"), `got: ${JSON.stringify(out)}`);
+  });
+
+  it("m_branch:nulldrop:false renders 'branch:n/a' when not in a git repo", () => {
+    // inline :nulldrop:false forces the placeholder instead of
+    // dropping the slot (consistent with m_repo :nulldrop:false).
+    const out = renderTemplate(
+      ["m_branch:nulldrop:false"],
+      ctxFor(fakeSnapshot()), // cwd="D:\\test", not a git repo
+    ).join("\n");
+    assert.equal(strip(out), "branch:n/a");
+  });
+
   it("m_repo: drops null components", () => {
     const out = renderTemplate(
       ["m_repo"],
