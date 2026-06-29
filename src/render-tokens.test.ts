@@ -20,9 +20,11 @@ import {
   __resetForTest as resetCacheForTest,
   setCachePathResolver,
 } from "./cache.ts";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { execFileSync } from "node:child_process";
+import { __resetGitInfoCacheForTest } from "./git-info.ts";
 import type { TokenSnapshot } from "./types.ts";
 
 const STALE = "\x1b[90m";
@@ -811,6 +813,73 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
       ctxFor(fakeSnapshot()), // cwd="D:\\test", not a git repo
     ).join("\n");
     assert.equal(strip(out), "branch:n/a");
+  });
+
+  it("m_gitStatus: drops when cwd is not a git repo", () => {
+    const out = renderTemplate(["m_gitStatus"], ctxFor(fakeSnapshot()));
+    assert.deepEqual(out, []);
+  });
+
+  it("m_gitStatus: drops when cwd is missing", () => {
+    const out = renderTemplate(
+      ["m_gitStatus"],
+      ctxFor(fakeSnapshot({ cwd: null })),
+    );
+    assert.deepEqual(out, []);
+  });
+
+  it("m_gitStatus: renders 'clean' on a fresh repo, 'dirty' after a write", () => {
+    // Build a temp git repo so readGitInfo returns { branch, dirty }.
+    // Skipped when git isn't on PATH (CI without git).
+    let repoDir: string | undefined;
+    try {
+      execFileSync("git", ["--version"], { stdio: "ignore", timeout: 1000 });
+    } catch {
+      return; // skip
+    }
+    repoDir = mkdtempSync(join(tmpdir(), "tokenplan-render-git-"));
+    execFileSync("git", ["init", "-q", "-b", "main"], { cwd: repoDir });
+    execFileSync("git", ["config", "user.email", "t@t"], { cwd: repoDir });
+    execFileSync("git", ["config", "user.name", "t"], { cwd: repoDir });
+    writeFileSync(join(repoDir, "r"), "x");
+    execFileSync("git", ["add", "."], { cwd: repoDir });
+    execFileSync("git", ["commit", "-q", "-m", "init"], { cwd: repoDir });
+
+    try {
+      __resetGitInfoCacheForTest();
+      const clean = renderTemplate(
+        ["m_gitStatus"],
+        ctxFor(fakeSnapshot({ cwd: repoDir })),
+      ).join("\n");
+      assert.equal(strip(clean), "clean");
+
+      // Now dirty the tree and force a fresh read.
+      writeFileSync(join(repoDir, "new"), "y");
+      __resetGitInfoCacheForTest();
+      const dirty = renderTemplate(
+        ["m_gitStatus"],
+        ctxFor(fakeSnapshot({ cwd: repoDir })),
+      ).join("\n");
+      assert.equal(strip(dirty), "dirty");
+    } finally {
+      if (repoDir) rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it("m_gitStatus:color:red wraps the indicator in red", () => {
+    const out = renderTemplate(
+      ["m_gitStatus:color:red"],
+      ctxFor(fakeSnapshot({ cwd: process.cwd() })),
+    ).join("\n");
+    assert.ok(out.includes("\x1b[38;5;196m"), `got: ${JSON.stringify(out)}`);
+  });
+
+  it("m_gitStatus:nulldrop:false renders 'git:n/a' when not in a git repo", () => {
+    const out = renderTemplate(
+      ["m_gitStatus:nulldrop:false"],
+      ctxFor(fakeSnapshot()),
+    ).join("\n");
+    assert.equal(strip(out), "git:n/a");
   });
 
   it("m_repo: drops null components", () => {
