@@ -1202,8 +1202,8 @@ describe("lineTemplate — colored modules :color override (user wins)", () => {
     // Hit rate = 90% (900 read / (900 read + 100 in)). Default band
     // color is "good" (\x1b[38;5;41m brightGreen). Override forces
     // the same color (since 90% is already in the "good" band) — the
-    // assertion verifies the SGR wraps "cache:90%" with brightGreen.
-    assert.ok(line.includes("\x1b[38;5;41mcache:90.0%"), `got: ${JSON.stringify(line)}`);
+    // assertion verifies the SGR wraps "hit:90%" with brightGreen.
+    assert.ok(line.includes("\x1b[38;5;41mhit:90.0%"), `got: ${JSON.stringify(line)}`);
   });
 });
 

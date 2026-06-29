@@ -674,7 +674,7 @@ describe("renderTemplate — m_token* modules", () => {
         }),
       ),
     ).join("\n");
-    assert.equal(strip(out), "cache:0.0%");
+    assert.equal(strip(out), "hit:0.0%");
   });
 
   it("composed template with multiple token modules + separator", () => {
@@ -1028,7 +1028,7 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
         }),
       ),
     ).join("\n");
-    assert.equal(strip(out), "cache:0.0%");
+    assert.equal(strip(out), "hit:0.0%");
   });
 
   it("m_contextSize:nulldrop:false renders 'n/a' when size is null", () => {
