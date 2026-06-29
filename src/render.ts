@@ -600,6 +600,10 @@ type RenderContext = {
   // present on the main flow (index.ts builds one before invoking
   // renderProviderLine); tests inject a fake via __resetForTest.
   tokens: TokenSnapshot | null;
+  // v0.4.0+ — synthetic Window for the m_windowContext module.
+  // Synthesized from tokens.contextWindow.usedPct; only `pct` is
+  // read by formatOneChunk. Null when stdin lacks used_percentage.
+  contextWindow: Window | null;
 };
 
 type Module = (ctx: RenderContext) => string | null;
@@ -646,15 +650,19 @@ const MODULES: Record<string, Module> = {
   // default plan / balance templates do NOT include any of these —
   // existing users see no change on upgrade.
 
-  // Session cumulative input tokens (stdin.context_window.total_input_tokens).
+  // Per-turn input tokens (stdin.context_window.current_usage.input_tokens).
+  // v0.4.0: semantics changed from session-cumulative (totals.input)
+  // to per-turn (current.input). For the cumulative intent, see
+  // m_tokenInTotal / m_tokenTotal / m_tokenSession.
   m_tokenIn: (c) =>
-    c.tokens?.totals.input != null
-      ? `in:${formatCompactToken(c.tokens.totals.input)}`
+    c.tokens?.current.input != null
+      ? `in:${formatCompactToken(c.tokens.current.input)}`
       : null,
-  // Session cumulative output tokens.
+  // Per-turn output tokens (stdin.context_window.current_usage.output_tokens).
+  // v0.4.0: semantics changed from session-cumulative to per-turn.
   m_tokenOut: (c) =>
-    c.tokens?.totals.output != null
-      ? `out:${formatCompactToken(c.tokens.totals.output)}`
+    c.tokens?.current.output != null
+      ? `out:${formatCompactToken(c.tokens.current.output)}`
       : null,
   // Session cumulative in + out + cache (cache = ctx_creation + ctx_read
   // from the latest per-turn snapshot — close enough for "total tokens
@@ -731,26 +739,30 @@ const MODULES: Record<string, Module> = {
   // Tokens used in the last 7d.
   m_token7d: (c) =>
     windowedTokenLabel(c, 7 * 24 * 60 * 60 * 1000, "7d"),
-  // Session-avg input speed: total_input_tokens / cost.total_duration_ms * 1000.
-  // Returns null when totalDurationMs is 0 (very early in session) or
-  // total_input_tokens is missing — both indicate "not enough data yet".
+  // Per-turn input speed: current_usage.input_tokens / cost.total_duration_ms * 1000.
+  // v0.4.0: numerator changed from totals.input (session-cumulative) to
+  // current.input (per-turn). The denominator is still total session
+  // wall time, so this is "tokens used in the latest turn divided by
+  // total session time" — a per-turn / session-time ratio, NOT a
+  // real-time throughput. Returns null when totalDurationMs is 0
+  // (very early in session) or current.input is missing.
   m_tokenInSpeed: (c) => {
     const t = c.tokens;
-    if (!t || t.totals.input == null || t.cost.totalDurationMs == null)
+    if (!t || t.current.input == null || t.cost.totalDurationMs == null)
       return null;
     const durMs = t.cost.totalDurationMs;
     if (durMs <= 0) return null;
-    const tps = (t.totals.input / durMs) * 1000;
+    const tps = (t.current.input / durMs) * 1000;
     return `${STALE_COLOR}in:${formatSpeed(tps)}${RESET}`;
   },
-  // Session-avg output speed.
+  // Per-turn output speed (see m_tokenInSpeed for the math caveat).
   m_tokenOutSpeed: (c) => {
     const t = c.tokens;
-    if (!t || t.totals.output == null || t.cost.totalDurationMs == null)
+    if (!t || t.current.output == null || t.cost.totalDurationMs == null)
       return null;
     const durMs = t.cost.totalDurationMs;
     if (durMs <= 0) return null;
-    const tps = (t.totals.output / durMs) * 1000;
+    const tps = (t.current.output / durMs) * 1000;
     return `${STALE_COLOR}out:${formatSpeed(tps)}${RESET}`;
   },
   // v0.3.6+ — bare `m_quote` (no inline args). Picks a quote from
@@ -761,6 +773,88 @@ const MODULES: Record<string, Module> = {
     if (!freq) return null; // unreachable — "h" is always valid
     return pickQuote(freq, c.nowMs);
   },
+
+  // ----- v0.4.0+ session-info / metadata modules -----
+  // These read fields from the live stdin payload. The default
+  // plan / balance templates do NOT include any of these — they are
+  // strictly opt-in via lineTemplate.
+
+  // Session name (stdin.session_name). Bare string; no prefix.
+  m_session: (c) => c.tokens?.sessionName ?? null,
+  // Model display name (stdin.model.display_name). Bare string.
+  m_model: (c) => c.tokens?.modelDisplayName ?? null,
+  // Effort level (stdin.effort, polymorphic — already coerced to
+  // string by parseTokenSnapshot). Bare string.
+  m_effort: (c) => c.tokens?.effort ?? null,
+  // Repository identity (stdin.workspace.repo). Renders the non-null
+  // host/owner/name components joined by "/" — drop-null policy so
+  // missing fields don't produce a leading or trailing slash. Returns
+  // null when no component is available, or when r.workspace.repo is
+  // missing entirely.
+  m_repo: (c) => {
+    const r = c.tokens?.repo;
+    if (!r) return null;
+    const parts = [r.host, r.owner, r.name].filter(
+      (p): p is string => p != null && p.length > 0,
+    );
+    return parts.length > 0 ? parts.join("/") : null;
+  },
+  // Claude Code CLI version (stdin.version). Distinct from the
+  // existing m_version which emits the *plugin* version.
+  m_ccversion: (c) => c.tokens?.ccversion ?? null,
+  // Session elapsed wall-clock (stdin.cost.total_duration_ms). Formatted
+  // with the same dhms formatter used for reset countdowns.
+  m_sessionDuration: (c) => {
+    const ms = c.tokens?.cost.totalDurationMs;
+    return ms != null ? formatRemainingMs(ms) : null;
+  },
+  // Session API-call time (stdin.cost.total_api_duration_ms). Same
+  // dhms format.
+  m_sessionApiDuration: (c) => {
+    const ms = c.tokens?.cost.totalApiDurationMs;
+    return ms != null ? formatRemainingMs(ms) : null;
+  },
+  // Session-cumulative lines added (stdin.cost.total_lines_added).
+  // Literal "+ 3965" format — leading space included.
+  m_linesAdded: (c) => {
+    const n = c.tokens?.cost.totalLinesAdded;
+    return n != null ? `+ ${n}` : null;
+  },
+  // Session-cumulative lines removed (stdin.cost.total_lines_removed).
+  // Literal "- 967" format — leading space included.
+  m_linesRemoved: (c) => {
+    const n = c.tokens?.cost.totalLinesRemoved;
+    return n != null ? `- ${n}` : null;
+  },
+  // Session-cumulative input tokens (stdin.context_window.total_input_tokens).
+  // v0.4.0: new module — replaces the pre-v0.4.0 m_tokenIn behavior.
+  m_tokenInTotal: (c) =>
+    c.tokens?.totals.input != null
+      ? `in:${formatCompactToken(c.tokens.totals.input)}`
+      : null,
+  // Session-cumulative output tokens. v0.4.0: new module.
+  m_tokenOutTotal: (c) =>
+    c.tokens?.totals.output != null
+      ? `out:${formatCompactToken(c.tokens.totals.output)}`
+      : null,
+  // Context window size (stdin.context_window.context_window_size).
+  // Compact format (e.g. 200000 → "200.0k").
+  m_contextSize: (c) => {
+    const sz = c.tokens?.contextWindow?.size;
+    return sz != null ? formatCompactToken(sz) : null;
+  },
+  // Context window used percentage (stdin.context_window.used_percentage).
+  // Plain "63%" format. No color — the m_windowContext module is the
+  // bar+color variant.
+  m_contextUsed: (c) => {
+    const pct = c.tokens?.contextWindow?.usedPct;
+    return pct != null ? `${pct}%` : null;
+  },
+  // Context window bar + 5-band-colored percentage, parallel to
+  // m_window5h / m_window7d. Reads from ctx.contextWindow (a
+  // synthetic Window populated from stdin.context_window.used_percentage).
+  m_windowContext: (c) =>
+    c.contextWindow ? formatOneChunk(c.contextWindow, c.mode) : null,
 };
 
 // Cap unknown-module warnings to once per process so a template typo
@@ -1152,7 +1246,22 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
       ...QUOTE_COLOR_PARAM.named,
     },
   },
-  // m_model: { … }  // future
+  // v0.4.0+ — session-info / metadata modules. All take only the
+  // optional :color: override (mirror the m_token* pattern).
+  m_session: { named: { ...COLOR_PARAM.named } },
+  m_model: { named: { ...COLOR_PARAM.named } },
+  m_effort: { named: { ...COLOR_PARAM.named } },
+  m_repo: { named: { ...COLOR_PARAM.named } },
+  m_ccversion: { named: { ...COLOR_PARAM.named } },
+  m_sessionDuration: { named: { ...COLOR_PARAM.named } },
+  m_sessionApiDuration: { named: { ...COLOR_PARAM.named } },
+  m_linesAdded: { named: { ...COLOR_PARAM.named } },
+  m_linesRemoved: { named: { ...COLOR_PARAM.named } },
+  m_tokenInTotal: { named: { ...COLOR_PARAM.named } },
+  m_tokenOutTotal: { named: { ...COLOR_PARAM.named } },
+  m_contextSize: { named: { ...COLOR_PARAM.named } },
+  m_contextUsed: { named: { ...COLOR_PARAM.named } },
+  m_windowContext: { named: { ...COLOR_PARAM.named } },
 };
 
 // Pure helper: wrap a plain-text body in `<color>…<RESET>`. Returns
@@ -1227,17 +1336,17 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   },
   m_tokenIn: (params, ctx) => {
     const t = ctx.tokens;
-    if (!t || t.totals.input == null) return null;
+    if (!t || t.current.input == null) return null;
     return wrapPlain(
-      `in:${formatCompactToken(t.totals.input)}`,
+      `in:${formatCompactToken(t.current.input)}`,
       params.color as string | undefined,
     );
   },
   m_tokenOut: (params, ctx) => {
     const t = ctx.tokens;
-    if (!t || t.totals.output == null) return null;
+    if (!t || t.current.output == null) return null;
     return wrapPlain(
-      `out:${formatCompactToken(t.totals.output)}`,
+      `out:${formatCompactToken(t.current.output)}`,
       params.color as string | undefined,
     );
   },
@@ -1297,21 +1406,21 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   },
   m_tokenInSpeed: (params, ctx) => {
     const t = ctx.tokens;
-    if (!t || t.totals.input == null || t.cost.totalDurationMs == null)
+    if (!t || t.current.input == null || t.cost.totalDurationMs == null)
       return null;
     const durMs = t.cost.totalDurationMs;
     if (durMs <= 0) return null;
-    const tps = (t.totals.input / durMs) * 1000;
+    const tps = (t.current.input / durMs) * 1000;
     const color = (params.color as string | undefined) ?? STALE_COLOR;
     return `${color}in:${formatSpeed(tps)}${RESET}`;
   },
   m_tokenOutSpeed: (params, ctx) => {
     const t = ctx.tokens;
-    if (!t || t.totals.output == null || t.cost.totalDurationMs == null)
+    if (!t || t.current.output == null || t.cost.totalDurationMs == null)
       return null;
     const durMs = t.cost.totalDurationMs;
     if (durMs <= 0) return null;
-    const tps = (t.totals.output / durMs) * 1000;
+    const tps = (t.current.output / durMs) * 1000;
     const color = (params.color as string | undefined) ?? STALE_COLOR;
     return `${color}out:${formatSpeed(tps)}${RESET}`;
   },
@@ -1332,6 +1441,91 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     if (text === "") return null;
     const color = decodeColorParam(params.color as string | undefined);
     return applyColor(text, color, seed);
+  },
+  // v0.4.0+ — session-info / metadata inline renderers. All mirror
+  // their MODULES counterparts but accept an optional :color: override.
+  m_session: (params, ctx) => {
+    const s = ctx.tokens?.sessionName;
+    return s != null ? wrapPlain(s, params.color as string | undefined) : null;
+  },
+  m_model: (params, ctx) => {
+    const s = ctx.tokens?.modelDisplayName;
+    return s != null ? wrapPlain(s, params.color as string | undefined) : null;
+  },
+  m_effort: (params, ctx) => {
+    const s = ctx.tokens?.effort;
+    return s != null ? wrapPlain(s, params.color as string | undefined) : null;
+  },
+  m_repo: (params, ctx) => {
+    const r = ctx.tokens?.repo;
+    if (!r) return null;
+    const parts = [r.host, r.owner, r.name].filter(
+      (p): p is string => p != null && p.length > 0,
+    );
+    if (parts.length === 0) return null;
+    return wrapPlain(parts.join("/"), params.color as string | undefined);
+  },
+  m_ccversion: (params, ctx) => {
+    const s = ctx.tokens?.ccversion;
+    return s != null ? wrapPlain(s, params.color as string | undefined) : null;
+  },
+  m_sessionDuration: (params, ctx) => {
+    const ms = ctx.tokens?.cost.totalDurationMs;
+    return ms != null
+      ? wrapPlain(formatRemainingMs(ms), params.color as string | undefined)
+      : null;
+  },
+  m_sessionApiDuration: (params, ctx) => {
+    const ms = ctx.tokens?.cost.totalApiDurationMs;
+    return ms != null
+      ? wrapPlain(formatRemainingMs(ms), params.color as string | undefined)
+      : null;
+  },
+  m_linesAdded: (params, ctx) => {
+    const n = ctx.tokens?.cost.totalLinesAdded;
+    return n != null
+      ? wrapPlain(`+ ${n}`, params.color as string | undefined)
+      : null;
+  },
+  m_linesRemoved: (params, ctx) => {
+    const n = ctx.tokens?.cost.totalLinesRemoved;
+    return n != null
+      ? wrapPlain(`- ${n}`, params.color as string | undefined)
+      : null;
+  },
+  m_tokenInTotal: (params, ctx) => {
+    const t = ctx.tokens;
+    if (!t || t.totals.input == null) return null;
+    return wrapPlain(
+      `in:${formatCompactToken(t.totals.input)}`,
+      params.color as string | undefined,
+    );
+  },
+  m_tokenOutTotal: (params, ctx) => {
+    const t = ctx.tokens;
+    if (!t || t.totals.output == null) return null;
+    return wrapPlain(
+      `out:${formatCompactToken(t.totals.output)}`,
+      params.color as string | undefined,
+    );
+  },
+  m_contextSize: (params, ctx) => {
+    const sz = ctx.tokens?.contextWindow?.size;
+    return sz != null
+      ? wrapPlain(formatCompactToken(sz), params.color as string | undefined)
+      : null;
+  },
+  m_contextUsed: (params, ctx) => {
+    const pct = ctx.tokens?.contextWindow?.usedPct;
+    return pct != null
+      ? wrapPlain(`${pct}%`, params.color as string | undefined)
+      : null;
+  },
+  m_windowContext: (params, ctx) => {
+    if (!ctx.contextWindow) return null;
+    const color = params.color as string | undefined;
+    if (color) return formatOneChunkColored(ctx.contextWindow, ctx.mode, color);
+    return formatOneChunk(ctx.contextWindow, ctx.mode);
   },
 };
 
@@ -1490,6 +1684,14 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
         inline = expandInlineToken(tok, "m_tokenIn", 10, ctx);
       } else if (tok.startsWith("m_tokenOut:")) {
         inline = expandInlineToken(tok, "m_tokenOut", 11, ctx);
+      } else if (tok.startsWith("m_tokenInTotal:")) {
+        // Longer prefix must come BEFORE m_tokenIn: would match first;
+        // m_tokenIn: would shadow m_tokenInTotal:color:… if ordered
+        // the other way. Same rationale for m_tokenOutTotal vs
+        // m_tokenOut.
+        inline = expandInlineToken(tok, "m_tokenInTotal", 15, ctx);
+      } else if (tok.startsWith("m_tokenOutTotal:")) {
+        inline = expandInlineToken(tok, "m_tokenOutTotal", 16, ctx);
       } else if (tok.startsWith("m_tokenTotal:")) {
         inline = expandInlineToken(tok, "m_tokenTotal", 13, ctx);
       } else if (tok.startsWith("m_tokenSession:")) {
@@ -1511,6 +1713,32 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
       } else if (tok.startsWith("m_quote:")) {
         // m_quote:freq:<…>:color:<…> → skip "m_quote:" (length 8).
         inline = expandInlineToken(tok, "m_quote", 8, ctx);
+      } else if (tok.startsWith("m_session:")) {
+        inline = expandInlineToken(tok, "m_session", 10, ctx);
+      } else if (tok.startsWith("m_model:")) {
+        inline = expandInlineToken(tok, "m_model", 8, ctx);
+      } else if (tok.startsWith("m_effort:")) {
+        inline = expandInlineToken(tok, "m_effort", 9, ctx);
+      } else if (tok.startsWith("m_repo:")) {
+        inline = expandInlineToken(tok, "m_repo", 7, ctx);
+      } else if (tok.startsWith("m_ccversion:")) {
+        inline = expandInlineToken(tok, "m_ccversion", 12, ctx);
+      } else if (tok.startsWith("m_sessionApiDuration:")) {
+        // Longer prefix must come BEFORE m_sessionDuration: for the
+        // same prefix-shadowing reason as the m_tokenIn family.
+        inline = expandInlineToken(tok, "m_sessionApiDuration", 21, ctx);
+      } else if (tok.startsWith("m_sessionDuration:")) {
+        inline = expandInlineToken(tok, "m_sessionDuration", 18, ctx);
+      } else if (tok.startsWith("m_linesAdded:")) {
+        inline = expandInlineToken(tok, "m_linesAdded", 13, ctx);
+      } else if (tok.startsWith("m_linesRemoved:")) {
+        inline = expandInlineToken(tok, "m_linesRemoved", 14, ctx);
+      } else if (tok.startsWith("m_contextSize:")) {
+        inline = expandInlineToken(tok, "m_contextSize", 14, ctx);
+      } else if (tok.startsWith("m_contextUsed:")) {
+        inline = expandInlineToken(tok, "m_contextUsed", 14, ctx);
+      } else if (tok.startsWith("m_windowContext:")) {
+        inline = expandInlineToken(tok, "m_windowContext", 16, ctx);
       }
       // Parse failure (bad :color:, unknown param, odd segment count)
       // → warn + drop. Renderer returning null for valid args (e.g.
@@ -1581,7 +1809,7 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
 // lineTemplate.
 export function renderProviderLine(
   provider: import("./types.ts").Provider,
-  ctx: Omit<RenderContext, "fiveHour" | "weekly" | "balance" | "tokens"> & {
+  ctx: Omit<RenderContext, "fiveHour" | "weekly" | "balance" | "tokens" | "contextWindow"> & {
     fiveHour?: Window | null;
     weekly?: Window | null;
     balance?: BalanceLike | null;
@@ -1589,8 +1817,21 @@ export function renderProviderLine(
     // don't thread a TokenSnapshot. Defaults to null, which causes
     // all m_token* modules to skip rendering.
     tokens?: TokenSnapshot | null;
+    // v0.4.0+ — optional. Synthesized from tokens.contextWindow.usedPct
+    // when omitted. Only read by m_windowContext.
+    contextWindow?: Window | null;
   },
 ): string {
+  // v0.4.0+ — synthesize the contextWindow Window from
+  // tokens.contextWindow.usedPct when not supplied. formatOneChunk
+  // only reads `pct`, so this minimal shape is enough.
+  const usedPct = ctx.tokens?.contextWindow?.usedPct;
+  const contextWindow =
+    ctx.contextWindow !== undefined
+      ? ctx.contextWindow
+      : usedPct != null
+        ? { pct: usedPct }
+        : null;
   const fullCtx: RenderContext = {
     mode: ctx.mode,
     nowMs: ctx.nowMs,
@@ -1601,6 +1842,7 @@ export function renderProviderLine(
     stale: ctx.stale,
     version: ctx.version,
     tokens: ctx.tokens ?? null,
+    contextWindow,
   };
   // v0.2.21: template picked by provider TYPE via providers.ts, not
   // by provider-name literal. Same outward behavior — defaults put
