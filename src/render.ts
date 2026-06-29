@@ -26,6 +26,7 @@ import {
   type QuoteFreq,
 } from "./quotes.ts";
 import { readSamples } from "./token-store.ts";
+import { readGitInfo } from "./git-info.ts";
 import * as cacheStore from "./cache.ts";
 
 export type Window = {
@@ -1427,6 +1428,15 @@ const MODULES: Record<string, Module> = {
   // that will keep working so existing lineTemplate strings don't
   // need an immediate edit.
   m_ccVersion: (c) => c.tokens?.ccversion ?? null,
+  // Current git branch. Reads cwd from the session snapshot and runs
+  // a (cached) `git rev-parse --abbrev-ref HEAD` via src/git-info.ts.
+  // Returns null when cwd is missing, the cwd is not a git repo, or
+  // the repo is in detached-HEAD state (git-info returns null for
+  // both — see the long comment in git-info.ts for the detached
+  // case). Bare MODULES drops on null (consistent with m_repo,
+  // m_ccVersion). Inline :nulldrop:false forces a "branch:n/a"
+  // placeholder so the slot stays stable.
+  m_branch: (c) => readGitInfo(c.tokens?.cwd)?.branch ?? null,
   // Deprecated alias — see m_ccVersion above. Same body.
   m_ccversion: (c) => c.tokens?.ccversion ?? null,
   // Session elapsed wall-clock (stdin.cost.total_duration_ms). Formatted
@@ -1992,6 +2002,7 @@ const PLACEHOLDERS: Record<string, PlaceholderBody> = {
   m_model: placeholderNA(""),
   m_effort: placeholderNA(""),
   m_repo: placeholderNA(""),
+  m_branch: placeholderNA("branch:"),
   m_ccVersion: placeholderNA(""),
   m_ccversion: placeholderNA(""),
 };
@@ -2154,6 +2165,7 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
   m_model: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_effort: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_repo: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
+  m_branch: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_ccVersion: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_ccversion: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_sessionDuration: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
@@ -2422,6 +2434,11 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     );
     if (parts.length === 0) return placeholderWithColor("m_repo", params, ctx);
     return wrapPlain(parts.join("/"), params.color as string | undefined);
+  },
+  m_branch: (params, ctx) => {
+    const branch = readGitInfo(ctx.tokens?.cwd)?.branch;
+    if (branch == null) return placeholderWithColor("m_branch", params, ctx);
+    return wrapPlain(branch, params.color as string | undefined);
   },
   m_ccVersion: (params, ctx) => {
     const v = ctx.tokens?.ccversion;
@@ -2706,6 +2723,9 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
         inline = expandInlineToken(tok, "m_effort", 9, ctx);
       } else if (tok.startsWith("m_repo:")) {
         inline = expandInlineToken(tok, "m_repo", 7, ctx);
+      } else if (tok.startsWith("m_branch:")) {
+        // m_branch:color:<c> → skip "m_branch:" (length 9).
+        inline = expandInlineToken(tok, "m_branch", 9, ctx);
       } else if (tok.startsWith("m_ccVersion:")) {
         // m_ccVersion:color:<c> → skip "m_ccVersion:" (length 12).
         inline = expandInlineToken(tok, "m_ccVersion", 12, ctx);
