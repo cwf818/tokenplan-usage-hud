@@ -40,6 +40,7 @@ import {
 } from "./providers.ts";
 import { appendSample } from "./token-store.ts";
 import { parseTokenSnapshot } from "./session-parse.ts";
+import * as diagnostics from "./diagnostics.ts";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -166,6 +167,13 @@ async function main(): Promise<void> {
   // used to also consume the raw for schema discovery; it was removed
   // in v0.4.0 once the schema was confirmed.
   const stdinRaw = await readStdin().catch(() => "");
+  // Record the raw stdin frame for postmortem. Gated by the same
+  // TOKENPLAN_DIAGNOSTICS_ENABLE switch as the rest of diagnostics.jsonl
+  // (no-op when off). Source "stdin" so it doesn't collide with the
+  // existing "config" warning source. Always append — even when empty —
+  // so a postmortem reader can distinguish "plugin never reached this
+  // line" from "Claude Code sent an empty stdin this tick".
+  diagnostics.append("info", "stdin", stdinRaw);
   const tokens = parseTokenSnapshot(stdinRaw);
 
   // Persist one sample row per tick so m_token5h/m_token7d can read

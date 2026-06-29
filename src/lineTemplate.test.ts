@@ -13,13 +13,33 @@ import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import {
   renderProviderLine,
+  setPrevTick,
+  __resetPrevTickForTest,
   __resetUnknownModuleWarnForTest,
 } from "./render.ts";
 import { __resetForTest } from "./config.ts";
+import {
+  __resetForTest as resetCacheForTest,
+  setCachePathResolver,
+} from "./cache.ts";
 import { compose } from "./composition.ts";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const STALE_COLOR = "\x1b[90m";
 const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
+
+// v0.4.0+ — m_tokenInSpeed / m_tokenOutSpeed read the prev-tick
+// cache. Each test needs an isolated tmp dir for the disk-shadowed
+// cache file, otherwise cross-test residue from one run can poison
+// the next. (The render-tokens.test.ts file has the same setup.)
+let _tmpDir: string;
+beforeEach(() => {
+  _tmpDir = mkdtempSync(join(tmpdir(), "tokenplan-lineTemplate-"));
+  setCachePathResolver(() => join(_tmpDir, "cache.json"));
+  resetCacheForTest();
+});
 
 describe("lineTemplate — custom template (drop the 7d window)", () => {
   beforeEach(() => {
@@ -718,6 +738,225 @@ describe("lineTemplate — m_window5h / m_window7d :color override", () => {
   });
 });
 
+// v0.4.0+ — inline :display: override for window modules. Scoped to
+// that module's bar computation only (does NOT mutate the global
+// `display` config field). Accepts "used" or "remaining" verbatim;
+// anything else is a hard noop. The bare `m_window5h` form is
+// byte-for-byte unchanged — bare still reads `ctx.mode` (which
+// defaults to "used" when no config override).
+describe("lineTemplate — m_window5h / m_window7d / m_windowContext :display override", () => {
+  beforeEach(() => __resetUnknownModuleWarnForTest());
+  afterEach(() => __resetForTest());
+
+  it("bare m_window5h honors the global config (default 'used') — renders 38% at darkGreen", () => {
+    __resetForTest({
+      lineTemplate: { plan: ["m_window5h"], balance: ["m_window5h"] },
+    });
+    const line = renderProviderLine("minimax", {
+      mode: "used", nowMs: Date.now(),
+      fiveHour: { pct: 38, resetAt: null },
+      weekly: null, balance: null,
+      ageMs: null, stale: false, version: "",
+    });
+    // Default mode = used; 38% lands in [20, 40) band → darkGreen (\x1b[38;5;29m).
+    assert.ok(line.includes("\x1b[38;5;29m38%"), `got: ${JSON.stringify(line)}`);
+  });
+
+  it("m_window5h:display:remaining inverts 38% used → renders 62% at band 3 (darkGreen)", () => {
+    __resetForTest({
+      lineTemplate: {
+        plan: ["m_window5h:display:remaining"],
+        balance: ["m_window5h:display:remaining"],
+      },
+    });
+    const line = renderProviderLine("minimax", {
+      mode: "used", nowMs: Date.now(),
+      fiveHour: { pct: 38, resetAt: null },
+      weekly: null, balance: null,
+      ageMs: null, stale: false, version: "",
+    });
+    // Inverse: 100 - 38 = 62. 62 in [60, 80) → band 3. In "remaining"
+    // mode paletteByRemaining[3] = darkGreen (\x1b[38;5;29m). Note the
+    // remaining-mode palette is REVERSED: high remaining = healthy,
+    // so band 3 (the second-most-remaining band) gets darkGreen.
+    assert.ok(line.includes("\x1b[38;5;29m62%"), `got: ${JSON.stringify(line)}`);
+    // The original 38% must NOT appear.
+    assert.ok(!line.includes("38%"), `got: ${JSON.stringify(line)}`);
+  });
+
+  it("m_window5h:display:used is byte-identical to bare when ctx.mode is 'used'", () => {
+    __resetForTest({
+      lineTemplate: {
+        plan: ["m_window5h:display:used"],
+        balance: ["m_window5h:display:used"],
+      },
+    });
+    const line = renderProviderLine("minimax", {
+      mode: "used", nowMs: Date.now(),
+      fiveHour: { pct: 38, resetAt: null },
+      weekly: null, balance: null,
+      ageMs: null, stale: false, version: "",
+    });
+    // 38% used → darkGreen, same as bare.
+    assert.ok(line.includes("\x1b[38;5;29m38%"), `got: ${JSON.stringify(line)}`);
+  });
+
+  it("m_window5h:display:remaining:color:yellow — both params combine, 62% in yellow", () => {
+    // Tests that color and display compose: override color REPLACES the
+    // band color (yellow, NOT orange); display inverts the percentage.
+    __resetForTest({
+      lineTemplate: {
+        plan: ["m_window5h:display:remaining:color:yellow"],
+        balance: ["m_window5h:display:remaining:color:yellow"],
+      },
+    });
+    const line = renderProviderLine("minimax", {
+      mode: "used", nowMs: Date.now(),
+      fiveHour: { pct: 38, resetAt: null },
+      weekly: null, balance: null,
+      ageMs: null, stale: false, version: "",
+    });
+    // Yellow wraps the 62% chunk. Both color and display honored.
+    assert.ok(line.includes("\x1b[38;5;220m62%"), `got: ${JSON.stringify(line)}`);
+    assert.ok(!line.includes("38%"), `got: ${JSON.stringify(line)}`);
+  });
+
+  it("m_window7d:display:remaining inverts 60% used → renders 40% at band 2 (yellow)", () => {
+    __resetForTest({
+      lineTemplate: {
+        plan: ["m_window7d:display:remaining"],
+        balance: ["m_window7d:display:remaining"],
+      },
+    });
+    const line = renderProviderLine("minimax", {
+      mode: "used", nowMs: Date.now(),
+      fiveHour: null,
+      weekly: { pct: 60, resetAt: null },
+      balance: null,
+      ageMs: null, stale: false, version: "",
+    });
+    // 100 - 60 = 40. 40 lands in band 2 ([40, 60)). In "remaining"
+    // mode paletteByRemaining[2] = yellow (\x1b[38;5;220m).
+    assert.ok(line.includes("\x1b[38;5;220m40%"), `got: ${JSON.stringify(line)}`);
+    assert.ok(!line.includes("60%"), `got: ${JSON.stringify(line)}`);
+  });
+
+  it("m_windowContext:display:remaining inverts 63% used → renders 37% at band 1 (orange)", () => {
+    // Mirror of the v0.4.0 captured stdin: context_window.used_percentage=63.
+    __resetForTest({
+      lineTemplate: {
+        plan: ["m_windowContext:display:remaining"],
+        balance: ["m_windowContext:display:remaining"],
+      },
+    });
+    const line = renderProviderLine("minimax", {
+      mode: "used", nowMs: Date.now(),
+      fiveHour: null, weekly: null, balance: null,
+      ageMs: null, stale: false, version: "",
+      tokens: {
+        cwd: "C:\\fake",
+        sessionId: "sess-ctx-display",
+        totals: { input: 0, output: 0 },
+        current: { input: 0, output: 0, cacheCreation: 0, cacheRead: 0 },
+        cost: { totalDurationMs: 0, totalApiDurationMs: null, totalLinesAdded: null, totalLinesRemoved: null },
+        contextWindow: { size: 200000, usedPct: 63, remainingPct: 37 },
+      },
+    });
+    // 100 - 63 = 37. 37 in [20, 40) → band 1. In "remaining" mode
+    // paletteByRemaining[1] = orange (\x1b[38;5;208m).
+    assert.ok(line.includes("\x1b[38;5;208m37%"), `got: ${JSON.stringify(line)}`);
+    assert.ok(!line.includes("63%"), `got: ${JSON.stringify(line)}`);
+  });
+
+  it("m_windowContext:display:used reproduces the bare path's 63% (orange band)", () => {
+    __resetForTest({
+      lineTemplate: {
+        plan: ["m_windowContext:display:used"],
+        balance: ["m_windowContext:display:used"],
+      },
+    });
+    const line = renderProviderLine("minimax", {
+      mode: "remaining", nowMs: Date.now(),
+      fiveHour: null, weekly: null, balance: null,
+      ageMs: null, stale: false, version: "",
+      tokens: {
+        cwd: "C:\\fake",
+        sessionId: "sess-ctx-used",
+        totals: { input: 0, output: 0 },
+        current: { input: 0, output: 0, cacheCreation: 0, cacheRead: 0 },
+        cost: { totalDurationMs: 0, totalApiDurationMs: null, totalLinesAdded: null, totalLinesRemoved: null },
+        contextWindow: { size: 200000, usedPct: 63, remainingPct: 37 },
+      },
+    });
+    // ctx.mode="remaining" + inline display="used" → display wins → 63%.
+    // 63 lands in [60, 80) → orange (\x1b[38;5;208m).
+    assert.ok(line.includes("\x1b[38;5;208m63%"), `got: ${JSON.stringify(line)}`);
+  });
+
+  it("m_window5h:display:garbage is a hard noop (drops and warns)", () => {
+    __resetForTest({
+      lineTemplate: {
+        plan: ["m_window5h:display:garbage"],
+        balance: ["m_window5h:display:garbage"],
+      },
+    });
+    const { value: line, warns } = withCapturedStderr(() =>
+      renderProviderLine("minimax", {
+        mode: "used", nowMs: Date.now(),
+        fiveHour: { pct: 38, resetAt: null },
+        weekly: null, balance: null,
+        ageMs: null, stale: false, version: "",
+      }),
+    );
+    assert.equal(line, "", `got: ${JSON.stringify(line)}`);
+    assert.equal(warns.filter((w) => w.includes("unknown lineTemplate module")).length, 1);
+  });
+
+  it("m_window5h:display:USED (case-sensitive) is a hard noop (drops and warns)", () => {
+    // The resolver does NOT lower-case. Anything that isn't an exact
+    // match for "used" or "remaining" (including "USED", "Used",
+    // "remaining " with trailing space) is a parse-fail. This is
+    // intentional — silent normalization would mask user typos and
+    // leave "Remaining" rendering as a different mode than expected.
+    __resetForTest({
+      lineTemplate: {
+        plan: ["m_window5h:display:USED"],
+        balance: ["m_window5h:display:USED"],
+      },
+    });
+    const { value: line, warns } = withCapturedStderr(() =>
+      renderProviderLine("minimax", {
+        mode: "used", nowMs: Date.now(),
+        fiveHour: { pct: 38, resetAt: null },
+        weekly: null, balance: null,
+        ageMs: null, stale: false, version: "",
+      }),
+    );
+    assert.equal(line, "", `got: ${JSON.stringify(line)}`);
+    assert.equal(warns.filter((w) => w.includes("unknown lineTemplate module")).length, 1);
+  });
+
+  it("m_window5h:display: (empty value) is a hard noop (drops and warns)", () => {
+    // Empty value → resolver sees "" → null → badarg.
+    __resetForTest({
+      lineTemplate: {
+        plan: ["m_window5h:display:"],
+        balance: ["m_window5h:display:"],
+      },
+    });
+    const { value: line, warns } = withCapturedStderr(() =>
+      renderProviderLine("minimax", {
+        mode: "used", nowMs: Date.now(),
+        fiveHour: { pct: 38, resetAt: null },
+        weekly: null, balance: null,
+        ageMs: null, stale: false, version: "",
+      }),
+    );
+    assert.equal(line, "", `got: ${JSON.stringify(line)}`);
+    assert.equal(warns.filter((w) => w.includes("unknown lineTemplate module")).length, 1);
+  });
+});
+
 describe("lineTemplate — plain-text modules :color override", () => {
   beforeEach(() => __resetUnknownModuleWarnForTest());
   afterEach(() => __resetForTest());
@@ -905,13 +1144,19 @@ describe("lineTemplate — colored modules :color override (user wins)", () => {
     assert.ok(!line.includes("\x1b[90m"), `got: ${JSON.stringify(line)}`);
   });
 
-  it("m_tokenInSpeed:color:red replaces STALE_COLOR with red", () => {
+  it("m_tokenInSpeed:color:red replaces STALE_COLOR with red (v0.4.0+ per-API-call math)", () => {
+    // v0.4.0+ — speed is per-API-call throughput. Seed a prev
+    // tick with smaller values, then verify the override color
+    // wraps the chunk and STALE_COLOR is absent.
     __resetForTest({
       lineTemplate: {
         plan: ["m_tokenInSpeed:color:red"],
         balance: ["m_tokenInSpeed:color:red"],
       },
     });
+    // The cache needs to be primed for sess-speed. We import
+    // the helper from render.ts so the test is self-contained.
+    setPrevTick("sess-speed", { apiMs: 0, in: 0, out: 0, cacheRead: 0 });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
       fiveHour: null, weekly: null, balance: null,
@@ -920,13 +1165,14 @@ describe("lineTemplate — colored modules :color override (user wins)", () => {
         cwd: "C:\\fake",
         sessionId: "sess-speed",
         totals: { input: 5000, output: 0 },
-        current: { input: 0, output: 0, cacheCreation: 0, cacheRead: 0 },
-        cost: { totalDurationMs: 5000, totalApiDurationMs: null, totalLinesAdded: null, totalLinesRemoved: null },
+        current: { input: 100, output: 0, cacheCreation: 0, cacheRead: 0 },
+        cost: { totalDurationMs: 5000, totalApiDurationMs: 2000, totalLinesAdded: null, totalLinesRemoved: null },
       },
     });
     // STALE_COLOR must not appear; red must wrap the speed chunk.
+    // delta_in=100, delta_api=2000 → speed=50 t/s → "in:50.0 t/s"
     assert.ok(!line.includes("\x1b[90m"), `got: ${JSON.stringify(line)}`);
-    assert.ok(line.includes("\x1b[38;5;196min:"), `got: ${JSON.stringify(line)}`);
+    assert.ok(line.includes("\x1b[38;5;196min:50.0 t/s"), `got: ${JSON.stringify(line)}`);
   });
 
   it("m_cacheHitRate:color:brightGreen replaces the band-based cache color with brightGreen", () => {
@@ -961,15 +1207,17 @@ describe("lineTemplate — plain token-usage modules :color override", () => {
   afterEach(() => __resetForTest());
 
   it("m_tokenIn:color:brightGreen wraps the 'in:N' chunk in brightGreen", () => {
-    // v0.4.0: m_tokenIn reads current.input (per-turn). Set both
-    // totals.input (cumulative) and current.input (per-turn) so the
-    // test asserts the per-turn semantic.
+    // v0.4.0+ delta semantics: m_tokenIn shows
+    //   delta(current.input) when delta_api > 0, else "--".
+    // Seed prev so we have a non-zero delta to render, and seed
+    // totalApiDurationMs so the gate is satisfied.
     __resetForTest({
       lineTemplate: {
         plan: ["m_tokenIn:color:brightGreen"],
         balance: ["m_tokenIn:color:brightGreen"],
       },
     });
+    setPrevTick("sess-tok-in", { apiMs: 0, in: 0, out: 0, cacheRead: 0 });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
       fiveHour: null, weekly: null, balance: null,
@@ -979,21 +1227,23 @@ describe("lineTemplate — plain token-usage modules :color override", () => {
         sessionId: "sess-tok-in",
         totals: { input: 1500, output: 0 },
         current: { input: 1500, output: 0, cacheCreation: 0, cacheRead: 0 },
-        cost: { totalDurationMs: 0, totalApiDurationMs: null, totalLinesAdded: null, totalLinesRemoved: null },
+        cost: { totalDurationMs: 1_000, totalApiDurationMs: 1_000, totalLinesAdded: null, totalLinesRemoved: null },
       },
     });
     assert.equal(line, "\x1b[38;5;41min:1.5k\x1b[0m", `got: ${JSON.stringify(line)}`);
   });
 
   it("bare m_tokenIn stays plain (byte-for-byte identical)", () => {
-    // v0.4.0: m_tokenIn reads current.input. Use a non-zero per-turn
-    // value so the module emits and the bare path stays uncolored.
+    // v0.4.0+ delta semantics: seed prev so the delta has a value
+    // and totalApiDurationMs so the gate (delta_api > 0) fires.
+    // The bare form keeps the chunk uncolored.
     __resetForTest({
       lineTemplate: {
         plan: ["m_tokenIn"],
         balance: ["m_tokenIn"],
       },
     });
+    setPrevTick("sess-tok-in-bare", { apiMs: 0, in: 0, out: 0, cacheRead: 0 });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
       fiveHour: null, weekly: null, balance: null,
@@ -1003,7 +1253,7 @@ describe("lineTemplate — plain token-usage modules :color override", () => {
         sessionId: "sess-tok-in-bare",
         totals: { input: 1500, output: 0 },
         current: { input: 1500, output: 0, cacheCreation: 0, cacheRead: 0 },
-        cost: { totalDurationMs: 0, totalApiDurationMs: null, totalLinesAdded: null, totalLinesRemoved: null },
+        cost: { totalDurationMs: 1_000, totalApiDurationMs: 1_000, totalLinesAdded: null, totalLinesRemoved: null },
       },
     });
     assert.equal(line, "in:1.5k", `got: ${JSON.stringify(line)}`);
@@ -1039,8 +1289,10 @@ describe("lineTemplate — plain token-usage modules :color override", () => {
     // stdin lacked total_output_tokens. v0.3.4+ distinguishes the
     // two: parse failure warns; missing-data renderer null is silent.
     //
-    // v0.4.0: m_tokenOut reads current.output (per-turn) instead of
-    // totals.output. The test now exercises the per-turn field.
+    // v0.4.0+ delta semantics: missing current.output → render the
+    // stable-slot "out:--" sentinel instead of dropping. Still
+    // silent (no "unknown lineTemplate module" warn — the dispatcher
+    // got past the schema and the renderer returned a value).
     __resetForTest({
       lineTemplate: {
         plan: ["m_tokenOut:color:yellow"],
@@ -1061,8 +1313,8 @@ describe("lineTemplate — plain token-usage modules :color override", () => {
         },
       }),
     );
-    // No chunk, no warn — silent drop, same as the bare-module path.
-    assert.equal(line, "", `got: ${JSON.stringify(line)}`);
+    // Stable-slot "0" with the override color applied. No warn.
+    assert.equal(line, "\x1b[38;5;220mout:0\x1b[0m", `got: ${JSON.stringify(line)}`);
     assert.equal(
       warns.filter((w) => w.includes("unknown lineTemplate module")).length,
       0,

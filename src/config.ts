@@ -136,6 +136,20 @@ const DEFAULT_BAR = {
 //   `cacheHitThresholds` mirrors DEFAULT_CACHE_HIT_THRESHOLDS — exposed
 //   as a config field so a user who wants different bands can override
 //   without touching the colors block.
+// v0.4.0+ — 5-band scale thresholds for the m_tokenInSpeed /
+// m_tokenOutSpeed modules (`:color:scale` / bare default). The
+// bands are picked at the FAST end: tps >= bands[3] → fastest
+// band (bright green); tps < bands[0] → slowest band (red).
+// `in` uses 5× the `out` thresholds because input streams
+// naturally run hotter than output — without the 5× factor the
+// `in` module would always read as "fastest green", which
+// would defeat the purpose of a gradient. Users can override
+// both bands in config.json's `tokenFormat.speedScaleBands`.
+const DEFAULT_SPEED_SCALE_BANDS = {
+  in: [50, 100, 200, 400] as [number, number, number, number],
+  out: [10, 20, 40, 80] as [number, number, number, number],
+};
+
 const DEFAULT_TOKEN_FORMAT = {
   // [<1k] → "342", [<1M] → "12.3k", [≥1M] → "1.2M". Aligns with the
   // readable upper bound of typical session totals (rare to see > 1M
@@ -145,6 +159,7 @@ const DEFAULT_TOKEN_FORMAT = {
   speedPrecision: 1,
   cachePctPrecision: 1,
   cacheHitThresholds: DEFAULT_CACHE_HIT_THRESHOLDS,
+  speedScaleBands: DEFAULT_SPEED_SCALE_BANDS,
 };
 
 type DisplayMode = "used" | "remaining";
@@ -772,6 +787,42 @@ function applyOverrides(base: Config, raw: Record<string, unknown>): Config {
           warn(
             "tokenFormat.cacheHitThresholds must be [lo, hi] numbers; using default",
           );
+        }
+      }
+      // v0.4.0+ — speed scale band overrides. Each direction is
+      // an ascending 4-tuple. We validate strictly: a 3-tuple
+      // silently falls back to the default; a 5-tuple is also
+      // rejected (only 5 bands = 4 thresholds; 4 cutoffs define
+      // them).
+      if ("speedScaleBands" in t) {
+        const sb = t.speedScaleBands;
+        if (sb && typeof sb === "object" && !Array.isArray(sb)) {
+          const sbm = sb as Record<string, unknown>;
+          for (const dir of ["in", "out"] as const) {
+            if (dir in sbm) {
+              const arr = sbm[dir];
+              if (
+                Array.isArray(arr) &&
+                arr.length === 4 &&
+                arr.every(isFiniteNumber)
+              ) {
+                const quad = arr as [number, number, number, number];
+                const ascending = quad[0] < quad[1] && quad[1] < quad[2] && quad[2] < quad[3];
+                if (ascending)
+                  out.tokenFormat.speedScaleBands[dir] = quad;
+                else
+                  warn(
+                    `tokenFormat.speedScaleBands.${dir} must be 4 ascending numbers; using default`,
+                  );
+              } else {
+                warn(
+                  `tokenFormat.speedScaleBands.${dir} must be a 4-tuple of numbers; using default`,
+                );
+              }
+            }
+          }
+        } else {
+          warn("tokenFormat.speedScaleBands must be an object; using default");
         }
       }
     } else {

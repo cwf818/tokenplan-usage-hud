@@ -23,7 +23,7 @@ ANSI colors are 5-band (256-color SGR): bright green / dark green / yellow / ora
 
 ## What's new
 
-- **v0.4.0 (in development)** — exposes 16 new statusline modules reading the captured Claude Code stdin payload: session identity (`m_session`, `m_model`, `m_effort`, `m_repo`, `m_ccversion`), session metrics (`m_sessionDuration`, `m_sessionApiDuration`, `m_linesAdded`, `m_linesRemoved`), cumulative token counters (`m_tokenInTotal`, `m_tokenOutTotal`), context-window stats (`m_contextSize`, `m_contextUsed`, `m_windowContext`). Also: `m_tokenIn` / `m_tokenOut` and `m_tokenInSpeed` / `m_tokenOutSpeed` now read the per-turn `current_usage` fields instead of session-cumulative. See [CHANGELOG.md](CHANGELOG.md) for the full v0.4.0 list.
+- **v0.4.0 (in development)** — exposes 16 new statusline modules reading the captured Claude Code stdin payload: session identity (`m_session`, `m_model`, `m_effort`, `m_repo`, `m_ccVersion`), session metrics (`m_sessionDuration`, `m_sessionApiDuration`, `m_linesAdded`, `m_linesRemoved`), cumulative token counters (`m_tokenInTotal`, `m_tokenOutTotal`), context-window stats (`m_contextSize`, `m_contextUsed`, `m_windowContext`). Also: `m_tokenIn` / `m_tokenOut` and `m_tokenInSpeed` / `m_tokenOutSpeed` now read the per-turn `current_usage` fields instead of session-cumulative. See [CHANGELOG.md](CHANGELOG.md) for the full v0.4.0 list.
 
 ## Install
 
@@ -476,16 +476,21 @@ Recognized modules:
 | `m_balance`        | The DeepSeek balance chunk (e.g. `$25 · ￥110`), single SGR-wrapped block |
 | `m_age`            | The age annotation: `🔗 5m ago` (fresh, in-template) or `⛓️‍💥 5m ago` (stale, in-template or forced fallback). Emits unconditionally when listed in the lineTemplate; returns `null` only when `ageMs` is missing. |
 | `m_version`        | The plugin version: `v0.3.3` (auto-loaded from `.claude-plugin/plugin.json`) |
-| `m_tokenIn`        | Per-turn input tokens — e.g. `in:140`. Reads stdin `current_usage.input_tokens`. **v0.4.0**: semantics changed from session-cumulative. For the cumulative version, use `m_tokenInTotal`. Hidden when stdin lacks the field. |
-| `m_tokenOut`       | Per-turn output tokens — e.g. `out:265`. Reads stdin `current_usage.output_tokens`. **v0.4.0**: semantics changed from session-cumulative. |
+| `m_tokenIn`        | Per-API-call input tokens — e.g. `in:140`. **v0.4.0+ semantics**: shows `delta(current_usage.input_tokens)` when `delta(cost.total_api_duration_ms) > 0`. Otherwise (first tick, no API call, session change, regression) renders **`in:0`** — "0" reads as "tracking but nothing new this tick" rather than the more ambiguous `--`. A valid zero-delta API call (deltaIn == 0 with deltaApi > 0) also renders `in:0`. For session-cumulative, use `m_tokenInTotal`. |
+| `m_tokenOut`       | Per-API-call output tokens — `out:265` (or `out:0` for all missing-data / zero-delta cases). Same semantics as `m_tokenIn`. |
 | `m_tokenTotal` / `m_tokenSession` | Session cumulative total (`input + output + cache`) — e.g. `tot:163k` / `session:163k`. Two names for the same metric; pick whichever reads better in your template. |
 | `m_ctx`            | Current post-turn context length (excludes output) — e.g. `ctx:163k`. Reads `current_usage.{input + cache_creation + cache_read}`. |
 | `m_cacheHitRate`   | Cache hit rate as a percentage with 3-band coloring (`good ≥ 80%`, `warn ≥ 50%`, `bad < 50%`) — e.g. green `cache:99%`. Reads `current_usage.{cache_read, cache_creation}`. |
 | `m_cacheRead`      | Cache read tokens + context share — e.g. dim-gray `cache:163k (99.2%)`. Hidden when cache traffic is zero. |
 | `m_token5h`        | Tokens used in the last 5h (delta between first and last sample in the window) — e.g. `5h:12k`. Reads `state/token-samples/<projectHash>/<sessionId>.jsonl`. Hidden when fewer than 2 samples exist for the window. |
 | `m_token7d`        | Same, for the last 7 days. |
-| `m_tokenInSpeed`   | Per-turn input speed — e.g. dim-gray `in:0.1 t/s`. **v0.4.0**: numerator changed to `current_usage.input_tokens` (per-turn). Math is "turn-tokens / total session time" — not real-time throughput. Hidden when session duration is 0. |
+| `m_tokenInSpeed`   | Per-API-call input speed — e.g. dim-gray `in:32.4 t/s`. **v0.4.0+**: math is `delta(current_usage.input_tokens) / delta(cost.total_api_duration_ms) * 1000`. Always renders — every missing-data case (first tick, no-API-call, session change, regression) **AND** the zero-token-delta case collapse to **`in:-- t/s`** rather than `0.0 t/s`. One consistent "no throughput to report" signal across all branches. |
 | `m_tokenOutSpeed`  | Same for output tokens. |
+| `m_tokenInAvg`     | Per-session running-average input speed — e.g. dim-gray `in:18.2 t/s`. **v0.4.0+**: math is `sum(delta_in) / sum(delta_api) * 1000`, accumulator stored under `tickAvg:<sessionId>` in `state/cache.json` (separate from the per-tick `tickSpeed:` snapshot). Only valid-API-call ticks contribute (`delta_api > 0` AND `delta_in >= 0`); idle and regression ticks don't accumulate. Always renders — `in:--` when no valid tick has accumulated yet (sumApi is 0). |
+| `m_tokenOutAvg`    | Same for output tokens. |
+| `m_totalTokenIn`   | Per-session running total of input tokens across valid-API-call ticks — e.g. `in:340`. **v0.4.0+**: reads the same `tickAvg:<sessionId>` cache slot as `m_tokenInAvg`'s numerator; `AvgSnapshot` is extended with `sumCache` to accommodate the cache-read module below. Only `delta_api > 0` ticks contribute; idle and regression ticks don't accumulate. Always renders — `in:0` when no valid tick has accumulated yet. |
+| `m_totalTokenOut`  | Same for output tokens — e.g. `out:265`. |
+| `m_totalTokenWithCacheIn` | Per-session running total of `cache_read_input_tokens` across valid-API-call ticks — e.g. `cache:490k`. Renders `cache:--` when stdin lacks `current_usage.cache_read_input_tokens` (honest "data unavailable" signal); `cache:0` when no valid tick has accumulated yet. |
 | `m_quote`          | An inspirational short quote from a 100+ entry bilingual pool (English + 中文). See the [m_quote section](#m_quote-v036) below for the `:freq:` and `:color:` parameters. |
 
 **v0.4.0+ session-info / metadata modules** (read the live stdin payload
@@ -497,7 +502,7 @@ captured by `/statusline`):
 | `m_model`                | The model display name — e.g. `MiniMax-M3`. Reads stdin `model.display_name`. |
 | `m_effort`               | The effort level — e.g. `high`. Reads stdin `effort` (accepts string or `{level}` object). |
 | `m_repo`                 | Repository identity — e.g. `github.com/cwf818/tokenplan-usage-hud`. Reads stdin `workspace.repo.{host, owner, name}`, drops null components. |
-| `m_ccversion`            | The Claude Code CLI version — e.g. `2.1.191`. Reads stdin `version`. |
+| `m_ccVersion`            | The Claude Code CLI version — e.g. `2.1.191`. Reads stdin `version`. |
 | `m_sessionDuration`      | Elapsed session time — e.g. `20h42m`. Reads stdin `cost.total_duration_ms` in `1d2h3m` format. |
 | `m_sessionApiDuration`   | API-call time within the session — e.g. `2h18m`. Reads stdin `cost.total_api_duration_ms`. |
 | `m_linesAdded`           | Session-cumulative lines added — e.g. `+ 3965` (with leading space). Reads stdin `cost.total_lines_added`. |
@@ -551,7 +556,7 @@ The bare forms (`m_modeLabel`, `s_0`, `m_window5h`, `m_tokenIn`, …) keep worki
 
 ### Per-module `:color:` override (v0.3.4+)
 
-Every existing module — `m_window5h`, `m_window7d`, `m_countdown5h`, `m_countdown7d`, `m_balance`, `m_age`, `m_version`, `m_tokenIn`, `m_tokenOut`, `m_tokenTotal`, `m_tokenSession`, `m_ctx`, `m_cacheHitRate`, `m_cacheRead`, `m_token5h`, `m_token7d`, `m_tokenInSpeed`, `m_tokenOutSpeed`, plus the v0.4.0+ session-info modules (`m_session`, `m_model`, `m_effort`, `m_repo`, `m_ccversion`, `m_sessionDuration`, `m_sessionApiDuration`, `m_linesAdded`, `m_linesRemoved`, `m_tokenInTotal`, `m_tokenOutTotal`, `m_contextSize`, `m_contextUsed`, `m_windowContext`) — also accepts an optional `:color:<c>` segment. Two cases:
+Every existing module — `m_window5h`, `m_window7d`, `m_countdown5h`, `m_countdown7d`, `m_balance`, `m_age`, `m_version`, `m_tokenIn`, `m_tokenOut`, `m_tokenTotal`, `m_tokenSession`, `m_ctx`, `m_cacheHitRate`, `m_cacheRead`, `m_token5h`, `m_token7d`, `m_tokenInSpeed`, `m_tokenOutSpeed`, `m_tokenInAvg`, `m_tokenOutAvg`, `m_totalTokenIn`, `m_totalTokenOut`, `m_totalTokenWithCacheIn`, plus the v0.4.0+ session-info modules (`m_session`, `m_model`, `m_effort`, `m_repo`, `m_ccVersion`, `m_sessionDuration`, `m_sessionApiDuration`, `m_linesAdded`, `m_linesRemoved`, `m_tokenInTotal`, `m_tokenOutTotal`, `m_contextSize`, `m_contextUsed`, `m_windowContext`) — also accepts an optional `:color:<c>` segment. Two cases:
 
 - **Plain-text modules** (e.g. `m_version`, `m_tokenIn`, `m_countdown5h`, `m_ctx`): the override simply wraps the natural output in `<color>…<RESET>` SGR. The module's own body is unchanged.
 - **Already-colored modules** (e.g. `m_window5h`, `m_balance`, `m_cacheHitRate`, `m_cacheRead`, `m_age`, `m_tokenInSpeed`, `m_tokenOutSpeed`): the override **replaces** the natural color choice — band-based, cache-hit-band, or fixed `stale` color — with your `<color>`. The user's color always wins; if you didn't say `:color:`, the module keeps its existing coloring and the default `lineTemplate` output is byte-for-byte identical to v0.3.3.
@@ -581,6 +586,37 @@ Examples:
 The bare forms (`m_window5h`, `m_age`, `m_tokenIn`, …) still go through the original `MODULES` path, so users on the default template see no diff on upgrade.
 
 **Extension point:** future parameterized modules (`m_model:...`, …) plug in by adding an entry to `INLINE_SCHEMAS` and `INLINE_RENDERERS` in `src/render.ts`. No new top-level config keys needed.
+
+### Per-module `:display:` override (v0.4.0+, window modules only)
+
+The three window modules — `m_window5h`, `m_window7d`, `m_windowContext` — accept an optional `:display:used` or `:display:remaining` segment. This is the **per-module** counterpart to the top-level `display` config field: it overrides which side of the bar gets colored and which percentage is shown, but only for the one module that uses it. The global config is untouched.
+
+| Token | What it does |
+| ----- | ------------ |
+| `m_window5h:display:used` | 5h bar in `used` mode (same as bare when `display=used` in config) |
+| `m_window5h:display:remaining` | 5h bar in `remaining` mode (inverts percentage; uses the remaining-mode palette) |
+| `m_window7d:display:used` / `:remaining` | Same, for the 7d window |
+| `m_windowContext:display:used` / `:remaining` | Same, for the context window |
+
+The bare forms are byte-for-byte unchanged — the global `display` config (default `used`) still drives them. Combine with `:color:` for both axes:
+
+```jsonc
+{
+  "lineTemplate": {
+    "plan": [
+      "m_modeLabel", "s_0",
+      "m_window5h:display:remaining:color:yellow", "s_0", "m_countdown5h",
+      "s_0", "s_1", "s_0",
+      "m_window7d:display:remaining:color:yellow", "s_0", "m_countdown7d"
+    ],
+    "balance": ["m_modeLabel", "s_0", "m_balance"]
+  }
+}
+```
+
+Valid values are exactly `used` or `remaining` (case-sensitive). `display:USED`, `display:` (empty), or any other value is a parse-fail — the token is dropped and the standard one-shot "unknown lineTemplate module" warn fires.
+
+**Note:** the remaining-mode palette is the *reverse* of the used-mode palette: high remaining = healthy = brightGreen, low remaining = red. So `m_window5h:display:remaining` at 38% used renders 62% in the band-3 remaining color (darkGreen) — not the band-3 used color (orange). See [`formatOneChunk` / `splitBar`](src/render.ts) for the exact mapping.
 
 ### `m_quote` (v0.3.6+)
 

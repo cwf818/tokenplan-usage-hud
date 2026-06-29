@@ -26,6 +26,7 @@ import {
   type QuoteFreq,
 } from "./quotes.ts";
 import { readSamples } from "./token-store.ts";
+import * as cacheStore from "./cache.ts";
 
 export type Window = {
   // Percentage USED in [0, 100]. May be fractional; we'll round.
@@ -608,6 +609,553 @@ type RenderContext = {
 
 type Module = (ctx: RenderContext) => string | null;
 
+// v0.4.0+ — per-session "previous tick" cache, used by the
+// m_tokenInSpeed / m_tokenOutSpeed renderers to compute real
+// per-API-call throughput instead of the session-cumulative
+// average. The statusline fires a fresh child process on every
+// tick, so this MUST persist across processes — it lives in the
+// shared cacheStore (which already disk-shadows to
+// ~/.claude/plugins/tokenplan-usage-hud/state/cache.json).
+//
+// Stored shape (one entry per sessionId):
+//   { apiMs, in, out, at }   — snapshot of the previous tick's
+//                              cost.total_api_duration_ms and
+//                              current_usage.{input,output}.
+//
+// TTL: very long (1 hour). The cache only needs to survive the
+// gap between two statusline ticks (typically < 5s); a longer TTL
+// just protects against pathological pause/resume cases where the
+// user closes the terminal and reopens it. Cache is automatically
+// invalidated by the sessionId prefix in the key — switching
+// sessions means the new sessionId misses the lookup, the new
+// tick writes its baseline, and the next tick computes against it.
+//
+// Exported for tests (so unit tests can pre-seed the cache).
+// v0.4.0+: cacheRead field added so the per-session running total
+// m_totalTokenWithCacheIn can derive its delta from the same
+// per-tick baseline that m_tokenInSpeed / m_tokenInAvg use. The
+// field is populated automatically by every MODULES /
+// INLINE_RENDERERS caller — call sites that construct literals
+// just supply 0 for tests where cache is irrelevant.
+export type PrevTickSnapshot = {
+  apiMs: number;
+  in: number;
+  out: number;
+  cacheRead: number;
+};
+
+// Public: looks up the previous tick for a given session. Returns
+// null on miss (no prior tick, or session changed, or cache
+// expired). The caller is responsible for the post-call
+// `setPrevTick(sessionId, snapshot)` to keep the cache fresh —
+// this function does NOT auto-write.
+export function peekPrevTick(
+  sessionId: string,
+): PrevTickSnapshot | null {
+  if (!sessionId) return null;
+  // 1h TTL is well past any plausible inter-tick gap but well
+  // before the user is likely to be back the next day. The
+  // sessionId prefix already handles the "back tomorrow" case
+  // (new sessionId → new key → miss → fresh baseline).
+  return cacheStore.peek<PrevTickSnapshot>(`tickSpeed:${sessionId}`);
+}
+
+// Public: writes the current tick's snapshot for the next call to
+// read. Fire-and-forget; the cache is non-critical (worst case on
+// a cache write failure is "next tick drops the speed module",
+// which is the same as a first tick).
+export function setPrevTick(
+  sessionId: string,
+  snap: PrevTickSnapshot,
+): void {
+  if (!sessionId) return;
+  cacheStore.set(`tickSpeed:${sessionId}`, snap);
+}
+
+// ----- v0.4.0+ — last-rendered speed cache -----
+//
+// m_tokenInSpeed / m_tokenOutSpeed store the LAST active-tick
+// tps per session, so an idle tick (deltaApi == 0) that would
+// otherwise render "-- t/s" can fall back to the cached value.
+// This stops the speed module from "blinking" through ticks
+// when Claude Code's statusline fires faster than the user
+// reads it (e.g. multi-second thinking bursts produce a flurry
+// of statusline ticks; only one or two carry a real API call).
+//
+// Writes happen ONLY on active ticks (hasDelta === true). The
+// "inactive" state in the cache only ever holds a measurement
+// taken during a real API call. Idle ticks do NOT overwrite —
+// the cached value is "the last thing I measured" until the
+// next active tick replaces it.
+//
+// 1h TTL matches tickSpeed: — long enough to span a
+// thinking burst, short enough to clear by tomorrow's session.
+// Different key prefix (`tickSpeedDisplay:`) from
+// `tickSpeed:<sessionId>` so the prev-tick baseline and the
+// last-rendered display value don't collide.
+export type LastSpeedSnapshot = {
+  direction: "in" | "out";
+  tps: number;
+};
+export function peekLastSpeed(
+  sessionId: string,
+  direction: "in" | "out",
+): number | null {
+  if (!sessionId) return null;
+  const snap = cacheStore.peek<LastSpeedSnapshot>(
+    `tickSpeedDisplay:${direction}:${sessionId}`,
+  );
+  return snap?.tps ?? null;
+}
+export function setLastSpeed(
+  sessionId: string,
+  direction: "in" | "out",
+  tps: number,
+): void {
+  if (!sessionId) return;
+  cacheStore.set(`tickSpeedDisplay:${direction}:${sessionId}`, {
+    direction,
+    tps,
+  });
+}
+// Test-only: clear the last-speed entry for a session.
+export function __resetLastSpeedForTest(
+  sessionId: string,
+  direction: "in" | "out",
+): void {
+  if (!sessionId) return;
+  cacheStore.clear(`tickSpeedDisplay:${direction}:${sessionId}`);
+}
+
+// Test-only: clear the in-memory + disk cache entry for a
+// session. Production code never calls this.
+export function __resetPrevTickForTest(sessionId: string): void {
+  if (!sessionId) return;
+  cacheStore.clear(`tickSpeed:${sessionId}`);
+}
+
+// v0.4.0+ — per-session accumulator for the m_tokenInAvg /
+// m_tokenOutAvg modules. Each tick where the delta math
+// produces valid numbers (deltaApi > 0 and deltaIn / deltaOut >=
+// 0 — guarding against regressions), the running totals grow.
+// The render is sum_in / sum_api * 1000 (and same for out). The
+// cache is separate from the prevTick snapshot above because
+// the lifetime is different: prevTick is "what was the last
+// tick's stdin state" (1-tick memory), avg is "running totals
+// across the session's lifetime" (whole-session memory).
+export type AvgSnapshot = {
+  sumIn: number;
+  sumOut: number;
+  sumApi: number;
+  // v0.4.0+: running total of delta(cache_read_input_tokens)
+  // across valid-API-call ticks. Single source of truth for
+  // m_totalTokenWithCacheIn (and the avg module pair's cache slot
+  // doubles as the totals slot — we deliberately reuse this
+  // rather than introduce a parallel tickTotal: cache key).
+  sumCache: number;
+};
+
+export function peekAvg(sessionId: string): AvgSnapshot | null {
+  if (!sessionId) return null;
+  return cacheStore.peek<AvgSnapshot>(`tickAvg:${sessionId}`);
+}
+
+export function setAvg(sessionId: string, snap: AvgSnapshot): void {
+  if (!sessionId) return;
+  cacheStore.set(`tickAvg:${sessionId}`, snap);
+}
+
+export function __resetAvgForTest(sessionId: string): void {
+  if (!sessionId) return;
+  cacheStore.clear(`tickAvg:${sessionId}`);
+}
+
+// Per-render memo: keyed by the RenderContext object itself, so
+// the memo lives exactly as long as the render. A WeakMap means
+// no manual cleanup and no leak when a render finishes. Several
+// per-API-call modules (m_tokenIn / m_tokenOut / m_tokenInSpeed
+// / m_tokenOutSpeed / m_tokenInAvg / m_tokenOutAvg) may all be in
+// a single lineTemplate, and WITHOUT this memo, the second
+// module's computeAndCacheTickDelta would read the cache that
+// the first module just wrote — and see delta = 0 (which renders
+// "--"). The memo freezes the result for the lifetime of the
+// render so each module sees the SAME delta and only the FIRST
+// caller fires the cache write.
+type TickDeltaResult = {
+  hasDelta: boolean;
+  deltaIn: number;
+  deltaOut: number;
+  deltaApi: number;
+  // v0.4.0+: delta of current_usage.cache_read_input_tokens
+  // across the last tick. Used by m_totalTokenWithCacheIn (not by
+  // the avg modules, which only need in/out/api). Defaults to 0
+  // when either side of the subtraction is null (stdin lacked the
+  // field — see computeAndCacheTickDelta).
+  deltaCacheRead: number;
+  writeBack: PrevTickSnapshot | null;
+};
+const _tickDeltaMemo = new WeakMap<RenderContext, TickDeltaResult>();
+// Memo for the setAvg accumulator write. Both computeTickAvg
+// AND computeTickTotals need to fire setAvg (each family must
+// work as the sole per-API-call module in a template). On a
+// render that has both — e.g. m_totalTokenIn + m_tokenInAvg —
+// they'd otherwise double-count the delta. Idempotent: first
+// caller wins; subsequent callers no-op.
+const _tickAvgWriteMemo = new WeakMap<RenderContext, true>();
+
+// One source of truth for the per-API-call delta math. Lives at
+// the top of the per-tick pipeline so every v0.4.0+ per-API-call
+// module (m_tokenIn / m_tokenOut / m_tokenInSpeed / m_tokenOutSpeed
+// / m_tokenInAvg / m_tokenOutAvg) sees the same numbers and the
+// same cache state.
+//
+// Per-render memoization: the first call within a render peeks
+// the prev tick, computes the deltas, and returns writeBack. The
+// caller fires setPrevTick. Subsequent calls within the same
+// render return the SAME result WITHOUT re-peeking and WITHOUT
+// triggering another setPrevTick on the caller side (writeBack is
+// present on the memo so a late caller may also fire setPrevTick
+// safely — the write is idempotent).
+//
+// Behavior:
+//   1. If snapshot data is missing (no sessionId / no
+//      totalApiDurationMs / no current.input/output), return
+//      hasDelta=false and writeBack=null. The caller renders
+//      "--" and skips the cache write. No state changes.
+//   2. Otherwise, peek the prevTick. ALWAYS write the current
+//      snapshot back so the next tick has a baseline — even when
+//      we couldn't compute a delta (first tick, session changed,
+//      idle tick, regression). The write is fire-and-forget; the
+//      cache failure mode is "next tick drops", same as today.
+//   3. If prev exists and (deltaApi > 0 AND deltaIn >= 0 AND
+//      deltaOut >= 0), compute the three deltas and return
+//      hasDelta=true. The caller (per-module) decides how to
+//      render the numbers — speed, raw delta-in/out, or as
+//      accumulators.
+//
+// Why ALL-FOUR fields together (not just the one direction):
+//   - m_tokenInAvg needs (deltaIn, deltaApi); m_tokenOutAvg
+//     needs (deltaOut, deltaApi). Computing both directions in
+//     one pass avoids two cache peeks + writes per tick.
+//   - Every per-API-call module is gated by the SAME data
+//     validity conditions. Centralizing the gate logic makes it
+//     impossible for one module to render numbers while another
+//     drops without an explicit check.
+function computeAndCacheTickDelta(ctx: RenderContext): TickDeltaResult {
+  const memo = _tickDeltaMemo.get(ctx);
+  if (memo) return memo;
+  const t = ctx.tokens;
+  let result: TickDeltaResult;
+  if (!t || !t.sessionId) {
+    result = {
+      hasDelta: false, deltaIn: 0, deltaOut: 0, deltaApi: 0,
+      deltaCacheRead: 0, writeBack: null,
+    };
+    _tickDeltaMemo.set(ctx, result);
+    return result;
+  }
+  const currentApi = t.cost.totalApiDurationMs;
+  const currentIn = t.current.input;
+  const currentOut = t.current.output;
+  const currentCacheRead = t.current.cacheRead;
+  if (currentApi == null || currentIn == null || currentOut == null) {
+    result = {
+      hasDelta: false, deltaIn: 0, deltaOut: 0, deltaApi: 0,
+      deltaCacheRead: 0, writeBack: null,
+    };
+    _tickDeltaMemo.set(ctx, result);
+    return result;
+  }
+  const prev = peekPrevTick(t.sessionId);
+  // Always write the current snapshot so the next tick has a
+  // baseline for the `deltaApi` math, even when we render "--" /
+  // skip the cache accumulator update. The `in` / `out` /
+  // `cacheRead` fields of writeBack are unused by the new
+  // accumulation model (we read current.* directly — they're
+  // per-turn deltas, not running totals) but the field is kept
+  // for schema stability and a 0-stamped baseline is harmless.
+  const writeBack: PrevTickSnapshot = {
+    apiMs: currentApi,
+    in: currentIn,
+    out: currentOut,
+    cacheRead: currentCacheRead ?? 0,
+  };
+  // v0.4.0+ (revised 2026-06-29): when no previous tick exists
+  // (first tick of a session, or a cache miss after a session
+  // change), we DO NOT bail to "no data". We assume the prior
+  // baseline was at zero — i.e. `prev.apiMs = 0` — so the first
+  // tick still contributes. This matches the per-turn-delta
+  // contract: current_usage.* values are THIS turn's
+  // contribution, and on the very first turn there is no
+  // "previous" to compare against, so the safe assumption is
+  // "we started from a clean slate". The first tick therefore
+  // accumulates into m_totalToken* (no "0" sentinel) and
+  // m_tokenIn / m_tokenOut / m_tokenInSpeed render real values
+  // when total_api_duration_ms > 0.
+  const prevApiMs = prev?.apiMs ?? 0;
+  // current_usage.{input_tokens, output_tokens,
+  // cache_read_input_tokens} are PER-TURN DELTAS — they report
+  // THIS turn's contribution, not a running total. We do NOT
+  // subtract prev; the value is already the per-turn delta. The
+  // only subtraction is deltaApi, where prev.apiMs tells us
+  // "did total_api_duration_ms change this tick?".
+  //
+  // Gating is deltaApi > 0 ONLY. In / out / cache_read don't all
+  // have to move together — e.g. a thinking-only turn adds zero
+  // output tokens but may still count as a real API call. We
+  // accumulate whatever current.* reports, and a zero per-turn
+  // delta on one field is meaningful (it just means "no tokens
+  // of that kind this turn"), not a regression. Per-turn deltas
+  // are contractually non-negative (an API call can't subtract
+  // input tokens), so the previous regression guard is gone.
+  const deltaApi = currentApi - prevApiMs;
+  const deltaIn = currentIn;
+  const deltaOut = currentOut;
+  const deltaCacheRead = currentCacheRead ?? 0;
+  const hasDelta = deltaApi > 0;
+  result = {
+    hasDelta, deltaIn, deltaOut, deltaApi, deltaCacheRead, writeBack,
+  };
+  _tickDeltaMemo.set(ctx, result);
+  return result;
+}
+
+// Test-only: clear the per-render memo for a given ctx. The memo
+// is normally GC'd with the ctx via the WeakMap key. Production
+// code never calls this — tests use it when they reuse a ctx
+// across two renderTemplate calls in one test (rare, since the
+// main test pattern seeds cache and builds a fresh ctx each time).
+export function __resetTickDeltaMemoForTest(ctx: RenderContext): void {
+  _tickDeltaMemo.delete(ctx);
+  _tickAvgWriteMemo.delete(ctx);
+}
+
+// Compute the per-API-call throughput for one of {in, out}. v0.4.0+
+// — always returns a non-null value. The module occupies a stable
+// slot in the user's lineTemplate; a missing-data render is
+// "in:-- t/s", not a drop. This keeps the line layout stable across
+// ticks — the user always sees the module where they put it, and
+// learns to read "--" as "no data / nothing to report".
+//
+// math (when hasDelta):
+//   tps = current_in_or_out / delta_api * 1000
+//
+// Missing-data conditions (render "in:-- t/s"):
+//   - no current snapshot data
+//   - delta_api <= 0 (no API call between ticks) AND no cached
+//     value from a previous active tick to fall back to
+//
+// v0.4.0+ (revised 2026-06-29 + 2026-06-29): per-turn deltas
+// don't need a direction-specific zero-rejection gate. IN and
+// OUT don't have to move together — a thinking-only turn adds
+// 0 input tokens but 0 output tokens too; a synthesized-message
+// turn adds 0 input but real output. The truthful rate is
+// 0.0 t/s, not "-- t/s". We render 0.0 directly so the user
+// sees the real measurement and learns the difference between
+// "0 t/s" (real zero) and "in:-- t/s" (no data).
+//
+// v0.4.0+ second revision: cache the last ACTIVE-tick tps per
+// session. On an idle tick (no API call this turn), fall back
+// to the cached tps so the speed module doesn't blink
+// in:-- t/s between real measurements during fast statusline
+// ticks. The cache is only written on active ticks (idle ticks
+// preserve the previous measurement). Returns an `active` flag
+// so the caller can pick color: active = scale band, inactive
+// = STALE_COLOR (the user reads the gray as "this is a stale
+// measurement from a previous API call, not a real one now").
+function computeTickSpeed(
+  ctx: RenderContext,
+  direction: "in" | "out",
+  color: string,
+): {
+  value: string;
+  writeBack: PrevTickSnapshot | null;
+  active: boolean;
+  tps: number | null;
+} {
+  const r = computeAndCacheTickDelta(ctx);
+  if (!r.hasDelta) {
+    // Idle tick — fall back to the last active measurement if
+    // we have one, otherwise render the -- t/s sentinel.
+    const sid = ctx.tokens?.sessionId;
+    if (sid) {
+      const cached = peekLastSpeed(sid, direction);
+      if (cached != null) {
+        return {
+          value: `${STALE_COLOR}${direction}:${formatSpeed(cached)}${RESET}`,
+          writeBack: r.writeBack,
+          active: false,
+          tps: cached,
+        };
+      }
+    }
+    return {
+      value: `${STALE_COLOR}${direction}:-- t/s${RESET}`,
+      writeBack: r.writeBack,
+      active: false,
+      tps: null,
+    };
+  }
+  const deltaTok = direction === "in" ? r.deltaIn : r.deltaOut;
+  const tps = (deltaTok / r.deltaApi) * 1000;
+  // Write the active measurement to the cache so subsequent
+  // idle ticks can display it.
+  const sid = ctx.tokens?.sessionId;
+  if (sid) setLastSpeed(sid, direction, tps);
+  return {
+    value: `${color}${direction}:${formatSpeed(tps)}${RESET}`,
+    writeBack: r.writeBack,
+    active: true,
+    tps,
+  };
+}
+
+// Per-API-call raw token delta. v0.4.0+ — mirrors the speed
+// module's gate: only render a numeric value when delta_api > 0
+// and the token delta is non-negative. When the gate is not
+// satisfied (no snapshot data, first tick, idle tick, regression)
+// we render "0" — not "--". The user reads "0" as "tracking, but
+// nothing new this tick", which is a better signal than the
+// ambiguous "--" for a quantity-shaped field. (The speed modules
+// handle the same situation differently: there, a zero-delta is
+// replaced with "-- t/s" because a 0.0 t/s rate is semantically
+// empty — the user has already chosen to prefer "--" there.)
+//
+// Uses formatCompactToken so single-call token counts read the
+// same as the cumulative modules (e.g. "in:140", "in:12.3k").
+function computeTickDelta(
+  ctx: RenderContext,
+  direction: "in" | "out",
+): { value: string; writeBack: PrevTickSnapshot | null } {
+  const r = computeAndCacheTickDelta(ctx);
+  const n = direction === "in" ? r.deltaIn : r.deltaOut;
+  return {
+    value: r.hasDelta ? `${direction}:${formatCompactToken(n)}` : `${direction}:0`,
+    writeBack: r.writeBack,
+  };
+}
+
+// Per-session running average speed across all valid API
+// calls. Combines the prevTick (per-API-call math) with the
+// AvgSnapshot (running totals). The math across the session:
+//   sum_in  / sum_api  * 1000  (and same for out)
+// Only valid-API-call ticks contribute (deltaApi > 0 AND
+// deltaIn / deltaOut >= 0); idle and regression ticks don't.
+// Renders "--" when no valid tick has accumulated yet (sumApi
+// is still 0 after this tick — i.e. nothing usable came in).
+// Color defaults to STALE_COLOR; the inline :color: path
+// overrides it.
+//
+// Side effects: fires BOTH the prevTick write (so the next
+// tick's computeAndCacheTickDelta sees a fresh baseline) AND
+// the avg accumulate write. This means computeTickAvg is
+// self-sufficient — putting m_tokenInAvg alone in a template
+// with no speed / raw-delta modules still works.
+function computeTickAvg(
+  ctx: RenderContext,
+  direction: "in" | "out",
+  color: string,
+): { value: string; writeBack: PrevTickSnapshot | null } {
+  const t = ctx.tokens;
+  if (!t || !t.sessionId) {
+    return { value: `${color}${direction}:--${RESET}`, writeBack: null };
+  }
+  const r = computeAndCacheTickDelta(ctx);
+  if (r.hasDelta && !_tickAvgWriteMemo.get(ctx)) {
+    _tickAvgWriteMemo.set(ctx, true);
+    const prev = peekAvg(t.sessionId);
+    const next: AvgSnapshot = {
+      sumIn: (prev?.sumIn ?? 0) + r.deltaIn,
+      sumOut: (prev?.sumOut ?? 0) + r.deltaOut,
+      sumApi: (prev?.sumApi ?? 0) + r.deltaApi,
+      // v0.4.0+: m_totalTokenWithCacheIn reads sumCache. The avg
+      // module pair is the canonical accumulator — keeping the
+      // sumCache update here means either module family alone in
+      // a template still maintains the cache.
+      sumCache: (prev?.sumCache ?? 0) + r.deltaCacheRead,
+    };
+    setAvg(t.sessionId, next);
+  }
+  const avg = peekAvg(t.sessionId);
+  if (!avg || avg.sumApi <= 0) {
+    return { value: `${color}${direction}:--${RESET}`, writeBack: r.writeBack };
+  }
+  const denom = direction === "in" ? avg.sumIn / avg.sumApi : avg.sumOut / avg.sumApi;
+  const tps = denom * 1000;
+  return { value: `${color}${direction}:${formatSpeed(tps)}${RESET}`, writeBack: r.writeBack };
+}
+
+// Per-session running totals: m_totalTokenIn / m_totalTokenOut /
+// m_totalTokenWithCacheIn. Reads the same tickAvg:<sessionId>
+// cache slot that computeTickAvg maintains — single source of
+// truth, no parallel cache key. When ONLY a totals module is in
+// the template (no avg / speed / delta modules), this helper
+// MUST also fire the setAvg write itself, because computeTickAvg
+// is the only place that does the read-modify-write on the
+// accumulator. Both modules trigger on the same hasDelta gate,
+// so the write is idempotent if both run.
+//
+// Render branches:
+//   - tokens null or !sessionId     → "{prefix}:0" (mirrors
+//                                      m_tokenIn / m_tokenOut
+//                                      for the no-snapshot case;
+//                                      the per-session cache is
+//                                      unreachable without a
+//                                      sessionId).
+//   - kind === "cache" && current
+//         .cacheRead == null        → "cache:--" (user-resolved
+//                                      honest signal — cache
+//                                      field wasn't carried by
+//                                      stdin; not the same as
+//                                      "no valid tick yet").
+//   - otherwise                     →
+//      "{prefix}:{formatCompactToken(sum)}". When peekAvg
+//      returns null (very first render, before any valid tick
+//      has landed) the slot is "{prefix}:0".
+function computeTickTotals(
+  ctx: RenderContext,
+  kind: "in" | "out" | "cache",
+): { value: string } {
+  const t = ctx.tokens;
+  const prefix = kind === "in" ? "in" : kind === "out" ? "out" : "cache";
+  if (!t || !t.sessionId) return { value: `${prefix}:0` };
+  if (kind === "cache" && t.current.cacheRead == null) {
+    return { value: `${prefix}:--` };
+  }
+  // Idempotent on the tick-delta memo: if computeTickAvg ran
+  // earlier in the same render, the memo is hot. If this totals
+  // module is the ONLY per-API-call module in the template, we
+  // are now the canonical primer and must fire the setAvg
+  // accumulator write ourselves — otherwise peekAvg below
+  // returns null on every tick and the module stays at "0"
+  // forever. We also must fire setPrevTick when one is owed —
+  // without it, the next tick re-derives deltaIn from the same
+  // prev=0 baseline, double-counting the entire input total
+  // instead of accumulating the per-tick delta. setAvg is gated
+  // on _tickAvgWriteMemo so a render containing both this totals
+  // module AND an avg module (or two totals modules) only
+  // accumulates once.
+  const r = computeAndCacheTickDelta(ctx);
+  if (r.writeBack && t.sessionId) {
+    setPrevTick(t.sessionId, r.writeBack);
+  }
+  if (r.hasDelta && !_tickAvgWriteMemo.get(ctx)) {
+    _tickAvgWriteMemo.set(ctx, true);
+    const prev = peekAvg(t.sessionId);
+    const next: AvgSnapshot = {
+      sumIn: (prev?.sumIn ?? 0) + r.deltaIn,
+      sumOut: (prev?.sumOut ?? 0) + r.deltaOut,
+      sumApi: (prev?.sumApi ?? 0) + r.deltaApi,
+      sumCache: (prev?.sumCache ?? 0) + r.deltaCacheRead,
+    };
+    setAvg(t.sessionId, next);
+  }
+  const avg = peekAvg(t.sessionId);
+  if (!avg) return { value: `${prefix}:0` };
+  const n = kind === "in" ? avg.sumIn : kind === "out" ? avg.sumOut : avg.sumCache;
+  return { value: `${prefix}:${formatCompactToken(n)}` };
+}
+
 const MODULES: Record<string, Module> = {
   // The leading prefix. For the plan path, picks the mode-aware
   // label ("Usage:" / "Remain:"). For the balance path, the label
@@ -650,20 +1198,30 @@ const MODULES: Record<string, Module> = {
   // default plan / balance templates do NOT include any of these —
   // existing users see no change on upgrade.
 
-  // Per-turn input tokens (stdin.context_window.current_usage.input_tokens).
-  // v0.4.0: semantics changed from session-cumulative (totals.input)
-  // to per-turn (current.input). For the cumulative intent, see
-  // m_tokenInTotal / m_tokenTotal / m_tokenSession.
-  m_tokenIn: (c) =>
-    c.tokens?.current.input != null
-      ? `in:${formatCompactToken(c.tokens.current.input)}`
-      : null,
-  // Per-turn output tokens (stdin.context_window.current_usage.output_tokens).
-  // v0.4.0: semantics changed from session-cumulative to per-turn.
-  m_tokenOut: (c) =>
-    c.tokens?.current.output != null
-      ? `out:${formatCompactToken(c.tokens.current.output)}`
-      : null,
+  // Per-API-call input tokens. v0.4.0+ — semantics changed
+  // again: from "raw current_usage.input_tokens (absolute)" to
+  // "delta of current.input vs the previous tick's snapshot, but
+  // ONLY when an actual API call happened between ticks". The
+  // same prevTick cache that m_tokenInSpeed uses is read here;
+  // the gate is identical (delta_api > 0). When no API call
+  // landed, this module renders "in:--" — same stable-slot
+  // pattern as the speed modules — so the user can SEE whether
+  // the current turn produced output or just sat idle. For the
+  // session-cumulative intent, see m_tokenInTotal / m_tokenTotal
+  // / m_tokenSession.
+  m_tokenIn: (c) => {
+    const r = computeTickDelta(c, "in");
+    if (r.writeBack && c.tokens?.sessionId) setPrevTick(c.tokens.sessionId, r.writeBack);
+    return r.value;
+  },
+  // Per-API-call output tokens (see m_tokenIn for the gate
+  // rationale — output-only turns, thinking-only turns, idle
+  // turns all produce different "out:--" / "out:N" signals).
+  m_tokenOut: (c) => {
+    const r = computeTickDelta(c, "out");
+    if (r.writeBack && c.tokens?.sessionId) setPrevTick(c.tokens.sessionId, r.writeBack);
+    return r.value;
+  },
   // Session cumulative in + out + cache (cache = ctx_creation + ctx_read
   // from the latest per-turn snapshot — close enough for "total tokens
   // spent in this session" intent; users wanting exact counts can split
@@ -739,32 +1297,69 @@ const MODULES: Record<string, Module> = {
   // Tokens used in the last 7d.
   m_token7d: (c) =>
     windowedTokenLabel(c, 7 * 24 * 60 * 60 * 1000, "7d"),
-  // Per-turn input speed: current_usage.input_tokens / cost.total_duration_ms * 1000.
-  // v0.4.0: numerator changed from totals.input (session-cumulative) to
-  // current.input (per-turn). The denominator is still total session
-  // wall time, so this is "tokens used in the latest turn divided by
-  // total session time" — a per-turn / session-time ratio, NOT a
-  // real-time throughput. Returns null when totalDurationMs is 0
-  // (very early in session) or current.input is missing.
+  // v0.4.0+ — per-API-call input speed. Reads the previous-tick
+  // snapshot from cache (keyed by sessionId) and computes
+  // delta(current.input) / delta(cost.totalApiDurationMs) * 1000.
+  // The bare form (and `:color:scale`) applies the 5-band scale
+  // color via speedScaleColor: faster = greener, slower = redder;
+  // the `:color:<shortcut|SGR>` form overrides with a single color
+  // (e.g. `:color:red`). computeTickSpeed handles the cached /
+  // idle case by switching to STALE_COLOR regardless of the
+  // caller's color — gray signals "inactive: this measurement is
+  // from a previous API call, not this tick".
   m_tokenInSpeed: (c) => {
-    const t = c.tokens;
-    if (!t || t.current.input == null || t.cost.totalDurationMs == null)
-      return null;
-    const durMs = t.cost.totalDurationMs;
-    if (durMs <= 0) return null;
-    const tps = (t.current.input / durMs) * 1000;
-    return `${STALE_COLOR}in:${formatSpeed(tps)}${RESET}`;
+    // First call with a temporary color to discover the tps
+    // (for the active case); the actual rendered value comes
+    // from a second call with the proper color. Two
+    // computeAndCacheTickDelta calls is fine — the per-render
+    // memo makes the second call free.
+    const probe = computeTickSpeed(c, "in", STALE_COLOR);
+    const color = probe.active
+      ? speedScaleColor("in", probe.tps ?? 0)
+      : STALE_COLOR; // unused — computeTickSpeed forces STALE
+    const r = computeTickSpeed(c, "in", color);
+    if (r.writeBack && c.tokens?.sessionId) setPrevTick(c.tokens.sessionId, r.writeBack);
+    return r.value;
   },
-  // Per-turn output speed (see m_tokenInSpeed for the math caveat).
+  // v0.4.0+ — per-API-call output speed (see m_tokenInSpeed for
+  // the math + drop conditions).
   m_tokenOutSpeed: (c) => {
-    const t = c.tokens;
-    if (!t || t.current.output == null || t.cost.totalDurationMs == null)
-      return null;
-    const durMs = t.cost.totalDurationMs;
-    if (durMs <= 0) return null;
-    const tps = (t.current.output / durMs) * 1000;
-    return `${STALE_COLOR}out:${formatSpeed(tps)}${RESET}`;
+    const probe = computeTickSpeed(c, "out", STALE_COLOR);
+    const color = probe.active
+      ? speedScaleColor("out", probe.tps ?? 0)
+      : STALE_COLOR;
+    const r = computeTickSpeed(c, "out", color);
+    if (r.writeBack && c.tokens?.sessionId) setPrevTick(c.tokens.sessionId, r.writeBack);
+    return r.value;
   },
+  // v0.4.0+ — per-session running-average input speed
+  // (sum(deltaIn) / sum(deltaApi) * 1000). Always renders — a
+  // valid-API-call contribution each tick; shows "--" when no
+  // valid tick has accumulated yet. See computeTickAvg for the
+  // accumulator semantics.
+  m_tokenInAvg: (c) => {
+    const r = computeTickAvg(c, "in", STALE_COLOR);
+    if (r.writeBack && c.tokens?.sessionId) setPrevTick(c.tokens.sessionId, r.writeBack);
+    return r.value;
+  },
+  // v0.4.0+ — per-session running-average output speed.
+  m_tokenOutAvg: (c) => {
+    const r = computeTickAvg(c, "out", STALE_COLOR);
+    if (r.writeBack && c.tokens?.sessionId) setPrevTick(c.tokens.sessionId, r.writeBack);
+    return r.value;
+  },
+  // v0.4.0+ — per-session running total of input tokens across
+  // valid-API-call ticks. Reads the same tickAvg cache slot that
+  // m_tokenInAvg maintains; when this module is alone in the
+  // template, computeTickTotals fires the accumulator write
+  // itself.
+  m_totalTokenIn: (c) => computeTickTotals(c, "in").value,
+  // v0.4.0+ — per-session running total of output tokens.
+  m_totalTokenOut: (c) => computeTickTotals(c, "out").value,
+  // v0.4.0+ — per-session running total of
+  // cache_read_input_tokens. Renders "cache:--" when stdin lacks
+  // the field (user-resolved honest "data unavailable" signal).
+  m_totalTokenWithCacheIn: (c) => computeTickTotals(c, "cache").value,
   // v0.3.6+ — bare `m_quote` (no inline args). Picks a quote from
   // the hourly window and renders it plain (no SGR wrapper). Opt-in
   // — the default plan / balance templates do NOT include it.
@@ -801,6 +1396,15 @@ const MODULES: Record<string, Module> = {
   },
   // Claude Code CLI version (stdin.version). Distinct from the
   // existing m_version which emits the *plugin* version.
+  //
+  // v0.4.0+ — also registered as `m_ccversion` for backwards
+  // compatibility with pre-rename configs. Both keys resolve to
+  // the same body. The camelCase form is the canonical / documented
+  // one going forward; the lowercase form is the deprecated alias
+  // that will keep working so existing lineTemplate strings don't
+  // need an immediate edit.
+  m_ccVersion: (c) => c.tokens?.ccversion ?? null,
+  // Deprecated alias — see m_ccVersion above. Same body.
   m_ccversion: (c) => c.tokens?.ccversion ?? null,
   // Session elapsed wall-clock (stdin.cost.total_duration_ms). Formatted
   // with the same dhms formatter used for reset countdowns.
@@ -888,6 +1492,47 @@ export function formatSpeed(tps: number | null): string {
     return `${(tps / 1000).toFixed(precision)}k t/s`;
   }
   return `${tps.toFixed(precision)} t/s`;
+}
+
+// v0.4.0+ — 5-band color picker for the speed scale.
+// Faster = greener; slower = redder. Same color palette
+// shape as the existing 5-band gauge modules
+// (m_window5h/7d/context): bright green / dark green /
+// yellow / orange / red, indexed from the FAST end.
+//
+// `in` uses 5× the `out` thresholds (per the user's spec:
+// out: [10, 20, 40, 80], in: [50, 100, 200, 400]) — input
+// streams naturally run hotter than output, so the bands
+// are scaled accordingly. The thresholds are config-driven
+// (cfg().tokenFormat.speedScaleBands) but the defaults match
+// the user-requested bands. Returns an SGR string; the
+// caller wraps the value with the RESET suffix.
+export function speedScaleColor(
+  direction: "in" | "out",
+  tps: number,
+): string {
+  const c = cfg().colors;
+  // Same 5-color palette the gauge modules use. Index 0 =
+  // fastest (bright green); index 4 = slowest (red).
+  const palette = [
+    c.brightGreen, // brightest green — fastest
+    c.darkGreen,
+    c.yellow,
+    c.orange,
+    c.red,         // red — slowest
+  ];
+  const bands = direction === "in"
+    ? cfg().tokenFormat.speedScaleBands.in
+    : cfg().tokenFormat.speedScaleBands.out;
+  // bands are sorted ascending; we want to pick the band
+  // that the tps falls INTO from the FAST end. tps >= bands[3]
+  // → fastest (palette[0]); tps < bands[0] → slowest
+  // (palette[4]).
+  if (tps >= bands[3]) return palette[0];
+  if (tps >= bands[2]) return palette[1];
+  if (tps >= bands[1]) return palette[2];
+  if (tps >= bands[0]) return palette[3];
+  return palette[4];
 }
 
 function cachePctPrecision(): number {
@@ -1006,7 +1651,20 @@ const LABEL_COLOR_SHORTCUTS: Record<string, string> = (() => {
 // (buildRainbow / buildHue from src/quotes.ts), not a single SGR
 // string. They're handled at a higher level by `applyColor` below.
 // This resolver only validates shortcut-as-SGR and raw-SGR strings.
+// v0.4.0+ — sentinel string returned by resolveColor when the
+// user writes `:color:scale`. The speed-module renderers
+// (m_tokenInSpeed / m_tokenOutSpeed, both bare default and
+// inline) detect this token and replace it with the per-band
+// scale color via speedScaleColor(). For all other modules
+// the value behaves as opaque — they'd never see it because
+// their schema doesn't accept a custom color palette, and
+// resolving it to the literal string means a bug in the
+// caller that swallows it just renders uncolored (the SGR
+// would be invalid, but the chunk would still display).
+export const SCALE_COLOR_SENTINEL = "__SCALE__";
+
 function resolveColor(value: string): string | null {
+  if (value === "scale") return SCALE_COLOR_SENTINEL;
   if (LABEL_COLOR_SHORTCUTS[value]) return LABEL_COLOR_SHORTCUTS[value];
   if (/^\x1b\[[0-9;]*m$/.test(value)) return value;
   return null;
@@ -1146,6 +1804,220 @@ const COLOR_PARAM = {
   },
 } as const;
 
+// v0.4.0+ — per-module null-drop override. Accepts "true" or "false"
+// verbatim; anything else is a parse-fail and the inline token is
+// dropped (same as :color:<garbage>). Semantics:
+//
+//   nulldrop omitted / nulldrop:false  → DEFAULT. Force a stable
+//     placeholder when the data is missing — the module ALWAYS
+//     renders, regardless of whether the underlying field is null.
+//     This keeps the line layout stable across ticks and matches
+//     the user's expectation that an explicitly-listed module in
+//     lineTemplate should occupy its slot.
+//   nulldrop:true                      → opt out of the placeholder
+//     and preserve the v0.3.x "drop on null" behavior. The module
+//     disappears and adjacent separators are skipped.
+//
+// The bare MODULES path (no inline args) keeps the original drop
+// semantics — bare `m_ctx` still drops on null. To get the
+// placeholder behavior the user must use the inline form `m_ctx`
+// (which now defaults to placeholder — see above). This is a
+// BREAKING change for any existing inline template that lists a
+// module whose value is sometimes null (the slot is now always
+// visible). Users who want the old drop behavior add
+// `:nulldrop:true` to those tokens.
+//
+// Placeholder shape per module (see PLACEHOLDERS in render.ts
+// for the dispatch):
+//   pure-number modules        → STALE_COLOR wrap on "n/a" (e.g.
+//                                "in:n/a", "ctx:n/a", "cache:n/a")
+//   number+unit modules        → STALE_COLOR wrap on "-- <unit>"
+//                                (e.g. "5h:--", "session:--", "+ --")
+//   gauge modules              → STALE_COLOR wrap on
+//                                "░░░░░░░░ 0%" (parallel to the
+//                                natural 0-value render)
+//   bare-string modules        → STALE_COLOR wrap on "n/a"
+const NULDROP_PARAM = {
+  named: {
+    nulldrop: (raw: string): ResolvedValue | null =>
+      raw === "true" || raw === "false" ? raw : null,
+  },
+} as const;
+
+// v0.4.0+ — per-module display-mode override (scoped to the bar
+// computation for the window modules). Accepts "used" or
+// "remaining" verbatim; anything else is a parse-fail and the
+// inline token is dropped (same as :color:<garbage>). Resolution is
+// deliberately narrow — the module-level `display` config field
+// (RESOLVED via resolveDisplayMode) stays the default for the bare
+// `m_window5h` form. Inline display wins when present, so users can
+// e.g. show 5h as "remaining" while the global config is "used".
+const DISPLAY_PARAM = {
+  named: {
+    display: (raw: string): ResolvedValue | null =>
+      raw === "used" || raw === "remaining" ? raw : null,
+  },
+} as const;
+
+// ----- v0.4.0+ placeholder shapes for nulldrop:false -----------------------
+//
+// Each constant is a closure over the inline-args params + ctx so the
+// INLINE_RENDERERS can pull a precomputed placeholder body. Every
+// placeholder wraps its body in `${STALE_COLOR}…${RESET}` so a missing
+// gauge / number reads as "dim gray, no data" — visually distinct
+// from a real value (which is colored by the band palette or wrapped
+// in the user's :color: override). The :color: inline override still
+// wins when present (it REPLACES the placeholder's STALE_COLOR wrap,
+// matching the existing "user override always wins" rule).
+
+// pure-number placeholder body: "<prefix>n/a" — PLAIN text. The
+// STALE_COLOR wrap is applied by the INLINE_RENDERER (via
+// wrapPlain / formatOneChunkColored) so a `:color:<c>` inline
+// override REPLACES the default STALE_COLOR, matching the
+// existing "user color always wins" rule for every other module.
+// The prefix matches the module's normal inline label (e.g.
+// "ctx:", "in:", "out:", "cache:") so a nulldrop placeholder reads
+// like the same module just with "n/a" instead of a real number.
+// Bare-string modules pass prefix="" (e.g. m_session → just "n/a").
+function placeholderNA(
+  prefix: string,
+): (_params: Record<string, ResolvedValue>, _ctx: RenderContext) => string {
+  return (_p, _c) => `${prefix}n/a`;
+}
+
+// number+unit placeholder body: PLAIN text. The STALE_COLOR wrap
+// is applied by the INLINE_RENDERER (via wrapPlain) for the same
+// reason as placeholderNA. The `body` is the COMPLETE placeholder
+// text the module would otherwise emit (e.g. "5h:--", "+ --",
+// "-- t/s"). Bare-number modules pass body="--" with no suffix
+// (e.g. m_sessionDuration → "--", matching the existing
+// formatRemainingMs shape).
+function placeholderDashesUnit(
+  body: string,
+): (_params: Record<string, ResolvedValue>, _ctx: RenderContext) => string {
+  return (_p, _c) => body;
+}
+
+// gauge placeholder body: returns PLAIN text (no SGR). The
+// INLINE_RENDERER handles the SGR wrap via wrapPlain (so a
+// `:color:<c>` override can REPLACE the default STALE_COLOR just
+// like every other module). The placeholder shape is a 0-value
+// bar — "used" mode shows an empty bar with "0%"; "remaining"
+// mode shows a full bar with "100%". The synthetic pct=0 keeps
+// the bar geometry aligned with the natural 0-value render path
+// (see render-tokens.test.ts: "m_windowContext: usedPct=0").
+function placeholderGauge(
+  params: Record<string, ResolvedValue>,
+  ctx: RenderContext,
+): string {
+  const mode = (params.display as DisplayMode | undefined) ?? ctx.mode;
+  const empty = cfg().bar.empty;
+  const filled = cfg().bar.filled;
+  const width = cfg().bar.width;
+  if (mode === "used") {
+    return `${empty.repeat(width)} 0%`;
+  }
+  // mode === "remaining": full filled bar, "100%".
+  return `${filled.repeat(width)} 100%`;
+}
+
+// Module → placeholder dispatcher. Each module opts into ONE of
+// the four shape families by listing its `placeholder` body. The
+// INLINE_RENDERER consults this table when the data path returns
+// null/empty AND params.nulldrop === "false".
+//
+// Add a module here ONLY if its bare-module null case is currently
+// a `return null`. The four families cover every existing drop
+// case: pure-number ("n/a"), number+unit ("-- <unit>"), gauge
+// ("gray bar + 0%"), bare-string ("n/a").
+type PlaceholderBody = (
+  params: Record<string, ResolvedValue>,
+  ctx: RenderContext,
+) => string;
+
+const PLACEHOLDERS: Record<string, PlaceholderBody> = {
+  // pure-number — placeholder shape is "<prefix>n/a"
+  m_tokenInTotal: placeholderNA("in:"),
+  m_tokenOutTotal: placeholderNA("out:"),
+  m_totalTokenIn: placeholderNA("in:"),
+  m_totalTokenOut: placeholderNA("out:"),
+  m_totalTokenWithCacheIn: placeholderNA("cache:"),
+  m_ctx: placeholderNA("ctx:"),
+  m_cacheRead: placeholderNA("cache:"),
+  m_contextSize: placeholderNA(""),
+  m_contextUsed: placeholderNA(""),
+  // number+unit — placeholder shape is the module's normal body
+  // with "--" swapped in for the numeric value (e.g. "5h:--",
+  // "+ --", "-- t/s"). Empty body = bare dash.
+  m_tokenInSpeed: placeholderDashesUnit("in:-- t/s"),
+  m_tokenOutSpeed: placeholderDashesUnit("out:-- t/s"),
+  m_tokenInAvg: placeholderDashesUnit("in:--"),
+  m_tokenOutAvg: placeholderDashesUnit("out:--"),
+  m_sessionDuration: placeholderDashesUnit("--"),
+  m_sessionApiDuration: placeholderDashesUnit("--"),
+  m_linesAdded: placeholderDashesUnit("+ --"),
+  m_linesRemoved: placeholderDashesUnit("- --"),
+  m_token5h: placeholderDashesUnit("5h:--"),
+  m_token7d: placeholderDashesUnit("7d:--"),
+  // gauge (placeholder shape is the gray 0% / 100% bar)
+  m_window5h: placeholderGauge,
+  m_window7d: placeholderGauge,
+  m_windowContext: placeholderGauge,
+  // bare-string (no prefix to recover from; just "n/a")
+  m_session: placeholderNA(""),
+  m_model: placeholderNA(""),
+  m_effort: placeholderNA(""),
+  m_repo: placeholderNA(""),
+  m_ccVersion: placeholderNA(""),
+  m_ccversion: placeholderNA(""),
+};
+
+// Render a placeholder body unless the user has explicitly opted
+// out via `:nulldrop:true`, OR the module has no registered
+// placeholder shape. The default is FORCED placeholder (every
+// inline-listed module keeps its slot even when data is null).
+// Returns null when the user opted out, so the caller's drop path
+// takes over (matching the bare MODULES drop behavior).
+//
+// The returned string is PLAIN text (no SGR); the caller is
+// expected to wrap it in the user's chosen color (defaults to
+// STALE_COLOR via placeholderWithColor), matching the existing
+// "override wins" pattern for every other inline module.
+function placeholderOrNull(
+  modKey: string,
+  params: Record<string, ResolvedValue>,
+  _ctx: RenderContext,
+): string | null {
+  if (params.nulldrop === "true") return null;
+  const body = PLACEHOLDERS[modKey];
+  if (!body) return null;
+  return body(params, _ctx);
+}
+
+// Render a placeholder (when active) wrapped in the user's
+// `:color:<c>` override, or STALE_COLOR by default. Returns null
+// when the user opted out of the placeholder (`nulldrop:true`)
+// OR the module has no registered placeholder shape — the caller's
+// null-fall-through path takes over (drop, same as bare MODULES
+// behavior).
+//
+// The STALE_COLOR default is what makes a missing-data placeholder
+// visually distinct from a real value (a real `ctx:163.5k` is
+// band-colored; a placeholder `ctx:n/a` is gray). Note: this is
+// the OPPOSITE of wrapPlain (which returns plain text when no
+// color is supplied) — placeholder rendering ALWAYS wraps, even
+// without an override.
+function placeholderWithColor(
+  modKey: string,
+  params: Record<string, ResolvedValue>,
+  ctx: RenderContext,
+): string | null {
+  const body = placeholderOrNull(modKey, params, ctx);
+  if (body == null) return null;
+  const color = (params.color as string | undefined) ?? STALE_COLOR;
+  return `${color}${body}${RESET}`;
+}
+
 // Extended-color schema used by `m_quote`. Accepts the standard
 // 7 shortcuts + raw SGR + the 3 special shortcuts (rainbow /
 // rand-rainbow / hue). The resolver encodes the tagged ColorParam
@@ -1201,39 +2073,44 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
         return n;
       },
     },
-    named: { ...COLOR_PARAM.named },
+    named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named },
   },
   m_label: {
     implicit: { name: "string", resolver: (raw) => raw },
-    named: { ...COLOR_PARAM.named },
+    named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named },
   },
   m_modeLabel: {
     // No implicit — the string is derived from ctx. The first segment,
     // if present, MUST be a name in `named` (i.e. starts a name:value
     // pair). Otherwise the token is malformed.
-    named: { ...COLOR_PARAM.named },
+    named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named },
   },
   // v0.3.3+ — every existing module also accepts an optional :color:
   // override. Schema is empty (`{}`) when the module takes no implicit
   // param; the renderer just reads params.color and applies it.
-  m_window5h: { named: { ...COLOR_PARAM.named } },
-  m_window7d: { named: { ...COLOR_PARAM.named } },
-  m_countdown5h: { named: { ...COLOR_PARAM.named } },
-  m_countdown7d: { named: { ...COLOR_PARAM.named } },
-  m_balance: { named: { ...COLOR_PARAM.named } },
-  m_age: { named: { ...COLOR_PARAM.named } },
-  m_version: { named: { ...COLOR_PARAM.named } },
-  m_tokenIn: { named: { ...COLOR_PARAM.named } },
-  m_tokenOut: { named: { ...COLOR_PARAM.named } },
-  m_tokenTotal: { named: { ...COLOR_PARAM.named } },
-  m_tokenSession: { named: { ...COLOR_PARAM.named } },
-  m_ctx: { named: { ...COLOR_PARAM.named } },
-  m_cacheHitRate: { named: { ...COLOR_PARAM.named } },
-  m_cacheRead: { named: { ...COLOR_PARAM.named } },
-  m_token5h: { named: { ...COLOR_PARAM.named } },
-  m_token7d: { named: { ...COLOR_PARAM.named } },
-  m_tokenInSpeed: { named: { ...COLOR_PARAM.named } },
-  m_tokenOutSpeed: { named: { ...COLOR_PARAM.named } },
+  m_window5h: { named: { ...COLOR_PARAM.named, ...DISPLAY_PARAM.named, ...NULDROP_PARAM.named } },
+  m_window7d: { named: { ...COLOR_PARAM.named, ...DISPLAY_PARAM.named, ...NULDROP_PARAM.named } },
+  m_countdown5h: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
+  m_countdown7d: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
+  m_balance: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
+  m_age: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
+  m_version: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
+  m_tokenIn: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
+  m_tokenOut: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
+  m_tokenTotal: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
+  m_tokenSession: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
+  m_ctx: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
+  m_cacheHitRate: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
+  m_cacheRead: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
+  m_token5h: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
+  m_token7d: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
+  m_tokenInSpeed: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
+  m_tokenOutSpeed: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
+  m_tokenInAvg: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
+  m_tokenOutAvg: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
+  m_totalTokenIn: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
+  m_totalTokenOut: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
+  m_totalTokenWithCacheIn: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   // v0.3.6+ — quote module. Accepts `:freq:<numeric-time>` and
   // `:color:<sgr|shortcut|rainbow|rand-rainbow|hue>`. The freq
   // grammar is the single-unit time format `<digits><unit>` (bare
@@ -1244,24 +2121,26 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
     named: {
       ...QUOTE_FREQ_PARAM.named,
       ...QUOTE_COLOR_PARAM.named,
+      ...NULDROP_PARAM.named,
     },
   },
   // v0.4.0+ — session-info / metadata modules. All take only the
   // optional :color: override (mirror the m_token* pattern).
-  m_session: { named: { ...COLOR_PARAM.named } },
-  m_model: { named: { ...COLOR_PARAM.named } },
-  m_effort: { named: { ...COLOR_PARAM.named } },
-  m_repo: { named: { ...COLOR_PARAM.named } },
-  m_ccversion: { named: { ...COLOR_PARAM.named } },
-  m_sessionDuration: { named: { ...COLOR_PARAM.named } },
-  m_sessionApiDuration: { named: { ...COLOR_PARAM.named } },
-  m_linesAdded: { named: { ...COLOR_PARAM.named } },
-  m_linesRemoved: { named: { ...COLOR_PARAM.named } },
-  m_tokenInTotal: { named: { ...COLOR_PARAM.named } },
-  m_tokenOutTotal: { named: { ...COLOR_PARAM.named } },
-  m_contextSize: { named: { ...COLOR_PARAM.named } },
-  m_contextUsed: { named: { ...COLOR_PARAM.named } },
-  m_windowContext: { named: { ...COLOR_PARAM.named } },
+  m_session: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
+  m_model: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
+  m_effort: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
+  m_repo: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
+  m_ccVersion: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
+  m_ccversion: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
+  m_sessionDuration: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
+  m_sessionApiDuration: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
+  m_linesAdded: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
+  m_linesRemoved: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
+  m_tokenInTotal: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
+  m_tokenOutTotal: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
+  m_contextSize: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
+  m_contextUsed: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
+  m_windowContext: { named: { ...COLOR_PARAM.named, ...DISPLAY_PARAM.named, ...NULDROP_PARAM.named } },
 };
 
 // Pure helper: wrap a plain-text body in `<color>…<RESET>`. Returns
@@ -1295,17 +2174,19 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     return wrapPlain(s, params.color as string | undefined);
   },
   m_window5h: (params, ctx) => {
-    if (!ctx.fiveHour) return null;
+    if (!ctx.fiveHour) return placeholderWithColor("m_window5h", params, ctx);
+    const mode = (params.display as DisplayMode | undefined) ?? ctx.mode;
     const color = params.color as string | undefined;
-    if (color) return formatOneChunkColored(ctx.fiveHour, ctx.mode, color);
+    if (color) return formatOneChunkColored(ctx.fiveHour, mode, color);
     // No override → reproduce the bare-module output exactly.
-    return formatOneChunk(ctx.fiveHour, ctx.mode);
+    return formatOneChunk(ctx.fiveHour, mode);
   },
   m_window7d: (params, ctx) => {
-    if (!ctx.weekly) return null;
+    if (!ctx.weekly) return placeholderWithColor("m_window7d", params, ctx);
+    const mode = (params.display as DisplayMode | undefined) ?? ctx.mode;
     const color = params.color as string | undefined;
-    if (color) return formatOneChunkColored(ctx.weekly, ctx.mode, color);
-    return formatOneChunk(ctx.weekly, ctx.mode);
+    if (color) return formatOneChunkColored(ctx.weekly, mode, color);
+    return formatOneChunk(ctx.weekly, mode);
   },
   m_countdown5h: (params, ctx) => {
     if (!ctx.fiveHour) return null;
@@ -1320,6 +2201,12 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     return wrapPlain(body, params.color as string | undefined);
   },
   m_balance: (params, ctx) => {
+    // m_balance has no nulldrop placeholder — its no-data shape is
+    // a multi-currency join ("CN¥10.50 · USDC5") that doesn't have
+    // a natural placeholder. If the data is absent or the
+    // formatted body is empty, drop the chunk. The MODULES path
+    // has the same drop-on-null behavior, so inline parity is
+    // preserved.
     if (!ctx.balance) return null;
     const color = params.color as string | undefined;
     const text = formatBalanceEntriesColored(ctx.balance, color);
@@ -1335,36 +2222,30 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     return wrapPlain(`v${ctx.version}`, params.color as string | undefined);
   },
   m_tokenIn: (params, ctx) => {
-    const t = ctx.tokens;
-    if (!t || t.current.input == null) return null;
-    return wrapPlain(
-      `in:${formatCompactToken(t.current.input)}`,
-      params.color as string | undefined,
-    );
+    const r = computeTickDelta(ctx, "in");
+    if (r.writeBack && ctx.tokens?.sessionId) setPrevTick(ctx.tokens.sessionId, r.writeBack);
+    return wrapPlain(r.value, params.color as string | undefined);
   },
   m_tokenOut: (params, ctx) => {
-    const t = ctx.tokens;
-    if (!t || t.current.output == null) return null;
-    return wrapPlain(
-      `out:${formatCompactToken(t.current.output)}`,
-      params.color as string | undefined,
-    );
+    const r = computeTickDelta(ctx, "out");
+    if (r.writeBack && ctx.tokens?.sessionId) setPrevTick(ctx.tokens.sessionId, r.writeBack);
+    return wrapPlain(r.value, params.color as string | undefined);
   },
   m_tokenTotal: (params, ctx) => {
     const body = inlineTokenTotalLabel(ctx);
-    if (body == null) return null;
+    if (body == null) return placeholderWithColor("m_tokenTotal", params, ctx);
     return wrapPlain(body, params.color as string | undefined);
   },
   m_tokenSession: (params, ctx) => {
     const body = inlineTokenSessionLabel(ctx);
-    if (body == null) return null;
+    if (body == null) return placeholderWithColor("m_tokenSession", params, ctx);
     return wrapPlain(body, params.color as string | undefined);
   },
   m_ctx: (params, ctx) => {
     const t = ctx.tokens?.current;
-    if (!t) return null;
+    if (!t) return placeholderWithColor("m_ctx", params, ctx);
     const len = (t.input ?? 0) + (t.cacheCreation ?? 0) + (t.cacheRead ?? 0);
-    if (len === 0) return null;
+    if (len === 0) return placeholderWithColor("m_ctx", params, ctx);
     return wrapPlain(
       `ctx:${formatCompactToken(len)}`,
       params.color as string | undefined,
@@ -1372,20 +2253,20 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   },
   m_cacheHitRate: (params, ctx) => {
     const t = ctx.tokens?.current;
-    if (!t) return null;
+    if (!t) return placeholderWithColor("m_cacheHitRate", params, ctx);
     const read = t.cacheRead ?? 0;
     const creation = t.cacheCreation ?? 0;
     const denom = read + creation;
-    if (denom === 0) return null;
+    if (denom === 0) return placeholderWithColor("m_cacheHitRate", params, ctx);
     const pct = (read / denom) * 100;
     const color = (params.color as string | undefined) ?? cacheHitColor(pct);
     return `${color}cache:${pct.toFixed(cachePctPrecision())}%${RESET}`;
   },
   m_cacheRead: (params, ctx) => {
     const t = ctx.tokens?.current;
-    if (!t) return null;
+    if (!t) return placeholderWithColor("m_cacheRead", params, ctx);
     const read = t.cacheRead ?? 0;
-    if (read === 0) return null;
+    if (read === 0) return placeholderWithColor("m_cacheRead", params, ctx);
     const denom = (t.input ?? 0) + read + (t.cacheCreation ?? 0);
     const pct = denom > 0 ? (read / denom) * 100 : null;
     const label = formatCompactToken(read);
@@ -1396,33 +2277,65 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   },
   m_token5h: (params, ctx) => {
     const body = windowedTokenLabel(ctx, 5 * 60 * 60 * 1000, "5h");
-    if (body == null) return null;
+    if (body == null) return placeholderWithColor("m_token5h", params, ctx);
     return wrapPlain(body, params.color as string | undefined);
   },
   m_token7d: (params, ctx) => {
     const body = windowedTokenLabel(ctx, 7 * 24 * 60 * 60 * 1000, "7d");
-    if (body == null) return null;
+    if (body == null) return placeholderWithColor("m_token7d", params, ctx);
     return wrapPlain(body, params.color as string | undefined);
   },
+  // v0.4.0+ — :color:scale (or no :color: at all) → 5-band
+  // scale color on the active tick, STALE_COLOR on the
+  // cached/inactive tick. :color:<shortcut|SGR> → that exact
+  // color on the active tick, STALE_COLOR on the cached
+  // tick (per the user's "inactive 不受 :color: 影响"
+  // decision — gray is the canonical "stale" signal).
   m_tokenInSpeed: (params, ctx) => {
-    const t = ctx.tokens;
-    if (!t || t.current.input == null || t.cost.totalDurationMs == null)
-      return null;
-    const durMs = t.cost.totalDurationMs;
-    if (durMs <= 0) return null;
-    const tps = (t.current.input / durMs) * 1000;
-    const color = (params.color as string | undefined) ?? STALE_COLOR;
-    return `${color}in:${formatSpeed(tps)}${RESET}`;
+    const probe = computeTickSpeed(ctx, "in", STALE_COLOR);
+    const userColor = params.color as string | undefined;
+    const activeColor =
+      userColor === SCALE_COLOR_SENTINEL || userColor == null
+        ? speedScaleColor("in", probe.tps ?? 0)
+        : (userColor ?? STALE_COLOR);
+    const r = computeTickSpeed(ctx, "in", activeColor);
+    if (r.writeBack && ctx.tokens?.sessionId) setPrevTick(ctx.tokens.sessionId, r.writeBack);
+    return r.value;
   },
   m_tokenOutSpeed: (params, ctx) => {
-    const t = ctx.tokens;
-    if (!t || t.current.output == null || t.cost.totalDurationMs == null)
-      return null;
-    const durMs = t.cost.totalDurationMs;
-    if (durMs <= 0) return null;
-    const tps = (t.current.output / durMs) * 1000;
+    const probe = computeTickSpeed(ctx, "out", STALE_COLOR);
+    const userColor = params.color as string | undefined;
+    const activeColor =
+      userColor === SCALE_COLOR_SENTINEL || userColor == null
+        ? speedScaleColor("out", probe.tps ?? 0)
+        : (userColor ?? STALE_COLOR);
+    const r = computeTickSpeed(ctx, "out", activeColor);
+    if (r.writeBack && ctx.tokens?.sessionId) setPrevTick(ctx.tokens.sessionId, r.writeBack);
+    return r.value;
+  },
+  m_tokenInAvg: (params, ctx) => {
     const color = (params.color as string | undefined) ?? STALE_COLOR;
-    return `${color}out:${formatSpeed(tps)}${RESET}`;
+    const r = computeTickAvg(ctx, "in", color);
+    if (r.writeBack && ctx.tokens?.sessionId) setPrevTick(ctx.tokens.sessionId, r.writeBack);
+    return r.value;
+  },
+  m_tokenOutAvg: (params, ctx) => {
+    const color = (params.color as string | undefined) ?? STALE_COLOR;
+    const r = computeTickAvg(ctx, "out", color);
+    if (r.writeBack && ctx.tokens?.sessionId) setPrevTick(ctx.tokens.sessionId, r.writeBack);
+    return r.value;
+  },
+  m_totalTokenIn: (params, ctx) => {
+    const body = computeTickTotals(ctx, "in").value;
+    return wrapPlain(body, params.color as string | undefined);
+  },
+  m_totalTokenOut: (params, ctx) => {
+    const body = computeTickTotals(ctx, "out").value;
+    return wrapPlain(body, params.color as string | undefined);
+  },
+  m_totalTokenWithCacheIn: (params, ctx) => {
+    const body = computeTickTotals(ctx, "cache").value;
+    return wrapPlain(body, params.color as string | undefined);
   },
   m_quote: (params, ctx) => {
     // Default freq = 1h (per-hour window). The schema resolver
@@ -1446,56 +2359,62 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   // their MODULES counterparts but accept an optional :color: override.
   m_session: (params, ctx) => {
     const s = ctx.tokens?.sessionName;
-    return s != null ? wrapPlain(s, params.color as string | undefined) : null;
+    if (s == null) return placeholderWithColor("m_session", params, ctx);
+    return wrapPlain(s, params.color as string | undefined);
   },
   m_model: (params, ctx) => {
     const s = ctx.tokens?.modelDisplayName;
-    return s != null ? wrapPlain(s, params.color as string | undefined) : null;
+    if (s == null) return placeholderWithColor("m_model", params, ctx);
+    return wrapPlain(s, params.color as string | undefined);
   },
   m_effort: (params, ctx) => {
     const s = ctx.tokens?.effort;
-    return s != null ? wrapPlain(s, params.color as string | undefined) : null;
+    if (s == null) return placeholderWithColor("m_effort", params, ctx);
+    return wrapPlain(s, params.color as string | undefined);
   },
   m_repo: (params, ctx) => {
     const r = ctx.tokens?.repo;
-    if (!r) return null;
+    if (!r) return placeholderWithColor("m_repo", params, ctx);
     const parts = [r.host, r.owner, r.name].filter(
       (p): p is string => p != null && p.length > 0,
     );
-    if (parts.length === 0) return null;
+    if (parts.length === 0) return placeholderWithColor("m_repo", params, ctx);
     return wrapPlain(parts.join("/"), params.color as string | undefined);
   },
+  m_ccVersion: (params, ctx) => {
+    const v = ctx.tokens?.ccversion;
+    if (v == null) return placeholderWithColor("m_ccVersion", params, ctx);
+    return wrapPlain(v, params.color as string | undefined);
+  },
+  // Deprecated alias — same body as m_ccVersion.
   m_ccversion: (params, ctx) => {
-    const s = ctx.tokens?.ccversion;
-    return s != null ? wrapPlain(s, params.color as string | undefined) : null;
+    const v = ctx.tokens?.ccversion;
+    if (v == null) return placeholderWithColor("m_ccversion", params, ctx);
+    return wrapPlain(v, params.color as string | undefined);
   },
   m_sessionDuration: (params, ctx) => {
     const ms = ctx.tokens?.cost.totalDurationMs;
-    return ms != null
-      ? wrapPlain(formatRemainingMs(ms), params.color as string | undefined)
-      : null;
+    if (ms == null) return placeholderWithColor("m_sessionDuration", params, ctx);
+    return wrapPlain(formatRemainingMs(ms), params.color as string | undefined);
   },
   m_sessionApiDuration: (params, ctx) => {
     const ms = ctx.tokens?.cost.totalApiDurationMs;
-    return ms != null
-      ? wrapPlain(formatRemainingMs(ms), params.color as string | undefined)
-      : null;
+    if (ms == null) return placeholderWithColor("m_sessionApiDuration", params, ctx);
+    return wrapPlain(formatRemainingMs(ms), params.color as string | undefined);
   },
   m_linesAdded: (params, ctx) => {
     const n = ctx.tokens?.cost.totalLinesAdded;
-    return n != null
-      ? wrapPlain(`+ ${n}`, params.color as string | undefined)
-      : null;
+    if (n == null) return placeholderWithColor("m_linesAdded", params, ctx);
+    return wrapPlain(`+ ${n}`, params.color as string | undefined);
   },
   m_linesRemoved: (params, ctx) => {
     const n = ctx.tokens?.cost.totalLinesRemoved;
-    return n != null
-      ? wrapPlain(`- ${n}`, params.color as string | undefined)
-      : null;
+    if (n == null) return placeholderWithColor("m_linesRemoved", params, ctx);
+    return wrapPlain(`- ${n}`, params.color as string | undefined);
   },
   m_tokenInTotal: (params, ctx) => {
     const t = ctx.tokens;
-    if (!t || t.totals.input == null) return null;
+    if (!t || t.totals.input == null) return placeholderWithColor("m_tokenInTotal", params, ctx);
     return wrapPlain(
       `in:${formatCompactToken(t.totals.input)}`,
       params.color as string | undefined,
@@ -1503,7 +2422,7 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   },
   m_tokenOutTotal: (params, ctx) => {
     const t = ctx.tokens;
-    if (!t || t.totals.output == null) return null;
+    if (!t || t.totals.output == null) return placeholderWithColor("m_tokenOutTotal", params, ctx);
     return wrapPlain(
       `out:${formatCompactToken(t.totals.output)}`,
       params.color as string | undefined,
@@ -1511,21 +2430,20 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   },
   m_contextSize: (params, ctx) => {
     const sz = ctx.tokens?.contextWindow?.size;
-    return sz != null
-      ? wrapPlain(formatCompactToken(sz), params.color as string | undefined)
-      : null;
+    if (sz == null) return placeholderWithColor("m_contextSize", params, ctx);
+    return wrapPlain(formatCompactToken(sz), params.color as string | undefined);
   },
   m_contextUsed: (params, ctx) => {
     const pct = ctx.tokens?.contextWindow?.usedPct;
-    return pct != null
-      ? wrapPlain(`${pct}%`, params.color as string | undefined)
-      : null;
+    if (pct == null) return placeholderWithColor("m_contextUsed", params, ctx);
+    return wrapPlain(`${pct}%`, params.color as string | undefined);
   },
   m_windowContext: (params, ctx) => {
-    if (!ctx.contextWindow) return null;
+    if (!ctx.contextWindow) return placeholderWithColor("m_windowContext", params, ctx);
+    const mode = (params.display as DisplayMode | undefined) ?? ctx.mode;
     const color = params.color as string | undefined;
-    if (color) return formatOneChunkColored(ctx.contextWindow, ctx.mode, color);
-    return formatOneChunk(ctx.contextWindow, ctx.mode);
+    if (color) return formatOneChunkColored(ctx.contextWindow, mode, color);
+    return formatOneChunk(ctx.contextWindow, mode);
   },
 };
 
@@ -1710,6 +2628,31 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
         inline = expandInlineToken(tok, "m_tokenInSpeed", 15, ctx);
       } else if (tok.startsWith("m_tokenOutSpeed:")) {
         inline = expandInlineToken(tok, "m_tokenOutSpeed", 16, ctx);
+      } else if (tok.startsWith("m_tokenInAvg:")) {
+        // m_tokenInAvg:color:<…> → skip "m_tokenInAvg:" (length 14).
+        // No prefix-shadowing conflict with m_tokenIn: above
+        // (different char at index 10: 'A' vs ':'), but listed
+        // here with the other speed-family modules for source
+        // cohesion.
+        inline = expandInlineToken(tok, "m_tokenInAvg", 14, ctx);
+      } else if (tok.startsWith("m_tokenOutAvg:")) {
+        inline = expandInlineToken(tok, "m_tokenOutAvg", 15, ctx);
+      } else if (tok.startsWith("m_totalTokenWithCacheIn:")) {
+        // Longer prefix listed first defensively — no actual
+        // shadowing because the only other m_totalToken* prefixes
+        // have different chars at index 17 (W vs I / O).
+        inline = expandInlineToken(
+          tok,
+          "m_totalTokenWithCacheIn",
+          25,
+          ctx,
+        );
+      } else if (tok.startsWith("m_totalTokenIn:")) {
+        // m_totalTokenIn: → skip the 15-char prefix INCLUDING the
+        // trailing colon, so the remainder starts at the value.
+        inline = expandInlineToken(tok, "m_totalTokenIn", 15, ctx);
+      } else if (tok.startsWith("m_totalTokenOut:")) {
+        inline = expandInlineToken(tok, "m_totalTokenOut", 16, ctx);
       } else if (tok.startsWith("m_quote:")) {
         // m_quote:freq:<…>:color:<…> → skip "m_quote:" (length 8).
         inline = expandInlineToken(tok, "m_quote", 8, ctx);
@@ -1721,7 +2664,12 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
         inline = expandInlineToken(tok, "m_effort", 9, ctx);
       } else if (tok.startsWith("m_repo:")) {
         inline = expandInlineToken(tok, "m_repo", 7, ctx);
+      } else if (tok.startsWith("m_ccVersion:")) {
+        // m_ccVersion:color:<c> → skip "m_ccVersion:" (length 12).
+        inline = expandInlineToken(tok, "m_ccVersion", 12, ctx);
       } else if (tok.startsWith("m_ccversion:")) {
+        // Deprecated alias — same dispatch as m_ccVersion: above.
+        // Pre-rename configs may still use the lowercase form.
         inline = expandInlineToken(tok, "m_ccversion", 12, ctx);
       } else if (tok.startsWith("m_sessionApiDuration:")) {
         // Longer prefix must come BEFORE m_sessionDuration: for the
@@ -1732,7 +2680,8 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
       } else if (tok.startsWith("m_linesAdded:")) {
         inline = expandInlineToken(tok, "m_linesAdded", 13, ctx);
       } else if (tok.startsWith("m_linesRemoved:")) {
-        inline = expandInlineToken(tok, "m_linesRemoved", 14, ctx);
+        // m_linesRemoved:color:<c> → skip "m_linesRemoved:" (length 15).
+        inline = expandInlineToken(tok, "m_linesRemoved", 15, ctx);
       } else if (tok.startsWith("m_contextSize:")) {
         inline = expandInlineToken(tok, "m_contextSize", 14, ctx);
       } else if (tok.startsWith("m_contextUsed:")) {
