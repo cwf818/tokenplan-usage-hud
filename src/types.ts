@@ -45,10 +45,14 @@ export type TokenSample = {
 // the renderer's `RenderContext` extension below.
 //
 // `current` = post-turn snapshot (used by m_ctx, m_cacheRead,
-//            m_cacheHitRate). `totals` = session cumulative (used by
-//            m_tokenIn, m_tokenOut, m_tokenTotal). `cost` = stdin.cost
-//            block, used by m_tokenInSpeed/m_tokenOutSpeed (session-avg
-//            requires total_duration_ms).
+//            m_cacheHitRate, m_tokenIn, m_tokenOut, m_tokenInSpeed,
+//            m_tokenOutSpeed). `totals` = session cumulative (used by
+//            m_tokenInTotal, m_tokenOutTotal, m_tokenTotal).
+//            `cost` = stdin.cost block. `contextWindow` = context
+//            window size + used% (m_contextSize, m_contextUsed,
+//            m_windowContext). The session-identity / metadata
+//            fields (sessionName, modelDisplayName, effort, repo,
+//            ccversion) feed the corresponding m_* modules verbatim.
 export type TokenSnapshot = {
   sessionId: string | null;
   cwd: string | null;
@@ -64,6 +68,29 @@ export type TokenSnapshot = {
   };
   cost: {
     totalDurationMs: number | null;
+    // v0.4.0+ — extended cost fields. Marked optional so older
+    // test fixtures (pre-v0.4.0) type-check; the parser always
+    // populates them on the live path.
+    totalApiDurationMs?: number | null;
+    totalLinesAdded?: number | null;
+    totalLinesRemoved?: number | null;
+  };
+  // v0.4.0+ — session identity / metadata read from stdin root.
+  // Marked optional (with `?`) so existing test fixtures that
+  // construct a TokenSnapshot without the v0.4.0+ fields still
+  // type-check. The parser always populates them; the renderer
+  // null-checks each field before reading. Optional types better
+  // reflect the "missing is fine" contract at the renderer level.
+  sessionName?: string | null;
+  modelDisplayName?: string | null;
+  effort?: string | null;
+  repo?: { host: string | null; owner: string | null; name: string | null } | null;
+  ccversion?: string | null;
+  // v0.4.0+ — context window stats read from stdin.context_window.
+  contextWindow?: {
+    size: number | null;
+    usedPct: number | null;
+    remainingPct: number | null;
   };
 };
 
