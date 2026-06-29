@@ -1257,17 +1257,40 @@ const MODULES: Record<string, Module> = {
     if (len === 0) return null;
     return `ctx:${formatCompactToken(len)}`;
   },
-  // Cache hit rate (read / (read + creation) * 100). 5-band coloring
-  // mirrors the existing 5-band system but uses cacheHitColors for the
-  // 3 relevant thresholds (good ≥ 80%, warn ≥ 50%, bad < 50%).
+  // Cache hit rate — session-aggregate formula:
+  //   sumCacheRead / (sumCacheRead + sumIn) * 100
+  // i.e. the same total fields that m_totalTokenWithCacheIn and
+  // m_totalTokenIn render. NOT the per-turn `cacheRead/(cacheRead
+  // + cacheCreation)` ratio (which would compute a per-API-call hit
+  // rate and lose all session context). Coloring still uses the
+  // cacheHitColors palette (good ≥ 80%, warn ≥ 50%, bad < 50%).
   m_cacheHitRate: (c) => {
-    const t = c.tokens?.current;
-    if (!t) return null;
-    const read = t.cacheRead ?? 0;
-    const creation = t.cacheCreation ?? 0;
-    const denom = read + creation;
+    const sid = c.tokens?.sessionId;
+    if (!sid) return null;
+    // Trigger the accumulator write so peekAvg reflects this tick's
+    // delta even when this module is the ONLY per-API-call module
+    // in the template (the totals/avg modules would otherwise be the
+    // canonical primer; without them we'd see stale "0%" forever).
+    // setAvg is idempotent via _tickAvgWriteMemo so coexisting
+    // totals/avg modules in the same render don't double-count.
+    const r = computeAndCacheTickDelta(c);
+    if (r.writeBack && sid) setPrevTick(sid, r.writeBack);
+    if (r.hasDelta && !_tickAvgWriteMemo.get(c)) {
+      _tickAvgWriteMemo.set(c, true);
+      const prev = peekAvg(sid);
+      const next: AvgSnapshot = {
+        sumIn: (prev?.sumIn ?? 0) + r.deltaIn,
+        sumOut: (prev?.sumOut ?? 0) + r.deltaOut,
+        sumApi: (prev?.sumApi ?? 0) + r.deltaApi,
+        sumCache: (prev?.sumCache ?? 0) + r.deltaCacheRead,
+      };
+      setAvg(sid, next);
+    }
+    const avg = peekAvg(sid);
+    if (!avg) return null;
+    const denom = avg.sumCache + avg.sumIn;
     if (denom === 0) return null;
-    const pct = (read / denom) * 100;
+    const pct = (avg.sumCache / denom) * 100;
     const color = cacheHitColor(pct);
     return `${color}cache:${pct.toFixed(cachePctPrecision())}%${RESET}`;
   },
@@ -2252,13 +2275,31 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     );
   },
   m_cacheHitRate: (params, ctx) => {
-    const t = ctx.tokens?.current;
-    if (!t) return placeholderWithColor("m_cacheHitRate", params, ctx);
-    const read = t.cacheRead ?? 0;
-    const creation = t.cacheCreation ?? 0;
-    const denom = read + creation;
+    const sid = ctx.tokens?.sessionId;
+    if (!sid) return placeholderWithColor("m_cacheHitRate", params, ctx);
+    // v0.4.0+ session-aggregate formula:
+    //   sumCacheRead / (sumCacheRead + sumIn) * 100
+    // Mirrors the totals modules: prime the accumulator from this
+    // tick's delta so peekAvg reflects this turn even when cacheHitRate
+    // is the only per-API-call module in the template.
+    const r = computeAndCacheTickDelta(ctx);
+    if (r.writeBack && sid) setPrevTick(sid, r.writeBack);
+    if (r.hasDelta && !_tickAvgWriteMemo.get(ctx)) {
+      _tickAvgWriteMemo.set(ctx, true);
+      const prev = peekAvg(sid);
+      const next: AvgSnapshot = {
+        sumIn: (prev?.sumIn ?? 0) + r.deltaIn,
+        sumOut: (prev?.sumOut ?? 0) + r.deltaOut,
+        sumApi: (prev?.sumApi ?? 0) + r.deltaApi,
+        sumCache: (prev?.sumCache ?? 0) + r.deltaCacheRead,
+      };
+      setAvg(sid, next);
+    }
+    const avg = peekAvg(sid);
+    if (!avg) return placeholderWithColor("m_cacheHitRate", params, ctx);
+    const denom = avg.sumCache + avg.sumIn;
     if (denom === 0) return placeholderWithColor("m_cacheHitRate", params, ctx);
-    const pct = (read / denom) * 100;
+    const pct = (avg.sumCache / denom) * 100;
     const color = (params.color as string | undefined) ?? cacheHitColor(pct);
     return `${color}cache:${pct.toFixed(cachePctPrecision())}%${RESET}`;
   },
