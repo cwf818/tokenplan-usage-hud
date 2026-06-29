@@ -897,7 +897,7 @@ describe("lineTemplate — colored modules :color override (user wins)", () => {
         sessionId: "sess-cache-read",
         totals: { input: 1000, output: 500 },
         current: { input: 100, output: 50, cacheCreation: 100, cacheRead: 900 },
-        cost: { totalDurationMs: 1000 },
+        cost: { totalDurationMs: 1000, totalApiDurationMs: null, totalLinesAdded: null, totalLinesRemoved: null },
       },
     });
     // Yellow wraps the cache: chunk; STALE_COLOR must not appear.
@@ -921,7 +921,7 @@ describe("lineTemplate — colored modules :color override (user wins)", () => {
         sessionId: "sess-speed",
         totals: { input: 5000, output: 0 },
         current: { input: 0, output: 0, cacheCreation: 0, cacheRead: 0 },
-        cost: { totalDurationMs: 5000 },
+        cost: { totalDurationMs: 5000, totalApiDurationMs: null, totalLinesAdded: null, totalLinesRemoved: null },
       },
     });
     // STALE_COLOR must not appear; red must wrap the speed chunk.
@@ -945,7 +945,7 @@ describe("lineTemplate — colored modules :color override (user wins)", () => {
         sessionId: "sess-hit",
         totals: { input: 0, output: 0 },
         current: { input: 0, output: 0, cacheCreation: 100, cacheRead: 900 },
-        cost: { totalDurationMs: 1000 },
+        cost: { totalDurationMs: 1000, totalApiDurationMs: null, totalLinesAdded: null, totalLinesRemoved: null },
       },
     });
     // Hit rate = 90% (read 900 / (900+100)). Default band color is "good"
@@ -961,6 +961,9 @@ describe("lineTemplate — plain token-usage modules :color override", () => {
   afterEach(() => __resetForTest());
 
   it("m_tokenIn:color:brightGreen wraps the 'in:N' chunk in brightGreen", () => {
+    // v0.4.0: m_tokenIn reads current.input (per-turn). Set both
+    // totals.input (cumulative) and current.input (per-turn) so the
+    // test asserts the per-turn semantic.
     __resetForTest({
       lineTemplate: {
         plan: ["m_tokenIn:color:brightGreen"],
@@ -975,14 +978,16 @@ describe("lineTemplate — plain token-usage modules :color override", () => {
         cwd: "C:\\fake",
         sessionId: "sess-tok-in",
         totals: { input: 1500, output: 0 },
-        current: { input: 0, output: 0, cacheCreation: 0, cacheRead: 0 },
-        cost: { totalDurationMs: 0 },
+        current: { input: 1500, output: 0, cacheCreation: 0, cacheRead: 0 },
+        cost: { totalDurationMs: 0, totalApiDurationMs: null, totalLinesAdded: null, totalLinesRemoved: null },
       },
     });
     assert.equal(line, "\x1b[38;5;41min:1.5k\x1b[0m", `got: ${JSON.stringify(line)}`);
   });
 
   it("bare m_tokenIn stays plain (byte-for-byte identical)", () => {
+    // v0.4.0: m_tokenIn reads current.input. Use a non-zero per-turn
+    // value so the module emits and the bare path stays uncolored.
     __resetForTest({
       lineTemplate: {
         plan: ["m_tokenIn"],
@@ -997,8 +1002,8 @@ describe("lineTemplate — plain token-usage modules :color override", () => {
         cwd: "C:\\fake",
         sessionId: "sess-tok-in-bare",
         totals: { input: 1500, output: 0 },
-        current: { input: 0, output: 0, cacheCreation: 0, cacheRead: 0 },
-        cost: { totalDurationMs: 0 },
+        current: { input: 1500, output: 0, cacheCreation: 0, cacheRead: 0 },
+        cost: { totalDurationMs: 0, totalApiDurationMs: null, totalLinesAdded: null, totalLinesRemoved: null },
       },
     });
     assert.equal(line, "in:1.5k", `got: ${JSON.stringify(line)}`);
@@ -1020,19 +1025,22 @@ describe("lineTemplate — plain token-usage modules :color override", () => {
         sessionId: "sess-ctx",
         totals: { input: 0, output: 0 },
         current: { input: 800, output: 0, cacheCreation: 0, cacheRead: 200 },
-        cost: { totalDurationMs: 0 },
+        cost: { totalDurationMs: 0, totalApiDurationMs: null, totalLinesAdded: null, totalLinesRemoved: null },
       },
     });
     // Total ctx length = 800 + 0 + 200 = 1000 → "ctx:1.0k". Orange = \x1b[38;5;208m.
     assert.equal(line, "\x1b[38;5;208mctx:1.0k\x1b[0m", `got: ${JSON.stringify(line)}`);
   });
 
-  it("m_tokenOut:color:yellow does NOT warn when totals.output is missing (v0.3.4 regression)", () => {
+  it("m_tokenOut:color:yellow does NOT warn when current.output is missing (v0.3.4 regression)", () => {
     // v0.3.3 conflated "parse failed" with "renderer returned null for
     // valid args but missing data" — the dispatcher warned
     // "unknown lineTemplate module" on EVERY render where the
     // stdin lacked total_output_tokens. v0.3.4+ distinguishes the
     // two: parse failure warns; missing-data renderer null is silent.
+    //
+    // v0.4.0: m_tokenOut reads current.output (per-turn) instead of
+    // totals.output. The test now exercises the per-turn field.
     __resetForTest({
       lineTemplate: {
         plan: ["m_tokenOut:color:yellow"],
@@ -1048,8 +1056,8 @@ describe("lineTemplate — plain token-usage modules :color override", () => {
           cwd: "C:\\fake",
           sessionId: "sess-no-out",
           totals: { input: 100, output: null },
-          current: { input: 0, output: 0, cacheCreation: 0, cacheRead: 0 },
-          cost: { totalDurationMs: 1000 },
+          current: { input: 0, output: null, cacheCreation: 0, cacheRead: 0 },
+          cost: { totalDurationMs: 1000, totalApiDurationMs: null, totalLinesAdded: null, totalLinesRemoved: null },
         },
       }),
     );
@@ -1079,7 +1087,7 @@ describe("lineTemplate — plain token-usage modules :color override", () => {
           sessionId: "sess-tok-in-bad",
           totals: { input: 1500, output: 0 },
           current: { input: 0, output: 0, cacheCreation: 0, cacheRead: 0 },
-          cost: { totalDurationMs: 0 },
+          cost: { totalDurationMs: 0, totalApiDurationMs: null, totalLinesAdded: null, totalLinesRemoved: null },
         },
       }),
     );

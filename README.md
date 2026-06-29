@@ -21,6 +21,10 @@ We deliberately don't reimplement the kitchen-sink statuslines that already exis
 
 ANSI colors are 5-band (256-color SGR): bright green / dark green / yellow / orange / red. Applied to the displayed value + the colored bar segment; the empty part of the bar stays uncolored so it remains readable.
 
+## What's new
+
+- **v0.4.0 (in development)** — exposes 16 new statusline modules reading the captured Claude Code stdin payload: session identity (`m_session`, `m_model`, `m_effort`, `m_repo`, `m_ccversion`), session metrics (`m_sessionDuration`, `m_sessionApiDuration`, `m_linesAdded`, `m_linesRemoved`), cumulative token counters (`m_tokenInTotal`, `m_tokenOutTotal`), context-window stats (`m_contextSize`, `m_contextUsed`, `m_windowContext`). Also: `m_tokenIn` / `m_tokenOut` and `m_tokenInSpeed` / `m_tokenOutSpeed` now read the per-turn `current_usage` fields instead of session-cumulative. See [CHANGELOG.md](CHANGELOG.md) for the full v0.4.0 list.
+
 ## Install
 
 The plugin is a single-plugin marketplace. Install it in three steps:
@@ -472,17 +476,37 @@ Recognized modules:
 | `m_balance`        | The DeepSeek balance chunk (e.g. `$25 · ￥110`), single SGR-wrapped block |
 | `m_age`            | The age annotation: `🔗 5m ago` (fresh, in-template) or `⛓️‍💥 5m ago` (stale, in-template or forced fallback). Emits unconditionally when listed in the lineTemplate; returns `null` only when `ageMs` is missing. |
 | `m_version`        | The plugin version: `v0.3.3` (auto-loaded from `.claude-plugin/plugin.json`) |
-| `m_tokenIn`        | Session cumulative input tokens — e.g. `in:163k`. Reads stdin `context_window.total_input_tokens`. Hidden when stdin lacks the field. |
-| `m_tokenOut`       | Session cumulative output tokens — e.g. `out:155`. Reads stdin `context_window.total_output_tokens`. |
+| `m_tokenIn`        | Per-turn input tokens — e.g. `in:140`. Reads stdin `current_usage.input_tokens`. **v0.4.0**: semantics changed from session-cumulative. For the cumulative version, use `m_tokenInTotal`. Hidden when stdin lacks the field. |
+| `m_tokenOut`       | Per-turn output tokens — e.g. `out:265`. Reads stdin `current_usage.output_tokens`. **v0.4.0**: semantics changed from session-cumulative. |
 | `m_tokenTotal` / `m_tokenSession` | Session cumulative total (`input + output + cache`) — e.g. `tot:163k` / `session:163k`. Two names for the same metric; pick whichever reads better in your template. |
 | `m_ctx`            | Current post-turn context length (excludes output) — e.g. `ctx:163k`. Reads `current_usage.{input + cache_creation + cache_read}`. |
 | `m_cacheHitRate`   | Cache hit rate as a percentage with 3-band coloring (`good ≥ 80%`, `warn ≥ 50%`, `bad < 50%`) — e.g. green `cache:99%`. Reads `current_usage.{cache_read, cache_creation}`. |
 | `m_cacheRead`      | Cache read tokens + context share — e.g. dim-gray `cache:163k (99.2%)`. Hidden when cache traffic is zero. |
 | `m_token5h`        | Tokens used in the last 5h (delta between first and last sample in the window) — e.g. `5h:12k`. Reads `state/token-samples/<projectHash>/<sessionId>.jsonl`. Hidden when fewer than 2 samples exist for the window. |
 | `m_token7d`        | Same, for the last 7 days. |
-| `m_tokenInSpeed`   | Session-average input speed — e.g. dim-gray `in:42.5 t/s`. Reads `total_input_tokens / cost.total_duration_ms × 1000`. Hidden when session duration is 0. |
+| `m_tokenInSpeed`   | Per-turn input speed — e.g. dim-gray `in:0.1 t/s`. **v0.4.0**: numerator changed to `current_usage.input_tokens` (per-turn). Math is "turn-tokens / total session time" — not real-time throughput. Hidden when session duration is 0. |
 | `m_tokenOutSpeed`  | Same for output tokens. |
 | `m_quote`          | An inspirational short quote from a 100+ entry bilingual pool (English + 中文). See the [m_quote section](#m_quote-v036) below for the `:freq:` and `:color:` parameters. |
+
+**v0.4.0+ session-info / metadata modules** (read the live stdin payload
+captured by `/statusline`):
+
+| Token                    | Renders                                                          |
+| ------------------------ | ---------------------------------------------------------------- |
+| `m_session`              | The session name — e.g. `strip-diagnostics-display`. Reads stdin `session_name`. |
+| `m_model`                | The model display name — e.g. `MiniMax-M3`. Reads stdin `model.display_name`. |
+| `m_effort`               | The effort level — e.g. `high`. Reads stdin `effort` (accepts string or `{level}` object). |
+| `m_repo`                 | Repository identity — e.g. `github.com/cwf818/tokenplan-usage-hud`. Reads stdin `workspace.repo.{host, owner, name}`, drops null components. |
+| `m_ccversion`            | The Claude Code CLI version — e.g. `2.1.191`. Reads stdin `version`. |
+| `m_sessionDuration`      | Elapsed session time — e.g. `20h42m`. Reads stdin `cost.total_duration_ms` in `1d2h3m` format. |
+| `m_sessionApiDuration`   | API-call time within the session — e.g. `2h18m`. Reads stdin `cost.total_api_duration_ms`. |
+| `m_linesAdded`           | Session-cumulative lines added — e.g. `+ 3965` (with leading space). Reads stdin `cost.total_lines_added`. |
+| `m_linesRemoved`         | Session-cumulative lines removed — e.g. `- 967`. Reads stdin `cost.total_lines_removed`. |
+| `m_tokenInTotal`         | Session-cumulative input tokens — e.g. `in:163k`. **v0.4.0**: new module, replaces the pre-v0.4.0 `m_tokenIn` semantic. Reads stdin `context_window.total_input_tokens`. |
+| `m_tokenOutTotal`        | Session-cumulative output tokens — e.g. `out:155`. **v0.4.0**: new module, replaces the pre-v0.4.0 `m_tokenOut` semantic. |
+| `m_contextSize`          | Context window size (compact) — e.g. `200.0k`. Reads stdin `context_window.context_window_size`. |
+| `m_contextUsed`          | Context used percentage — e.g. `63%`. Reads stdin `context_window.used_percentage`. |
+| `m_windowContext`        | Context bar + 5-band-colored percentage, parallel to `m_window5h` / `m_window7d` — e.g. `▓▓▓▓▓░░░ 63%`. Synthesized from `used_percentage`. |
 
 **Visibility of `m_age` (priority: template-driven, stale fallback):**
 - If your `lineTemplate` includes `m_age`, the module emits **unconditionally** (no stale gating). Emoji reflects the fetch state: `🔗 X ago` on fresh ticks (showing the cache age), `⛓️‍💥 X ago` on stale (showing time since last successful fetch). Hidden only when `ageMs` is missing.
@@ -527,7 +551,7 @@ The bare forms (`m_modeLabel`, `s_0`, `m_window5h`, `m_tokenIn`, …) keep worki
 
 ### Per-module `:color:` override (v0.3.4+)
 
-Every existing module — `m_window5h`, `m_window7d`, `m_countdown5h`, `m_countdown7d`, `m_balance`, `m_age`, `m_version`, `m_tokenIn`, `m_tokenOut`, `m_tokenTotal`, `m_tokenSession`, `m_ctx`, `m_cacheHitRate`, `m_cacheRead`, `m_token5h`, `m_token7d`, `m_tokenInSpeed`, `m_tokenOutSpeed` — also accepts an optional `:color:<c>` segment. Two cases:
+Every existing module — `m_window5h`, `m_window7d`, `m_countdown5h`, `m_countdown7d`, `m_balance`, `m_age`, `m_version`, `m_tokenIn`, `m_tokenOut`, `m_tokenTotal`, `m_tokenSession`, `m_ctx`, `m_cacheHitRate`, `m_cacheRead`, `m_token5h`, `m_token7d`, `m_tokenInSpeed`, `m_tokenOutSpeed`, plus the v0.4.0+ session-info modules (`m_session`, `m_model`, `m_effort`, `m_repo`, `m_ccversion`, `m_sessionDuration`, `m_sessionApiDuration`, `m_linesAdded`, `m_linesRemoved`, `m_tokenInTotal`, `m_tokenOutTotal`, `m_contextSize`, `m_contextUsed`, `m_windowContext`) — also accepts an optional `:color:<c>` segment. Two cases:
 
 - **Plain-text modules** (e.g. `m_version`, `m_tokenIn`, `m_countdown5h`, `m_ctx`): the override simply wraps the natural output in `<color>…<RESET>` SGR. The module's own body is unchanged.
 - **Already-colored modules** (e.g. `m_window5h`, `m_balance`, `m_cacheHitRate`, `m_cacheRead`, `m_age`, `m_tokenInSpeed`, `m_tokenOutSpeed`): the override **replaces** the natural color choice — band-based, cache-hit-band, or fixed `stale` color — with your `<color>`. The user's color always wins; if you didn't say `:color:`, the module keeps its existing coloring and the default `lineTemplate` output is byte-for-byte identical to v0.3.3.
