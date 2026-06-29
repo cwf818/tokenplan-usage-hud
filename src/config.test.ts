@@ -265,6 +265,143 @@ describe("loadConfig — countdown.resetArrows", () => {
   });
 });
 
+describe("loadConfig — lineTemplate.plan preset (v0.4.0+)", () => {
+  it("plan: '1line' resolves to the tokenplan-only single-line preset", async () => {
+    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
+      lineTemplate: { plan: "1line", balance: ["m_modeLabel", "s_0", "m_balance"] },
+    }));
+    const cfg = await loadConfig();
+    assert.ok(cfg.lineTemplate.plan.includes("m_window5h"));
+    assert.ok(cfg.lineTemplate.plan.includes("m_window7d"));
+    // 1line has no context/token line, no m_session, no m_branch.
+    assert.ok(!cfg.lineTemplate.plan.includes("m_branch"));
+    assert.ok(!cfg.lineTemplate.plan.includes("m_tokenIn:"));
+  });
+
+  it("plan: 'simple' is an alias of '1line' (same shape)", async () => {
+    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
+      lineTemplate: { plan: "simple", balance: ["m_modeLabel", "s_0", "m_balance"] },
+    }));
+    const cfg = await loadConfig();
+    assert.ok(cfg.lineTemplate.plan.includes("m_window5h"));
+    assert.ok(cfg.lineTemplate.plan.includes("m_window7d"));
+  });
+
+  it("plan: 'simple-alone' adds an m_label prefix and uses :nulldrop:false", async () => {
+    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
+      lineTemplate: { plan: "simple-alone", balance: ["m_modeLabel", "s_0", "m_balance"] },
+    }));
+    const cfg = await loadConfig();
+    assert.ok(cfg.lineTemplate.plan.some(t => t.startsWith("m_label:")));
+    assert.ok(cfg.lineTemplate.plan.some(t => t.startsWith("m_window5h:nulldrop:false")));
+  });
+
+  it("plan: 'standard' is a 2-line preset (tokenplan + context & token)", async () => {
+    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
+      lineTemplate: { plan: "standard", balance: ["m_modeLabel", "s_0", "m_balance"] },
+    }));
+    const cfg = await loadConfig();
+    assert.ok(cfg.lineTemplate.plan.includes("m_window5h"));
+    assert.ok(cfg.lineTemplate.plan.some(t => t.startsWith("m_tokenIn:")));
+    assert.ok(cfg.lineTemplate.plan.some(t => t.startsWith("m_ctx:")));
+    // standard does NOT add a session label line (assumes upstream chain).
+    assert.ok(!cfg.lineTemplate.plan.some(t => t.startsWith("m_label:Session")));
+    // The two lines are joined by an s_2 (newline).
+    assert.ok(cfg.lineTemplate.plan.includes("s_2"));
+  });
+
+  it("plan: 'standard-alone' adds a Session label line on top", async () => {
+    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
+      lineTemplate: { plan: "standard-alone", balance: ["m_modeLabel", "s_0", "m_balance"] },
+    }));
+    const cfg = await loadConfig();
+    assert.ok(cfg.lineTemplate.plan.some(t => t.startsWith("m_label:Session")));
+    assert.ok(cfg.lineTemplate.plan.some(t => t.startsWith("m_label:Usage")));
+    assert.ok(cfg.lineTemplate.plan.some(t => t.startsWith("m_label:Context")));
+    assert.ok(cfg.lineTemplate.plan.some(t => t.startsWith("m_tokenIn:")));
+  });
+
+  it("plan: 'abundant' adds git info on line 0", async () => {
+    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
+      lineTemplate: { plan: "abundant", balance: ["m_modeLabel", "s_0", "m_balance"] },
+    }));
+    const cfg = await loadConfig();
+    assert.ok(cfg.lineTemplate.plan.some(t => t.startsWith("m_branch:")));
+    assert.ok(cfg.lineTemplate.plan.some(t => t.startsWith("m_gitStatus:")));
+    assert.ok(cfg.lineTemplate.plan.some(t => t.startsWith("m_session:")));
+  });
+
+  it("plan: 'complete' includes totals and line counts on a 4th line", async () => {
+    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
+      lineTemplate: { plan: "complete", balance: ["m_modeLabel", "s_0", "m_balance"] },
+    }));
+    const cfg = await loadConfig();
+    assert.ok(cfg.lineTemplate.plan.some(t => t.startsWith("m_totalTokenIn:")));
+    assert.ok(cfg.lineTemplate.plan.some(t => t.startsWith("m_linesAdded:")));
+    assert.ok(cfg.lineTemplate.plan.some(t => t.startsWith("m_label:Total")));
+  });
+
+  it("plan: unknown preset name falls back to default + warns once", async () => {
+    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
+      lineTemplate: { plan: "totally-made-up", balance: ["m_modeLabel", "s_0", "m_balance"] },
+    }));
+    const cfg = await loadConfig();
+    // Hardcoded default has m_window5h and m_countdown5h, etc.
+    assert.ok(cfg.lineTemplate.plan.includes("m_window5h"));
+    assert.ok(cfg.lineTemplate.plan.includes("m_window7d"));
+    assert.match(capturedStderr, /preset "totally-made-up" is unknown/);
+    // The warn message lists the valid preset names so the user can
+    // fix the typo without reading the docs.
+    assert.match(capturedStderr, /standard/);
+  });
+
+  it("plan: array form is still supported (back-compat with v0.3.x configs)", async () => {
+    const tokens = ["m_modeLabel", "s_0", "m_window5h", "s_0", "m_countdown5h"];
+    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
+      lineTemplate: { plan: tokens, balance: ["m_modeLabel", "s_0", "m_balance"] },
+    }));
+    const cfg = await loadConfig();
+    assert.deepEqual(cfg.lineTemplate.plan, tokens);
+  });
+
+  it("plan: non-string non-array (e.g. number) warns + falls back", async () => {
+    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
+      lineTemplate: { plan: 42, balance: ["m_modeLabel", "s_0", "m_balance"] },
+    }));
+    const cfg = await loadConfig();
+    assert.ok(cfg.lineTemplate.plan.includes("m_window5h"));
+    assert.match(capturedStderr, /lineTemplate\.plan must be an array of strings or a preset name/);
+  });
+});
+
+describe("loadConfig — lineTemplate.balance preset (v0.4.0+)", () => {
+  it("balance: 'simple' resolves to the default token array", async () => {
+    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
+      lineTemplate: { plan: ["m_modeLabel", "s_0", "m_window5h"], balance: "simple" },
+    }));
+    const cfg = await loadConfig();
+    assert.ok(cfg.lineTemplate.balance.includes("m_modeLabel"));
+    assert.ok(cfg.lineTemplate.balance.includes("m_balance"));
+  });
+
+  it("balance: 'simple-alone' adds an m_label prefix for solo use", async () => {
+    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
+      lineTemplate: { plan: ["m_modeLabel", "s_0", "m_window5h"], balance: "simple-alone" },
+    }));
+    const cfg = await loadConfig();
+    assert.ok(cfg.lineTemplate.balance.some(t => t.startsWith("m_label:Balance")));
+  });
+
+  it("balance: unknown preset name falls back to default + warns", async () => {
+    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
+      lineTemplate: { plan: ["m_modeLabel", "s_0", "m_window5h"], balance: "nonexistent" },
+    }));
+    const cfg = await loadConfig();
+    assert.deepEqual(cfg.lineTemplate.balance, ["m_modeLabel", "s_0", "m_balance"]);
+    assert.match(capturedStderr, /preset "nonexistent" is unknown/);
+  });
+});
+
 describe("display precedence", () => {
   it("config.json wins over the hardcoded default", async () => {
     writeFileSync(join(tmpDir, "config.json"), JSON.stringify({ display: "remaining" }));
