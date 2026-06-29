@@ -1,0 +1,44 @@
+{
+  "_comment": "Real Claude Code statusline stdin payload captured 2026-06-29. Schema verified against live claude-code v2.1.191. Used by src/index-parse.test.ts (happy-path) and as a reference for the TokenSnapshot shape.",
+  "session_id": "b2bee628-bc4f-4c79-a198-cb39b098b547",
+  "transcript_path": "C:\\Users\\chen\\.claude\\projects\\D--WorkSpace-tokenplan-usage-hud\\b2bee628-bc4f-4c79-a198-cb39b098b547.jsonl",
+  "cwd": "D:\\WorkSpace\\tokenplan-usage-hud",
+  "effort": { "level": "high" },
+  "session_name": "strip-diagnostics-display",
+  "model": { "id": "MiniMax-M3", "display_name": "MiniMax-M3" },
+  "workspace": {
+    "current_dir": "D:\\WorkSpace\\tokenplan-usage-hud",
+    "project_dir": "D:\\WorkSpace\\tokenplan-usage-hud",
+    "added_dirs": [],
+    "repo": {
+      "host": "github.com",
+      "owner": "cwf818",
+      "name": "tokenplan-usage-hud"
+    }
+  },
+  "version": "2.1.191",
+  "output_style": { "name": "default" },
+  "cost": {
+    "total_cost_usd": 67.52849099999992,
+    "total_duration_ms": 74514744,
+    "total_api_duration_ms": 8301407,
+    "total_lines_added": 3965,
+    "total_lines_removed": 967
+  },
+  "context_window": {
+    "total_input_tokens": 126860,
+    "total_output_tokens": 265,
+    "context_window_size": 200000,
+    "current_usage": {
+      "input_tokens": 140,
+      "output_tokens": 265,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 126720
+    },
+    "used_percentage": 63,
+    "remaining_percentage": 37
+  },
+  "exceeds_200k_tokens": false,
+  "fast_mode": false,
+  "thinking": { "enabled": false }
+}
