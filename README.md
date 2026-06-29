@@ -482,7 +482,7 @@ Recognized modules:
 | `m_token7d`        | Same, for the last 7 days. |
 | `m_tokenInSpeed`   | Session-average input speed — e.g. dim-gray `in:42.5 t/s`. Reads `total_input_tokens / cost.total_duration_ms × 1000`. Hidden when session duration is 0. |
 | `m_tokenOutSpeed`  | Same for output tokens. |
-| `m_quote`          | An inspirational short quote from a 100+ entry bilingual pool (English + 中文). See the [m_quote section](#m_quote-v035) below for the `:freq:` and `:color:` parameters. |
+| `m_quote`          | An inspirational short quote from a 100+ entry bilingual pool (English + 中文). See the [m_quote section](#m_quote-v036) below for the `:freq:` and `:color:` parameters. |
 
 **Visibility of `m_age` (priority: template-driven, stale fallback):**
 - If your `lineTemplate` includes `m_age`, the module emits **unconditionally** (no stale gating). Emoji reflects the fetch state: `🔗 X ago` on fresh ticks (showing the cache age), `⛓️‍💥 X ago` on stale (showing time since last successful fetch). Hidden only when `ageMs` is missing.
@@ -558,32 +558,40 @@ The bare forms (`m_window5h`, `m_age`, `m_tokenIn`, …) still go through the or
 
 **Extension point:** future parameterized modules (`m_model:...`, …) plug in by adding an entry to `INLINE_SCHEMAS` and `INLINE_RENDERERS` in `src/render.ts`. No new top-level config keys needed.
 
-### `m_quote` (v0.3.5+)
+### `m_quote` (v0.3.6+)
 
 An inspirational short quote, drawn from a 100+ entry bilingual pool (English + 中文). Opt-in — the default `lineTemplate` does NOT include it; add it where you want it.
 
 **Token forms**
 
-| Form                       | Default freq | Default color | Description |
-| -------------------------- | ------------ | ------------- | ----------- |
-| `m_quote`                  | `h`          | none          | Plain quote, no SGR wrap. |
-| `m_quote:freq:<d\|hd\|h\|hh\|m>` | (the one supplied) | none | Pick how often the quote rotates (see below). |
-| `m_quote:color:<c>`        | `h`          | (the one supplied) | Tint the quote (see below). |
-| `m_quote:freq:<…>:color:<…>` | — | — | Combine both. |
+| Form                            | Default freq | Default color | Description |
+| ------------------------------- | ------------ | ------------- | ----------- |
+| `m_quote`                       | `h`          | none          | Plain quote, no SGR wrap. |
+| `m_quote:freq:<numeric-time>`   | (the one supplied) | none | Pick how often the quote rotates (see below). |
+| `m_quote:color:<c>`             | `h`          | (the one supplied) | Tint the quote (see below). |
+| `m_quote:freq:<…>:color:<…>`    | —            | —             | Combine both. |
 
-**Frequency (`freq`)**
+**Frequency (`freq`) — single-unit time format**
 
-The quote is stable within a window of size determined by `freq`, and rolls over when the window does:
+The freq argument is a `<digits><unit>` string (bare unit letter = `1<unit>`). Multi-unit forms like `2h10m` are rejected — express 130 minutes as `130m`. The unit letter picks the bucket size; the digit prefix picks the count.
 
-| `freq` | Window size | Use case |
-| ------ | ----------- | -------- |
-| `d`    | 24h (anchored to UTC midnight) | "One quote a day" — pick a daily mantra |
-| `hd`   | 12h (anchored to UTC midnight) | AM vs PM rotation |
-| `h`    | 1h  | Default. A fresh quote each hour. |
-| `hh`   | 30m | Half-hour rotation. |
-| `m`    | 1m  | Per-minute — actively refreshing. |
+| `freq`  | Window size | Boundary anchor |
+| ------- | ----------- | --------------- |
+| `s`     | 1s          | Unix-epoch multiples (since 1s divides 1d, also UTC-aligned) |
+| `m`     | 1m          | UTC midnight-aligned (1m divides 1d) |
+| `h`     | 1h          | UTC midnight-aligned (default) |
+| `d`     | 24h         | UTC midnight-aligned |
+| `2h`    | 2h          | UTC midnight-aligned (divides 24h) |
+| `12h`   | 12h         | UTC midnight-aligned (00:00 / 12:00 UTC) |
+| `6h`    | 6h          | UTC midnight-aligned (00:00 / 06:00 / 12:00 / 18:00 UTC) |
+| `30m`   | 30m         | UTC midnight-aligned |
+| `7d`    | 7d          | **Rolling** (7d does not divide 1d, so boundaries are epoch-relative) |
+| `13h`   | 13h         | **Rolling** |
+| `130m`  | 130m        | **Rolling** |
 
-The window is keyed off Unix ms / bucket-size (NOT your local timezone for `d`/`hd`). Two ticks within the same window always produce the same quote.
+**Anchor rule:** when the bucket size divides one day (`86_400_000 % bucket === 0`), the boundary sits on UTC midnight. Otherwise the boundary sits at Unix-epoch multiples of the bucket. This gives predictable wall-clock times for "round" windows like 12h / 6h / 30m, and accepts arbitrary windows like 13h or 7d for users who want them.
+
+Two ticks within the same window always produce the same quote. Multi-unit forms (`2h10m`), leading zeros (`01h`), zero counts (`0h`), oversize counts (`> 1_000_000`), unknown units (`5x`), and malformed inputs (`+5h`, `1.5h`, `h10`) are all rejected — the token is dropped with a one-shot stderr warn.
 
 **Color (`color`)**
 
@@ -607,8 +615,8 @@ Rainbow / rand-rainbow / hue colors are also stable within a `freq` window — s
       "m_window5h", "s_0", "m_countdown5h",
       "s_0", "s_1", "s_0",
       "m_window7d", "s_0", "m_countdown7d",
-      "s_2",                          // newline separator (see "Module tokens")
-      "m_quote:freq:h:color:rainbow"  // hourly rotating rainbow quote on a new line
+      "s_2",                              // newline separator (see "Module tokens")
+      "m_quote:freq:12h:color:rainbow"   // twice-daily rotating rainbow quote
     ],
     "balance": ["m_modeLabel", "s_0", "m_balance", "s_2", "m_quote:color:hue"]
   }
@@ -617,8 +625,8 @@ Rainbow / rand-rainbow / hue colors are also stable within a `freq` window — s
 
 **Behavior notes**
 
-- The pool has 110+ entries; the renderer is deterministic per `(freq, nowMs)` so the same window always shows the same quote. No Math.random / no Date.now inside the renderer.
-- An invalid `freq` value (e.g. `m_quote:freq:yearly`) drops the token with a one-shot stderr warn, same as any malformed inline-args token.
+- The pool has 110+ entries; the renderer is deterministic per `(freq, nowMs)` so the same window always shows the same quote. No `Math.random` / no `Date.now` inside the renderer.
+- An invalid `freq` value (e.g. `m_quote:freq:yearly`, `m_quote:freq:2h10m`) drops the token with a one-shot stderr warn.
 - An invalid `color` value drops the token with a one-shot stderr warn.
 
 ### Recipes

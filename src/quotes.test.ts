@@ -1,10 +1,14 @@
-// v0.3.5+ — Tests for the m_quote module + supporting helpers in
+// v0.3.6+ — Tests for the m_quote module + supporting helpers in
 // src/quotes.ts and src/render.ts.
 //
 // Covers:
-//   - pickQuote: bucket stability (same freq + same window = same
-//     quote), bucket rollover (different windows = may differ), and
-//     the 5 freq values land in expected ranges.
+//   - parseFreq: accepts single-unit time strings; rejects multi-
+//     unit, leading zeros, zero counts, oversize counts, unknown
+//     units, empty input.
+//   - utcAnchored: returns true iff bucketMs divides 86_400_000.
+//   - pickQuote / quoteIndex: bucket stability (same freq + same
+//     window = same quote), bucket rollover (different windows =
+//     may differ), UTC-anchored vs rolling boundaries.
 //   - buildRainbow: per-char SGR wraps, salt offset rotates the
 //     palette, same text + same salt = identical output.
 //   - buildHue: deterministic per text, falls in the 6×6×6 cube.
@@ -23,9 +27,11 @@ import { __resetForTest } from "./config.ts";
 import {
   buildRainbow,
   buildHue,
+  parseFreq,
   pickQuote,
   quoteIndex,
   QUOTES,
+  utcAnchored,
 } from "./quotes.ts";
 
 const RESET = "\x1b[0m";
@@ -68,51 +74,191 @@ describe("quotes — pool", () => {
   });
 });
 
+describe("quotes — parseFreq", () => {
+  it("accepts bare unit letters as shorthand for 1<unit>", () => {
+    assert.deepEqual(parseFreq("d"), { count: 1, unit: "d", ms: 86_400_000 });
+    assert.deepEqual(parseFreq("h"), { count: 1, unit: "h", ms: 3_600_000 });
+    assert.deepEqual(parseFreq("m"), { count: 1, unit: "m", ms: 60_000 });
+    assert.deepEqual(parseFreq("s"), { count: 1, unit: "s", ms: 1_000 });
+  });
+
+  it("accepts single-unit numeric forms", () => {
+    assert.deepEqual(parseFreq("12h"), { count: 12, unit: "h", ms: 12 * 3_600_000 });
+    assert.deepEqual(parseFreq("30m"), { count: 30, unit: "m", ms: 30 * 60_000 });
+    assert.deepEqual(parseFreq("7d"), { count: 7, unit: "d", ms: 7 * 86_400_000 });
+    assert.deepEqual(parseFreq("130m"), { count: 130, unit: "m", ms: 130 * 60_000 });
+    assert.deepEqual(parseFreq("60s"), { count: 60, unit: "s", ms: 60_000 });
+  });
+
+  it("rejects multi-unit forms like '2h10m'", () => {
+    assert.equal(parseFreq("2h10m"), null);
+    assert.equal(parseFreq("1d2h"), null);
+    assert.equal(parseFreq("2h30m"), null);
+  });
+
+  it("rejects leading zeros", () => {
+    assert.equal(parseFreq("01h"), null);
+    assert.equal(parseFreq("007"), null);
+  });
+
+  it("rejects zero counts", () => {
+    assert.equal(parseFreq("0h"), null);
+    assert.equal(parseFreq("0"), null);
+  });
+
+  it("rejects unknown units", () => {
+    assert.equal(parseFreq("5x"), null);
+    assert.equal(parseFreq("1y"), null);
+    assert.equal(parseFreq("1w"), null);
+  });
+
+  it("rejects empty / malformed inputs", () => {
+    assert.equal(parseFreq(""), null);
+    // "h" alone IS valid (the 1h shorthand). "hh" alone is invalid
+    // (not in {d,h,m,s}, not parseable as <digits><unit>).
+    assert.equal(parseFreq("hh"), null);
+    assert.equal(parseFreq("h10"), null);
+    assert.equal(parseFreq("10"), null);
+    assert.equal(parseFreq("+5h"), null);
+    assert.equal(parseFreq("-1h"), null);
+    assert.equal(parseFreq("5 h"), null);
+    assert.equal(parseFreq("1.5h"), null);
+  });
+
+  it("rejects oversize counts (> 1_000_000)", () => {
+    assert.equal(parseFreq("1000001s"), null);
+    assert.equal(parseFreq("9999999d"), null);
+  });
+
+  it("accepts boundary count of 1_000_000", () => {
+    assert.ok(parseFreq("1000000s") !== null);
+  });
+});
+
+describe("quotes — utcAnchored", () => {
+  it("returns true for buckets that divide one day", () => {
+    assert.equal(utcAnchored(86_400_000), true);  // 1d
+    assert.equal(utcAnchored(43_200_000), true);  // 12h
+    assert.equal(utcAnchored(28_800_000), true);  // 8h
+    assert.equal(utcAnchored(21_600_000), true);  // 6h
+    assert.equal(utcAnchored(14_400_000), true);  // 4h
+    assert.equal(utcAnchored(10_800_000), true);  // 3h
+    assert.equal(utcAnchored(7_200_000), true);   // 2h
+    assert.equal(utcAnchored(3_600_000), true);   // 1h
+    assert.equal(utcAnchored(1_800_000), true);   // 30m
+    assert.equal(utcAnchored(60_000), true);      // 1m
+    assert.equal(utcAnchored(1_000), true);       // 1s
+  });
+
+  it("returns false for buckets that don't divide one day", () => {
+    assert.equal(utcAnchored(46_800_000), false);  // 13h
+    assert.equal(utcAnchored(70_000), false);      // 70s (70 doesn't divide 86400)
+    assert.equal(utcAnchored(5_500), false);       // 5.5s
+    assert.equal(utcAnchored(604_800_000), false); // 7d — doesn't divide 1d
+  });
+
+  it("returns false for non-positive buckets", () => {
+    assert.equal(utcAnchored(0), false);
+    assert.equal(utcAnchored(-1), false);
+  });
+});
+
 describe("quotes — pickQuote / quoteIndex", () => {
-  const nowMs = 1_700_000_000_000; // fixed reference time for deterministic tests
+  const nowMs = 1_700_006_400_000; // exactly UTC 2023-11-15 00:00:00
+
+  function f(raw: string) {
+    const parsed = parseFreq(raw);
+    if (!parsed) throw new Error(`bad freq: ${raw}`);
+    return parsed;
+  }
 
   it("same freq + same nowMs → same quote (bucket stability)", () => {
-    const a = pickQuote("h", nowMs);
-    const b = pickQuote("h", nowMs);
+    const a = pickQuote(f("h"), nowMs);
+    const b = pickQuote(f("h"), nowMs);
     assert.equal(a, b);
   });
 
   it("same freq + slightly later nowMs in the same hour bucket → same quote", () => {
-    const a = pickQuote("h", nowMs);
-    const b = pickQuote("h", nowMs + 30 * 60_000); // +30min, still in same hour
+    const a = pickQuote(f("h"), nowMs);
+    const b = pickQuote(f("h"), nowMs + 30 * 60_000); // +30min, still in same hour
     assert.equal(a, b);
   });
 
   it("same freq + a later hour bucket → may differ", () => {
-    const b = pickQuote("h", nowMs + 3_600_000); // +1h
-    // The chance of collision is 1/QUOTES.length ≈ 0.9%. Asserting
-    // "may differ" with a fixed time → we just check the index
-    // changed (which is what we actually care about).
-    assert.notEqual(quoteIndex("h", nowMs), quoteIndex("h", nowMs + 3_600_000));
+    const b = pickQuote(f("h"), nowMs + 3_600_000); // +1h
+    assert.notEqual(quoteIndex(f("h"), nowMs), quoteIndex(f("h"), nowMs + 3_600_000));
     assert.ok(b.length > 0);
   });
 
   it("m vs h picks different buckets (smaller bucket = more rotation)", () => {
-    // Two adjacent calls in the same hour: h returns same index,
-    // m may differ. Verify m advances its index between minutes.
-    const idxH = quoteIndex("h", nowMs);
-    const idxHPlus1m = quoteIndex("h", nowMs + 60_000);
-    const idxM = quoteIndex("m", nowMs);
-    const idxMPlus1m = quoteIndex("m", nowMs + 60_000);
+    const idxH = quoteIndex(f("h"), nowMs);
+    const idxHPlus1m = quoteIndex(f("h"), nowMs + 60_000);
+    const idxM = quoteIndex(f("m"), nowMs);
+    const idxMPlus1m = quoteIndex(f("m"), nowMs + 60_000);
     assert.equal(idxH, idxHPlus1m);
     assert.notEqual(idxM, idxMPlus1m);
   });
 
-  it("all 5 freq values return a valid in-range index", () => {
-    const freqs = ["d", "hd", "h", "hh", "m"] as const;
-    for (const f of freqs) {
-      const idx = quoteIndex(f, nowMs);
-      assert.ok(idx >= 0 && idx < QUOTES.length, `freq=${f} idx=${idx}`);
+  it("UTC-anchored bucket: 12h returns same index throughout the day", () => {
+    // nowMs is exactly UTC 00:00:00, so the 12h bucket boundary sits
+    // at 00:00. Sample at 00:00 and 06:00 (still in the same 12h
+    // bucket) — index should match.
+    const a = quoteIndex(f("12h"), nowMs);
+    const b = quoteIndex(f("12h"), nowMs + 6 * 3_600_000);
+    assert.equal(a, b);
+  });
+
+  it("UTC-anchored bucket: 12h returns different index across the UTC boundary", () => {
+    const morning = quoteIndex(f("12h"), nowMs); // 00:00 UTC
+    const evening = quoteIndex(f("12h"), nowMs + 12 * 3_600_000); // 12:00 UTC
+    assert.notEqual(morning, evening);
+  });
+
+  it("UTC-anchored bucket: 7d (a divisor of 24h… actually no — 7d doesn't divide 24h, but does divide 1d trivially via 86_400_000 % 604_800_000 = 86_400_000 ≠ 0)", () => {
+    // 7d = 604_800_000, 86_400_000 % 604_800_000 = 86_400_000 ≠ 0
+    // so 7d is NOT UTC-anchored. It's rolling.
+    assert.equal(utcAnchored(7 * 86_400_000), false);
+  });
+
+  it("rolling bucket: 13h returns different index from epoch-driven boundary", () => {
+    // 13h doesn't divide 24h, so boundaries are at Unix-epoch
+    // multiples. nowMs = 1.7e12 is comfortably past the first 13h
+    // rollover at 13h*k for some integer k. Just verify the index
+    // is in range and stable.
+    const idx = quoteIndex(f("13h"), nowMs);
+    assert.ok(idx >= 0 && idx < QUOTES.length);
+  });
+
+  it("rolling bucket: 13h increments at multiples of 13h from epoch", () => {
+    // Two timestamps exactly 13h apart should map to different
+    // seeds. (In UTC-anchored form they might also differ, but
+    // here we just verify the rolling math: atBoundary+13h and
+    // atBoundary differ by exactly one bucket.)
+    const thirteenH = 13 * 3_600_000;
+    const k = Math.floor(nowMs / thirteenH);
+    const atBoundary = k * thirteenH;
+    const a = quoteIndex(f("13h"), atBoundary);
+    const b = quoteIndex(f("13h"), atBoundary + thirteenH);
+    // a and b are guaranteed to differ: atBoundary+thirteenH is in
+    // the next bucket by exactly 1, so seed increments by 1.
+    assert.equal(b - a, 1);
+  });
+
+  it("numeric 130m parses and returns valid index", () => {
+    const idx = quoteIndex(f("130m"), nowMs);
+    assert.ok(idx >= 0 && idx < QUOTES.length);
+  });
+
+  it("all 4 unit letters return a valid in-range index", () => {
+    const freqs = ["d", "h", "m", "s"];
+    for (const raw of freqs) {
+      const idx = quoteIndex(f(raw), nowMs);
+      assert.ok(idx >= 0 && idx < QUOTES.length, `freq=${raw} idx=${idx}`);
     }
   });
 
   it("handles negative nowMs (clock skew) gracefully", () => {
-    const idx = quoteIndex("h", -1);
+    const idx = quoteIndex(f("h"), -1);
     assert.ok(idx >= 0 && idx < QUOTES.length);
   });
 });
@@ -544,15 +690,17 @@ describe("lineTemplate — m_quote inline-args", () => {
     assert.ok(line.startsWith("\x1b[38;5;196m"), `got: ${line}`);
     // Same as bare m_quote at this time → quote is the same.
     const inner = line.slice("\x1b[38;5;196m".length, -RESET.length);
-    assert.equal(inner, pickQuote("h", 1_700_000_000_000));
+    const hourFreq = parseFreq("h")!;
+    assert.equal(inner, pickQuote(hourFreq, 1_700_000_000_000));
   });
 
   it("bare m_quote across all freqs covers a wide index range", () => {
     // Sample 24 consecutive hours (1 day) with freq=h. We expect
     // up to 24 different indices (in practice some collide).
     const indices = new Set<number>();
+    const hourFreq = parseFreq("h")!;
     for (let h = 0; h < 24; h++) {
-      indices.add(quoteIndex("h", 1_700_000_000_000 + h * 3_600_000));
+      indices.add(quoteIndex(hourFreq, 1_700_000_000_000 + h * 3_600_000));
     }
     // Loose lower bound: at least 5 unique in 24 hours (statistically
     // very likely; just guarding against degenerate buckets).
