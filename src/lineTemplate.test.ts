@@ -1182,6 +1182,11 @@ describe("lineTemplate — colored modules :color override (user wins)", () => {
         balance: ["m_cacheHitRate:color:brightGreen"],
       },
     });
+    // v0.4.0+ session-aggregate formula:
+    //   sumCacheRead / (sumCacheRead + sumIn) * 100
+    // Seed prev=0 and totalApiDurationMs=1000 so hasDelta=true;
+    // setAvg accumulates sumCacheRead=900, sumIn=100 → 90.0%.
+    setPrevTick("sess-hit", { apiMs: 0, in: 0, out: 0, cacheRead: 0 });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
       fiveHour: null, weekly: null, balance: null,
@@ -1190,14 +1195,14 @@ describe("lineTemplate — colored modules :color override (user wins)", () => {
         cwd: "C:\\fake",
         sessionId: "sess-hit",
         totals: { input: 0, output: 0 },
-        current: { input: 0, output: 0, cacheCreation: 100, cacheRead: 900 },
-        cost: { totalDurationMs: 1000, totalApiDurationMs: null, totalLinesAdded: null, totalLinesRemoved: null },
+        current: { input: 100, output: 0, cacheCreation: 0, cacheRead: 900 },
+        cost: { totalDurationMs: 1000, totalApiDurationMs: 1000, totalLinesAdded: null, totalLinesRemoved: null },
       },
     });
-    // Hit rate = 90% (read 900 / (900+100)). Default band color is "good"
-    // (\x1b[38;5;41m brightGreen). Override forces the same color (since
-    // 90% is already in the "good" band) — the assertion verifies the
-    // SGR wraps "cache:90%" with brightGreen.
+    // Hit rate = 90% (900 read / (900 read + 100 in)). Default band
+    // color is "good" (\x1b[38;5;41m brightGreen). Override forces
+    // the same color (since 90% is already in the "good" band) — the
+    // assertion verifies the SGR wraps "cache:90%" with brightGreen.
     assert.ok(line.includes("\x1b[38;5;41mcache:90.0%"), `got: ${JSON.stringify(line)}`);
   });
 });

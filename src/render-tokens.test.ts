@@ -659,7 +659,13 @@ describe("renderTemplate — m_token* modules", () => {
     assert.equal(strip(out), "in:-- t/s");
   });
 
-  it("m_cacheHitRate returns null when no cache traffic", () => {
+  it("m_cacheHitRate: 0 cache reads / (0 + 38 in) = 0.0% (session-aggregate formula)", () => {
+    // v0.4.0+ formula is sumCache / (sumCache + sumIn). When the
+    // session has accumulated real input but zero cache reads, the
+    // hit rate is the truthful 0.0% — NOT a null/drop. (The bare
+    // `m_cacheHitRate` MODULES path still drops on the FIRST tick
+    // when both sumIn and sumCache are zero, since denominator is
+    // zero and there's nothing to report.)
     const out = renderTemplate(
       ["m_cacheHitRate"],
       ctxFor(
@@ -667,8 +673,8 @@ describe("renderTemplate — m_token* modules", () => {
           current: { input: 38, output: 155, cacheCreation: 0, cacheRead: 0 },
         }),
       ),
-    );
-    assert.deepEqual(out, []);
+    ).join("\n");
+    assert.equal(strip(out), "cache:0.0%");
   });
 
   it("composed template with multiple token modules + separator", () => {
@@ -1008,16 +1014,12 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
     assert.deepEqual(out, []);
   });
 
-  it("m_cacheHitRate:nulldrop:false renders 'cache:n/a' on no cache traffic", () => {
-    // m_cacheHitRate has no bare nulldrop placeholder of its own
-    // — it falls through to drop (consistent with the existing
-    // contract). To force a placeholder here, the user must wrap
-    // with a custom m_label. This test pins the current behavior:
-    // nulldrop:false on m_cacheHitRate without a registered
-    // placeholder still drops. Document it as a known gap rather
-    // than a bug — m_cacheHitRate's "no data" condition is a
-    // genuine absence of cache metrics (not just missing input),
-    // and 'cache:n/a' would mis-imply the field exists.
+  it("m_cacheHitRate:nulldrop:false: 0 cache / (0 cache + 38 in) = 0.0% (session-aggregate formula)", () => {
+    // v0.4.0+ formula is sumCache / (sumCache + sumIn). When the
+    // session has accumulated input but zero cache reads, the hit
+    // rate is the truthful 0.0% — NOT a placeholder drop. (The
+    // placeholder drop path is reserved for "session has zero
+    // sumCache AND zero sumIn" — i.e. truly no data to compare.)
     const out = renderTemplate(
       ["m_cacheHitRate:nulldrop:false"],
       ctxFor(
@@ -1025,8 +1027,8 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
           current: { input: 38, output: 155, cacheCreation: 0, cacheRead: 0 },
         }),
       ),
-    );
-    assert.deepEqual(out, []);
+    ).join("\n");
+    assert.equal(strip(out), "cache:0.0%");
   });
 
   it("m_contextSize:nulldrop:false renders 'n/a' when size is null", () => {
