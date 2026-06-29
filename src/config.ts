@@ -51,6 +51,168 @@ const DEFAULT_LINE_TEMPLATE: {
   balance: ["m_modeLabel", "s_0", "m_balance"],
 };
 
+// v0.4.0+ — named presets for `lineTemplate.plan` / `lineTemplate.balance`.
+// Users can write `lineTemplate.plan: "standard"` instead of the full
+// token array; we resolve the string to the matching array at load time
+// so the renderer never sees strings (it always iterates over the
+// resolved array). Unknown preset names warn once + fall back to the
+// hardcoded default. Per-module coloring is omitted from the presets
+// (no :color: suffix) — the user can override per module by inlining
+// the preset into their own array if they want.
+//
+// Naming convention:
+//   - "1line" / "simple": tokenplan only, single line, compact
+//   - "simple-alone": same as "simple" but with an m_label prefix so
+//     the line reads as a labeled statusline when the user is NOT
+//     chaining another statusline upstream
+//   - "standard": 2 lines (line 1 = tokenplan, line 2 = context & token)
+//   - "standard-alone": adds session info on line 0; for use as the
+//     sole statusline (no upstream chain)
+//   - "abundant": 3 lines; adds git info on line 0
+//   - "complete": 4 lines; everything including line counts (not
+//     recommended — verbose)
+const PLAN_PRESETS: Record<string, string[]> = {
+  // tokenplan only, single line, no label (assumes upstream chain)
+  "1line": [
+    "m_modeLabel", "s_0",
+    "m_window5h", "s_0", "m_countdown5h",
+    "s_0", "s_1", "s_0",
+    "m_window7d", "s_0", "m_countdown7d",
+  ],
+  // alias of "1line" — same shape, more discoverable name
+  simple: [
+    "m_modeLabel", "s_0",
+    "m_window5h", "s_0", "m_countdown5h",
+    "s_0", "s_1", "s_0",
+    "m_window7d", "s_0", "m_countdown7d",
+  ],
+  // tokenplan only, single line, with m_label so the user sees
+  // "Usage: <5h> ..." explicitly when running solo (no upstream chain)
+  "simple-alone": [
+    "m_label:Usage:color:yellow", "s_2",
+    "m_window5h:nulldrop:false", "s_0",
+    "m_countdown5h:nulldrop:false",
+    "s_0", "s_1:color:red", "s_0",
+    "m_window7d:nulldrop:false", "s_0",
+    "m_countdown7d:nulldrop:false",
+  ],
+  // line 1 = tokenplan, line 2 = context & token. No session line.
+  // The "alone" variant assumes upstream chaining for session info.
+  standard: [
+    "m_modeLabel", "s_0",
+    "m_window5h", "s_0", "m_countdown5h",
+    "s_0", "s_1", "s_0",
+    "m_window7d", "s_0", "m_countdown7d",
+    "s_2",
+    "m_sessionApiDuration:nulldrop:false", "s_0",
+    "m_tokenIn:nulldrop:false", "s_0",
+    "m_tokenInSpeed:nulldrop:false", "s_0",
+    "m_tokenOut:nulldrop:false", "s_0",
+    "m_tokenOutSpeed:nulldrop:false", "s_0",
+    "m_ctx:nulldrop:false", "s_0",
+    "m_cacheHitRate:nulldrop:false",
+  ],
+  // line 0 = session info, line 1 = tokenplan, line 2 = context & token.
+  // For the user running this plugin as the SOLE statusline (no
+  // upstream chain to fill the session slot).
+  "standard-alone": [
+    "m_label:Session:color:yellow", "s_0",
+    "m_session:nulldrop:false", "s_0",
+    "m_model:nulldrop:false", "s_0",
+    "m_ccVersion:nulldrop:false",
+    "s_2",
+    "m_label:Usage:color:yellow", "s_2",
+    "m_window5h:nulldrop:false", "s_0",
+    "m_countdown5h:nulldrop:false",
+    "s_0", "s_1:color:red", "s_0",
+    "m_window7d:nulldrop:false", "s_0",
+    "m_countdown7d:nulldrop:false",
+    "s_2",
+    "m_label:Context:color:yellow", "s_2",
+    "m_sessionApiDuration:nulldrop:false", "s_0",
+    "m_tokenIn:nulldrop:false", "s_0",
+    "m_tokenInSpeed:nulldrop:false", "s_0",
+    "m_tokenOut:nulldrop:false", "s_0",
+    "m_tokenOutSpeed:nulldrop:false", "s_0",
+    "m_ctx:nulldrop:false", "s_0",
+    "m_cacheHitRate:nulldrop:false",
+  ],
+  // line 0 = session + git, line 1 = tokenplan, line 2 = context & token.
+  // For users with a deeper-git-workflow statusline.
+  abundant: [
+    "m_label:Session:color:yellow", "s_0",
+    "m_session:nulldrop:false", "s_0",
+    "m_model:nulldrop:false", "s_0",
+    "m_branch:nulldrop:false", "s_0",
+    "m_gitStatus:nulldrop:false", "s_0",
+    "m_ccVersion:nulldrop:false",
+    "s_2",
+    "m_label:Usage:color:yellow", "s_2",
+    "m_window5h:nulldrop:false", "s_0",
+    "m_countdown5h:nulldrop:false",
+    "s_0", "s_1:color:red", "s_0",
+    "m_window7d:nulldrop:false", "s_0",
+    "m_countdown7d:nulldrop:false",
+    "s_2",
+    "m_label:Context:color:yellow", "s_2",
+    "m_sessionApiDuration:nulldrop:false", "s_0",
+    "m_tokenIn:nulldrop:false", "s_0",
+    "m_tokenInSpeed:nulldrop:false", "s_0",
+    "m_tokenOut:nulldrop:false", "s_0",
+    "m_tokenOutSpeed:nulldrop:false", "s_0",
+    "m_ctx:nulldrop:false", "s_0",
+    "m_cacheHitRate:nulldrop:false",
+  ],
+  // 4 lines: adds line counts (m_linesAdded / m_linesRemoved) and
+  // totals (m_totalToken*) on a 4th line. NOT recommended — verbose;
+  // included for completeness.
+  complete: [
+    "m_label:Session:color:yellow", "s_0",
+    "m_session:nulldrop:false", "s_0",
+    "m_model:nulldrop:false", "s_0",
+    "m_branch:nulldrop:false", "s_0",
+    "m_gitStatus:nulldrop:false", "s_0",
+    "m_ccVersion:nulldrop:false",
+    "s_2",
+    "m_label:Usage:color:yellow", "s_2",
+    "m_window5h:nulldrop:false", "s_0",
+    "m_countdown5h:nulldrop:false",
+    "s_0", "s_1:color:red", "s_0",
+    "m_window7d:nulldrop:false", "s_0",
+    "m_countdown7d:nulldrop:false",
+    "s_2",
+    "m_label:Context:color:yellow", "s_2",
+    "m_sessionApiDuration:nulldrop:false", "s_0",
+    "m_tokenIn:nulldrop:false", "s_0",
+    "m_tokenInSpeed:nulldrop:false", "s_0",
+    "m_tokenOut:nulldrop:false", "s_0",
+    "m_tokenOutSpeed:nulldrop:false", "s_0",
+    "m_ctx:nulldrop:false", "s_0",
+    "m_cacheHitRate:nulldrop:false",
+    "s_2",
+    "m_label:Total:color:yellow", "s_2",
+    "m_totalTokenIn:nulldrop:false", "s_0",
+    "m_totalTokenOut:nulldrop:false", "s_0",
+    "m_totalTokenWithCacheIn:nulldrop:false", "s_0",
+    "m_linesAdded:nulldrop:false", "s_0",
+    "m_linesRemoved:nulldrop:false",
+  ],
+};
+
+// v0.4.0+ — named presets for `lineTemplate.balance` (DeepSeek path).
+// Same string-or-array shape as plan. The balance path is much
+// simpler (one number, no windows), so only two presets.
+const BALANCE_PRESETS: Record<string, string[]> = {
+  // Default — same as today's hardcoded `["m_modeLabel", "s_0", "m_balance"]`
+  simple: ["m_modeLabel", "s_0", "m_balance"],
+  // For users running this plugin as the sole statusline: prepend
+  // a "Balance:" label so the line reads as a labeled statusline.
+  "simple-alone": [
+    "m_label:Balance:color:yellow", "s_0",
+    "m_balance:nulldrop:false",
+  ],
+};
+
 // 256-color SGR sequences. The colors are kept as plain ANSI strings
 // (not symbolic names) so a downstream user can copy/paste a value
 // from `console.log` and paste it into config.json without translation.
@@ -908,24 +1070,46 @@ function applyOverrides(base: Config, raw: Record<string, unknown>): Config {
     }
   }
 
-  // lineTemplate — { plan: string[], balance: string[] }. Token values
-  // are NOT validated against the module-name enum here; that happens
-  // at render time so a typo produces a "unknown module 'm_foo'"
-  // warning in the rendered line (not a silent reject at config load).
+  // lineTemplate — { plan: string[] | preset-name, balance: … }.
+  // v0.4.0+ — accepts a string value as a named preset reference
+  // (resolved against PLAN_PRESETS / BALANCE_PRESETS at load time).
+  // Token values are NOT validated against the module-name enum
+  // here; that happens at render time so a typo produces a
+  // "unknown module 'm_foo'" warning in the rendered line (not a
+  // silent reject at config load).
   if ("lineTemplate" in raw) {
     const lt = raw.lineTemplate;
     if (lt && typeof lt === "object" && !Array.isArray(lt)) {
       const ltm = lt as Record<string, unknown>;
-      const validate = (key: "plan" | "balance"): string[] | null => {
+      const validate = (
+        key: "plan" | "balance",
+        presets: Record<string, string[]>,
+      ): string[] | null => {
         if (!(key in ltm)) return null;
-        const arr = ltm[key];
-        if (!Array.isArray(arr)) {
-          warn(`lineTemplate.${key} must be an array of strings; using default`);
+        const v = ltm[key];
+        // String form: named preset lookup. Resolves to the preset's
+        // token array so the renderer still iterates a string[].
+        if (typeof v === "string") {
+          const preset = presets[v];
+          if (preset) return preset.slice();
+          // Unknown preset name — fall back to the hardcoded
+          // default and warn once so the user notices the typo.
+          const defaults = key === "plan"
+            ? DEFAULT_LINE_TEMPLATE.plan
+            : DEFAULT_LINE_TEMPLATE.balance;
+          warn(
+            `lineTemplate.${key} preset "${v}" is unknown; ` +
+            `use one of [${Object.keys(presets).join(", ")}]; using default`,
+          );
+          return defaults.slice();
+        }
+        if (!Array.isArray(v)) {
+          warn(`lineTemplate.${key} must be an array of strings or a preset name; using default`);
           return null;
         }
         const cleaned: string[] = [];
-        for (const v of arr) {
-          if (typeof v === "string") cleaned.push(v);
+        for (const item of v) {
+          if (typeof item === "string") cleaned.push(item);
         }
         if (cleaned.length === 0) {
           warn(`lineTemplate.${key} must contain at least one string; using default`);
@@ -933,9 +1117,9 @@ function applyOverrides(base: Config, raw: Record<string, unknown>): Config {
         }
         return cleaned;
       };
-      const plan = validate("plan");
+      const plan = validate("plan", PLAN_PRESETS);
       if (plan) out.lineTemplate.plan = plan;
-      const balance = validate("balance");
+      const balance = validate("balance", BALANCE_PRESETS);
       if (balance) out.lineTemplate.balance = balance;
     } else {
       warn("lineTemplate must be an object; using default");
