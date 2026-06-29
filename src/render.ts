@@ -20,6 +20,7 @@ import type { TokenSnapshot } from "./types.ts";
 import {
   buildRainbow,
   buildHue,
+  parseFreq,
   pickQuote,
   quoteIndex,
   type QuoteFreq,
@@ -752,11 +753,12 @@ const MODULES: Record<string, Module> = {
     const tps = (t.totals.output / durMs) * 1000;
     return `${STALE_COLOR}out:${formatSpeed(tps)}${RESET}`;
   },
-  // v0.3.5+ — bare `m_quote` (no inline args). Picks a quote from
+  // v0.3.6+ — bare `m_quote` (no inline args). Picks a quote from
   // the hourly window and renders it plain (no SGR wrapper). Opt-in
   // — the default plan / balance templates do NOT include it.
   m_quote: (c) => {
-    const freq: QuoteFreq = "h";
+    const freq = parseFreq("h");
+    if (!freq) return null; // unreachable — "h" is always valid
     return pickQuote(freq, c.nowMs);
   },
 };
@@ -1070,12 +1072,27 @@ const QUOTE_COLOR_PARAM = {
 const QUOTE_FREQ_PARAM = {
   named: {
     freq: (raw: string) => {
-      // Allowed: "d" | "hd" | "h" | "hh" | "m". Anything else → null
-      // so the dispatcher drops the token + warns once.
-      if (raw === "d" || raw === "hd" || raw === "h" || raw === "hh" || raw === "m") {
-        return raw;
-      }
-      return null;
+      // Shape-validate the single-unit time format up front so a
+      // clearly-wrong token (e.g. "yearly", "2h10m", "5x") is
+      // rejected before reaching the renderer. The renderer then
+      // calls parseFreq() to extract the bucket size. We pass the
+      // raw string through (rather than the parsed QuoteFreq
+      // object) so the ResolvedValue = string | number channel
+      // doesn't need a sentinel round-trip.
+      if (raw === "") return null;
+      // Bare unit letter → valid shorthand.
+      if (raw === "d" || raw === "h" || raw === "m" || raw === "s") return raw;
+      // Numeric form: <digits><unit>. Reject multi-unit, unknown
+      // units, leading zeros, and empty digit runs here so the
+      // renderer's parseFreq() never sees malformed input.
+      if (raw.length < 2) return null;
+      const unit = raw[raw.length - 1];
+      if (unit !== "d" && unit !== "h" && unit !== "m" && unit !== "s") return null;
+      const digits = raw.slice(0, -1);
+      if (digits === "") return null;
+      if (!/^[0-9]+$/.test(digits)) return null;
+      if (digits.length > 1 && digits[0] === "0") return null;
+      return raw;
     },
   },
 } as const;
@@ -1123,11 +1140,12 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
   m_token7d: { named: { ...COLOR_PARAM.named } },
   m_tokenInSpeed: { named: { ...COLOR_PARAM.named } },
   m_tokenOutSpeed: { named: { ...COLOR_PARAM.named } },
-  // v0.3.5+ — quote module. Accepts `:freq:<d|hd|h|hh|m>` and
-  // `:color:<sgr|shortcut|rainbow|rand-rainbow|hue>`. The default
-  // freq (`h`) is applied at the RENDERER level (params.freq may
-  // be undefined when the token is just `m_quote` or
-  // `m_quote:color:red`).
+  // v0.3.6+ — quote module. Accepts `:freq:<numeric-time>` and
+  // `:color:<sgr|shortcut|rainbow|rand-rainbow|hue>`. The freq
+  // grammar is the single-unit time format `<digits><unit>` (bare
+  // unit letter = 1<unit>) — see QUOTE_FREQ_PARAM. Default freq
+  // (`h` = 1h) is applied at the RENDERER level when params.freq
+  // is undefined.
   m_quote: {
     named: {
       ...QUOTE_FREQ_PARAM.named,
@@ -1298,11 +1316,19 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     return `${color}out:${formatSpeed(tps)}${RESET}`;
   },
   m_quote: (params, ctx) => {
-    // Default freq = "h" (per-hour window). An empty / undefined
-    // `freq` param means the user didn't supply one.
-    const freq = (params.freq ?? "h") as QuoteFreq;
-    const seed = quoteIndex(freq, ctx.nowMs);
-    const text = pickQuote(freq, ctx.nowMs);
+    // Default freq = 1h (per-hour window). The schema resolver
+    // already shape-validated the raw string; we now parse it
+    // into a QuoteFreq {count, unit, ms} object that quoteIndex
+    // and pickQuote need. params.freq is undefined when the
+    // token is just `m_quote` or `m_quote:color:red` (no freq
+    // segment). On a malformed-but-shape-valid string we
+    // INLINE_BADARG here; in practice parseFreq rejects the
+    // same set the resolver does.
+    const raw = params.freq as string | undefined;
+    const parsed: QuoteFreq | null = parseFreq(raw ?? "h");
+    if (!parsed) return INLINE_BADARG;
+    const seed = quoteIndex(parsed, ctx.nowMs);
+    const text = pickQuote(parsed, ctx.nowMs);
     if (text === "") return null;
     const color = decodeColorParam(params.color as string | undefined);
     return applyColor(text, color, seed);

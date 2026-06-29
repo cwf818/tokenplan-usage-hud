@@ -1,4 +1,4 @@
-// v0.3.5+ — Inspirational-quote pool + per-character rainbow/hue
+// v0.3.6+ — Inspirational-quote pool + per-character rainbow/hue
 // helpers backing the `m_quote` template module.
 //
 // Design:
@@ -8,12 +8,17 @@
 //     attribution strings — the statusline is a narrow strip and a
 //     long "— Confucius" tail would dominate the layout. The author
 //     is implicitly part of the "voice" the user opted into.
+//   - parseFreq(raw) → QuoteFreq: parses the `:freq:<…>` token.
+//     Grammar is the single-unit time format `<digits><unit>` where
+//     unit ∈ {"d","h","m","s"} and bare unit letters are shorthand
+//     for "1<unit>" (so `h` ≡ `1h`). Multi-unit forms like "2h10m"
+//     are rejected; users express 130 minutes as "130m".
 //   - pickQuote(freq, nowMs): deterministic per frequency window.
-//     `freq` ∈ {"d","hd","h","hh","m"} picks a bucket size; the
-//     bucket index `floor(nowMs / bucket)` is the seed for the
-//     pick. Same (freq, bucket) → same quote, so a user who reloads
-//     the statusline within the same hour sees the same quote
-//     instead of a different one every tick.
+//     The bucket index is derived from the parsed `freq.ms`. When
+//     `freq.ms` divides one day (24h, 12h, 6h, 3h, 4h, 8h, 30m, …)
+//     the boundary is anchored to UTC midnight so predictable
+//     rollover times are preserved; otherwise it rolls at Unix-
+//     epoch multiples (e.g. "13h" rolls every 13 hours from epoch).
 //   - buildRainbow(text, seed): per-character 256-color SGR wrap.
 //     Same text + same seed → identical output. Used for the
 //     `rainbow` and `rand-rainbow` color shortcuts.
@@ -167,40 +172,118 @@ export const QUOTES: readonly string[] = [
 // Bucket = the smallest time unit at which the displayed quote can
 // change. Two ticks within the same bucket show the same quote.
 //
-// `d`  = day   = 86400000 ms
-// `hd` = half day = 43200000 ms
-// `h`  = hour  = 3600000 ms
-// `hh` = half hour = 1800000 ms
-// `m`  = minute = 60000 ms
+// Grammar (single-unit time format, mirrors the reset countdown):
+//   freq := <digits><unit>            e.g. "12h", "30m", "7d", "130m"
+//         |  <unit>                   shorthand for 1<unit>
 //
-// Anything else → falls back to `h` (silent, no warn — a typo is
-// not worth polluting stderr every tick).
-export type QuoteFreq = "d" | "hd" | "h" | "hh" | "m";
+//   <unit> := "d" | "h" | "m" | "s"
+//   <digits> := [0-9]+
+//
+// So:
+//   "d"   == "1d"   → 24h
+//   "h"   == "1h"   → 1h
+//   "m"   == "1m"   → 1m
+//   "s"   == "1s"   → 1s
+//   "12h"           → 12h
+//   "30m"           → 30m
+//   "130m"          → 130m
+//
+// Anything else (multi-unit like "2h10m", unknown units, zero, overflow,
+// empty, "h10") → null. The caller (render.ts) treats null as a parse
+// failure: drop the token with a one-shot stderr warn.
+//
+// Anchoring rule — when does the bucket boundary sit on the wall clock?
+//   - If `bucketMs` divides one day (86_400_000) exactly, the boundary
+//     is UTC midnight: floor(nowMs / bucket) is the same regardless of
+//     when in the day you check, so a user who picked "12h" sees the
+//     quote roll at 00:00 and 12:00 UTC — the predictable behavior the
+//     old `hd` form gave.
+//   - Otherwise (bucketMs does not divide one day), the boundary is
+//     Unix-epoch zero. "7d" happens to divide (so it gets UTC midnight
+//     boundaries); "13h" does not (so it rolls relative to the epoch).
+export type QuoteFreqUnit = "d" | "h" | "m" | "s";
 
-function bucketMs(freq: QuoteFreq): number {
-  switch (freq) {
-    case "d":
-      return 86_400_000;
-    case "hd":
-      return 43_200_000;
-    case "h":
-      return 3_600_000;
-    case "hh":
-      return 1_800_000;
-    case "m":
-      return 60_000;
+// Parsed freq spec. Carrying the unit-ms separately (instead of a
+// precomputed single number) lets the renderer pick the right anchor
+// strategy at call time without re-parsing.
+export interface QuoteFreq {
+  readonly count: number;
+  readonly unit: QuoteFreqUnit;
+  readonly ms: number;
+}
+
+const UNIT_MS: Readonly<Record<QuoteFreqUnit, number>> = {
+  d: 86_400_000,
+  h: 3_600_000,
+  m: 60_000,
+  s: 1_000,
+};
+
+// Hard upper bound on count: 1_000_000 of any unit. Largest legal value
+// is "1000000s" ≈ 11.6 days, "1000000m" ≈ 694 days, "1000000h" ≈ 114
+// years, "1000000d" ≈ 2738 years. Anything bigger is rejected so the
+// seed index can't overflow Math.floor(nowMs / 1) ranges on real
+// timestamps. (nowMs is ~1.7e12 today, so even 1e12 would be safely
+// in range — 1e6 is generous without inviting pathological inputs.)
+const MAX_COUNT = 1_000_000;
+
+export function parseFreq(raw: string): QuoteFreq | null {
+  if (raw === "") return null;
+  // Shorthand: bare unit letter → count=1.
+  if (raw === "d" || raw === "h" || raw === "m" || raw === "s") {
+    const ms = UNIT_MS[raw];
+    return { count: 1, unit: raw, ms };
   }
+  // Numeric form: <digits><unit>. Must end in a single unit letter;
+  // no multi-unit, no leading sign, no whitespace.
+  const unit = raw[raw.length - 1];
+  if (unit !== "d" && unit !== "h" && unit !== "m" && unit !== "s") {
+    return null;
+  }
+  const digits = raw.slice(0, -1);
+  if (digits === "") return null;
+  // Reject "01" / "07" — explicit leading-zero policy. Keeps the
+  // grammar tight; users who type "1h" should not be silently
+  // redirected through "01h".
+  if (digits.length > 1 && digits[0] === "0") return null;
+  if (!/^[0-9]+$/.test(digits)) return null;
+  const n = Number(digits);
+  if (!Number.isFinite(n) || !Number.isInteger(n)) return null;
+  if (n === 0 || n > MAX_COUNT) return null;
+  const u = unit as QuoteFreqUnit;
+  return { count: n, unit: u, ms: n * UNIT_MS[u] };
+}
+
+// True when the bucket boundary aligns with UTC midnight — i.e. when
+// bucketMs divides one day exactly. 86_400_000 has divisors of the
+// form (d × h × m × s) where d ∈ {1,2,3,4,6,8,12,24}, h ∈ {1,2,3,4,6,8,12,24},
+// m ∈ {1..60 if h divides 24}, s ∈ {1..60 if m divides 60}. So e.g.
+// 12h, 6h, 3h, 4h, 8h, 24h/24h, 30m, 15m, 20m, 60s, etc. all qualify.
+// 7d divides by exactly 7 — yes. 13h doesn't divide 24h — no.
+export function utcAnchored(bucketMs: number): boolean {
+  if (bucketMs <= 0) return false;
+  return 86_400_000 % bucketMs === 0;
 }
 
 // Pure: given a freq + a wall-clock ms, return the quote index. Same
 // (freq, nowMs) always returns the same index — critical for the
 // "stays stable within a window" guarantee. Exported so tests can
 // verify determinism without going through `pickQuote`.
+//
+// Formula: seed = floor(nowMs / bucket). This works for BOTH anchor
+// modes:
+//   - Rolling: boundaries are at Unix-epoch multiples of `bucket`,
+//     so floor(nowMs/bucket) is the bucket index.
+//   - UTC-anchored: bucket divides one day (86_400_000), so bucket
+//     boundaries are also at multiples of 86_400_000 from epoch.
+//     floor(nowMs/bucket) gives the bucket index from epoch, which
+//     for two times within the same calendar day will differ by
+//     an integer multiple of (86_400_000/bucket) — same mod-pool
+//     residue. The seed is the same, so the picked quote is the
+//     same. Crossing a UTC-midnight boundary advances the bucket
+//     index exactly when expected.
 export function quoteIndex(freq: QuoteFreq, nowMs: number): number {
-  const bucket = bucketMs(freq);
-  // floor(nowMs / bucket) gives an integer seed that increments
-  // exactly when the bucket rolls. Use the integer directly mod the
-  // pool size. Negative inputs (clock skew) bucket to 0 — no throw.
+  const bucket = freq.ms;
   const seed = Math.floor(nowMs / bucket);
   // Handle negative seeds via modulo: JS's % preserves sign of the
   // dividend. Map to a non-negative residue.
