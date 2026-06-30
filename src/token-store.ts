@@ -1,7 +1,8 @@
 // v0.4.0+ — token-sample state file.
 //
 // Each statusline tick appends one JSON line to
-// `<claude-root>/plugins/tokenplan-usage-hud/state/token-samples/<projectHash>/<sessionId>.jsonl`.
+// `<claude-root>/plugins/tokenplan-usage-hud/state/<projectHash>/<sessionId>.jsonl`
+// (one per project, NOT in a `token-samples/` subdir — see Per-Project Layout below).
 // m_token5h / m_token7d read this file (filtered to the window) on every
 // render. m_tokenIn / m_tokenOut / m_ctx / m_cacheRead / m_cacheHitRate /
 // m_tokenInSpeed / m_tokenOutSpeed do NOT read this file — they read the
@@ -19,6 +20,21 @@
 // compete for the same append stream. Different projects may run
 // concurrently; keeping each session in its own file avoids interleaving
 // and lets future cleanup (e.g. `:clean`) target a specific session.
+//
+// Per-Project Layout (v0.4.x+): all runtime state files
+// (cache.json, diagnostics.jsonl, sample jsonl) live under
+// `state/<projectHash>/` so that multiple Claude Code instances
+// running against different projects never share a write stream.
+// `state/upstream-cmd.{sh,txt}` and `state/config.json` stay at
+// the top level — they're managed by install/uninstall, not by
+// per-tick IO.
+//
+// Upgrading from a v0.4.0–v0.4.<n-1> install that still has
+// `state/token-samples/<hash>/<sid>.jsonl` files: run
+// `bash scripts/migrate-state.sh` once to move them to the new
+// location. The plugin does NOT auto-migrate on tick — see
+// CHANGELOG for the rationale (avoids extra IO on every tick; old
+// samples are time-decaying and most users can re-accumulate).
 
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -50,8 +66,10 @@ export function projectHash(cwd: string): string {
 }
 
 // Build the absolute path for a session's append-only JSONL.
+// v0.4.x+ per-project layout: directly under state/<projectHash>/,
+// no `token-samples/` intermediate dir.
 export function sampleFilePath(cwd: string, sessionId: string): string {
-  return join(stateRoot(), "token-samples", projectHash(cwd), `${sessionId}.jsonl`);
+  return join(stateRoot(), projectHash(cwd), `${sessionId}.jsonl`);
 }
 
 // Append one sample row. Atomic at the OS level for small writes

@@ -1,4 +1,4 @@
-import { describe, it } from "node:test";
+import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -156,6 +156,49 @@ describe("getWithAge", () => {
     (cache as any).store.set("g6", { at: Date.now() - 10_000, value: "v" });
     assert.equal(get("g6", 1_000), null);
     assert.equal(getWithAge("g6", 1_000), null);
+  });
+});
+
+// ----- Per-Project Key Isolation (v0.4.x+) -----
+//
+// The cache module is intentionally cwd-unaware: a single Map, a
+// single on-disk file. Per-project isolation is achieved by
+// `src/render.ts`'s `projectCacheKey(cwd, key)` helper, which
+// prefixes every key with `projectHash(cwd):` before it reaches
+// this module. This describe block verifies the contract that the
+// render-side helper relies on: when two keys happen to look
+// identical AFTER the projectHash prefix is applied (i.e. the
+// render layer is fed a different cwd, or no cwd), the cache
+// module treats them as distinct entries. (The actual
+// `projectCacheKey` helper is private to render.ts — these tests
+// exercise the public cache API directly with prefixed keys to
+// validate the contract.)
+
+describe("cache — per-project key isolation contract", () => {
+  beforeEach(() => {
+    resetForTest();
+  });
+  afterEach(() => {
+    resetForTest();
+  });
+
+  it("two distinct prefixed keys are stored as distinct entries", () => {
+    set("d--workspace-alpha:tickSpeed:sess-1", { apiMs: 100 });
+    set("d--workspace-beta:tickSpeed:sess-1", { apiMs: 200 });
+    assert.deepEqual(peek("d--workspace-alpha:tickSpeed:sess-1"), { apiMs: 100 });
+    assert.deepEqual(peek("d--workspace-beta:tickSpeed:sess-1"), { apiMs: 200 });
+  });
+
+  it("the same unprefixed key is the global slot (no project isolation)", () => {
+    // Sanity: cache itself does NOT prefix. A writer that omits the
+    // projectHash prefix would collide with a writer that also omits
+    // it (including a writer that runs with cwd=null and falls
+    // through to the literal "_" prefix). render.ts MUST always
+    // call projectCacheKey; this test pins that contract by
+    // showing the bare-key path is shared.
+    set("tickSpeed:sess-1", { apiMs: 1 });
+    set("tickSpeed:sess-1", { apiMs: 2 });
+    assert.deepEqual(peek("tickSpeed:sess-1"), { apiMs: 2 });
   });
 });
 

@@ -1,8 +1,17 @@
 // v0.4.0+ — diagnostics log.
 //
 // Persistent JSONL append log for warnings and errors emitted during
-// the plugin's lifetime. Lives at
+// the plugin's lifetime.
+//
+// Per-Project Layout (v0.4.x+): when a `cwd` is provided to `append` /
+// `readLatest` / `diagnosticsPath`, the log lives at
+// `${CLAUDE_CONFIG_DIR}/plugins/tokenplan-usage-hud/state/<projectHash>/diagnostics.jsonl`.
+// When `cwd` is omitted (or null/empty), the log falls back to the
+// legacy top-level
 // `${CLAUDE_CONFIG_DIR}/plugins/tokenplan-usage-hud/state/diagnostics.jsonl`.
+// The fallback is used for plugin-level errors that have no project
+// affiliation (e.g. config-parse warnings from `src/config.ts`).
+//
 // Each line is a structured record:
 //
 //   {"at":1782576199672,"level":"warn","source":"config","msg":"…"}
@@ -37,6 +46,7 @@
 
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { projectHash } from "./token-store.ts";
 
 // ----- Path -----
 
@@ -46,8 +56,22 @@ function stateRoot(): string {
   return join(claudeRoot, "plugins", "tokenplan-usage-hud", "state");
 }
 
-export function diagnosticsPath(): string {
+// Resolve the diagnostics.jsonl path for a given project cwd. When
+// `cwd` is a non-empty string, the file lives at
+// `state/<projectHash(cwd)>/diagnostics.jsonl` (Per-Project Layout).
+// When `cwd` is null/empty/undefined, we fall back to the legacy
+// top-level `state/diagnostics.jsonl` so plugin-level errors that
+// have no project affiliation (config-parse warnings, etc.) can still
+// be logged.
+function diagnosticsFilePath(cwd: string | null | undefined): string {
+  if (cwd && cwd.length > 0) {
+    return join(stateRoot(), projectHash(cwd), "diagnostics.jsonl");
+  }
   return join(stateRoot(), "diagnostics.jsonl");
+}
+
+export function diagnosticsPath(cwd?: string | null): string {
+  return diagnosticsFilePath(cwd);
 }
 
 // ----- Types -----
@@ -88,9 +112,21 @@ export function isEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
 // the parent dir on demand. Disk errors are swallowed (stderr only)
 // so the statusline never blocks on log-write failures. No-ops
 // when the opt-in gate is off — see isEnabled() above.
-export function append(level: Level, source: string, msg: string, now: number = Date.now()): void {
+//
+// `cwd` (optional): when provided, the entry is written to the
+// project-scoped diagnostics file at `state/<projectHash>/diagnostics.jsonl`.
+// When omitted/null, the entry falls back to the legacy top-level
+// `state/diagnostics.jsonl` (used for plugin-level errors with no
+// project affiliation, e.g. config-parse warnings).
+export function append(
+  level: Level,
+  source: string,
+  msg: string,
+  now: number = Date.now(),
+  cwd?: string | null,
+): void {
   if (!isEnabled()) return;
-  const path = diagnosticsPath();
+  const path = diagnosticsFilePath(cwd);
   const entry: Entry = { at: now, level, source, msg };
   try {
     mkdirSync(dirname(path), { recursive: true });
@@ -135,8 +171,12 @@ function trimToMax(path: string, max: number): void {
 // Iterates the JSONL backward — the typical case (1-3 lines, fresh
 // errors) hits the match immediately. For a fully-populated 200-line
 // file this is O(200) which is still microseconds.
-export function readLatest(level: Level): Entry | null {
-  const path = diagnosticsPath();
+//
+// `cwd` (optional): when provided, reads from the project-scoped
+// file at `state/<projectHash>/diagnostics.jsonl`. When omitted/null,
+// reads from the legacy top-level `state/diagnostics.jsonl`.
+export function readLatest(level: Level, cwd?: string | null): Entry | null {
+  const path = diagnosticsFilePath(cwd);
   let raw: string;
   try {
     raw = readFileSync(path, "utf8");

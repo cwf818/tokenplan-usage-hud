@@ -34,7 +34,7 @@ src/
   composition.ts      # reads TOKENPLAN_UPSTREAM env, prepends (preserving ANSI/multi-line) and appends line
   __fixtures__/       # remains.real.json, balance.real.json, balance.multi.json, …
   session-parse.ts    # parseTokenSnapshot — stdin JSON → TokenSnapshot (extracted from index.ts so unit tests don't drag index side effects)
-  token-store.ts      # append-only JSONL state file at state/token-samples/<projectHash>/<sessionId>.jsonl for m_token5h/m_token7d
+  token-store.ts      # append-only JSONL state file at state/<projectHash>/<sessionId>.jsonl for m_token5h/m_token7d (v0.4.x+)
   *.test.ts           # node:test unit tests
 .claude-plugin/
   plugin.json         # plugin manifest (name, version, commands, homepage)
@@ -67,7 +67,28 @@ Claude Code's `statusLine.command` spawns a child process that reads a session J
 4. Cache: `src/cache.ts` holds a single 60-second TTL entry. On fetch failure it returns the stale value so the statusline doesn't blank.
 5. Render: `src/render.ts` emits a single compact line `Usage: ▓░░░░░░░ 9% (4h47m🕔 5h) · ▓▓░░░░░░ 25% (2d8h🕔 7d)`. Layout: a single mode label prefix (`Usage:` or `Remain:`), then per-window `<bar> <coloredN%><RESET> (<countdown><glyph> <windowLabel>)` segments joined with ` · `. When the window has no reset time (DeepSeek, legacy), the segment renders as ` <windowLabel>` (no parens, no arrow). Sub-minute remaining renders as `<1m` by default (so a window about to reset is distinguishable from one with a full minute left) — set `stale.minUnit: "s"` to opt into second precision (`47s` instead). Default mode is **`used`** (line begins with `Usage:`); set `display: "remaining"` in `config.json` to switch. 5-band colors (256-color SGR): bright green / dark green / yellow / orange / red, applied to the displayed value at 0/20/40/60/80 boundaries. The colored chunk is always on the right side of the bar, sized by the displayed value. The reset arrow glyph comes from `stale.resetArrows` (default 12 clock-face emoji `🕛,🕚,🕙,…,🕐`), indexed by `remainingMs / resetDurationMs` so the array reads left-to-right as "few remaining → many remaining" (i.e. ascending by remaining-time ratio). Two glyphs (`["⏳","⌛"]`) reproduce the v0.2.1 hourglass pair; one glyph is static. Providers without start data (DeepSeek, legacy) fall back to index 0.
 6. Compose: `src/composition.ts` emits upstream (whatever `TOKENPLAN_UPSTREAM` contains — possibly multi-line, possibly ANSI-colored) on the leading lines and our line last. It strips only trailing whitespace, injects `\x1b[0m` if upstream ends with an unclosed SGR, and otherwise preserves upstream verbatim.
-7. **Token-usage module (v0.4.0+):** In addition to the tokenplan 5h/7d window display, the plugin reads the session JSON from stdin (verified schema: `context_window.{total_input_tokens, total_output_tokens, current_usage.{input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens}}`, `cost.total_duration_ms`, `session_id`, `cwd`) and exposes fine-grained modules via `lineTemplate`: `m_tokenIn`, `m_tokenOut`, `m_tokenTotal`/`m_tokenSession`, `m_ctx`, `m_cacheHitRate`, `m_cacheRead`, `m_token5h`, `m_token7d`, `m_tokenInSpeed`, `m_tokenOutSpeed`. All modules are opt-in — the default `lineTemplate` does NOT include any token module, so existing v0.3.x configs render byte-identical after upgrade. Live data comes from stdin (zero IO for m_tokenIn/m_tokenOut/m_ctx/m_cacheRead/m_cacheHitRate/m_tokenInSpeed/m_tokenOutSpeed); 5h/7d modules read an append-only JSONL state file at `state/token-samples/<projectHash>/<sessionId>.jsonl` (~120B per tick, ~700KB over 7d). See `memory/token-usage-design-adr.md` for the full module list, color policy, and trade-off rationale.
+7. **Token-usage module (v0.4.0+):** In addition to the tokenplan 5h/7d window display, the plugin reads the session JSON from stdin (verified schema: `context_window.{total_input_tokens, total_output_tokens, current_usage.{input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens}}`, `cost.total_duration_ms`, `session_id`, `cwd`) and exposes fine-grained modules via `lineTemplate`: `m_tokenIn`, `m_tokenOut`, `m_tokenTotal`/`m_tokenSession`, `m_ctx`, `m_cacheHitRate`, `m_cacheRead`, `m_token5h`, `m_token7d`, `m_tokenInSpeed`, `m_tokenOutSpeed`. All modules are opt-in — the default `lineTemplate` does NOT include any token module, so existing v0.3.x configs render byte-identical after upgrade. Live data comes from stdin (zero IO for m_tokenIn/m_tokenOut/m_ctx/m_cacheRead/m_cacheHitRate/m_tokenInSpeed/m_tokenOutSpeed); 5h/7d modules read an append-only JSONL state file at `state/<projectHash>/<sessionId>.jsonl` (~120B per tick, ~700KB over 7d). See `memory/token-usage-design-adr.md` for the full module list, color policy, and trade-off rationale.
+
+### Per-Project State Layout (v0.4.x+)
+
+The runtime state directory is partitioned by project so multiple Claude Code sessions in different project directories never contend over the same files. Assumption: one project directory → one Claude Code session.
+
+```
+~/.claude/plugins/tokenplan-usage-hud/state/
+  upstream-cmd.sh              # top-level — install/uninstall dependency, NOT touched per tick
+  upstream-cmd.txt             # top-level — install/uninstall dependency, NOT touched per tick
+  config.json                  # top-level — install/uninstall dependency, NOT touched per tick
+  <projectHash>/               # e.g. d--workspace-tokenplan-usage-hud
+    cache.json                 # disk-shadowed TTL cache (per-project, key-prefixed by <projectHash>:)
+    diagnostics.jsonl          # append-only warning/error log (per-project)
+    <sessionId>.jsonl          # token samples (was state/token-samples/<hash>/<sid>.jsonl)
+```
+
+- All per-tick IO paths derive their location from `projectHash(cwd)` (lowercased, `\/: ` → `-`, control chars stripped, capped at 80 chars; exported from `src/token-store.ts`).
+- `src/render.ts` prefixes every cache key with `<projectHash>:` so `cache.json` files never share keys across projects. The cache module API (`get`/`set`/etc.) is unchanged — the prefix is a render-side concern only.
+- `src/diagnostics.ts` gained an optional `cwd` parameter on `append` / `readLatest` / `diagnosticsPath`. When omitted or null (e.g. plugin-level config-parse warnings), writes fall back to the legacy top-level `state/diagnostics.jsonl`.
+- Legacy migration for users upgrading from v0.4.0–v0.4.<n-1>: legacy top-level `cache.json` / `diagnostics.jsonl` are NOT auto-migrated (no project info recoverable). Legacy `state/token-samples/<projectHash>/<sessionId>.jsonl` files can be preserved with `bash scripts/migrate-state.sh` (or `--dry-run` to preview). Idempotent — `mv -n` is a no-op when the destination already exists.
+- `scripts/clean.sh --purge-runtime` walks every `state/*/` subdir and removes its `cache.json`, `diagnostics.jsonl`, and `<*.jsonl>` files. It still cleans the legacy top-level `cache.json` / `diagnostics.jsonl` and the `state/token-samples/` tree for users who skipped migration. Top-level `upstream-cmd.{sh,txt}` and `config.json` are NEVER purged.
 
 ### How `:install` / `:uninstall` / `:clean` run
 

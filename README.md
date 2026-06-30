@@ -493,11 +493,11 @@ Recognized modules:
 | `m_ctx`            | Current post-turn context length (excludes output) — e.g. `ctx:163k`. Reads `current_usage.{input + cache_creation + cache_read}`. |
 | `m_cacheHitRate`   | Cache hit rate as a percentage with 3-band coloring (`good ≥ 80%`, `warn ≥ 50%`, `bad < 50%`) — e.g. green `cache:99%`. Reads `current_usage.{cache_read, cache_creation}`. |
 | `m_cacheRead`      | Cache read tokens + context share — e.g. dim-gray `cache:163k (99.2%)`. Hidden when cache traffic is zero. |
-| `m_token5h`        | Tokens used in the last 5h (delta between first and last sample in the window) — e.g. `5h:12k`. Reads `state/token-samples/<projectHash>/<sessionId>.jsonl`. Hidden when fewer than 2 samples exist for the window. |
+| `m_token5h`        | Tokens used in the last 5h (delta between first and last sample in the window) — e.g. `5h:12k`. Reads `state/<projectHash>/<sessionId>.jsonl` (v0.4.x+ Per-Project Layout; was `state/token-samples/<hash>/<sid>.jsonl` in v0.4.0–v0.4.<n-1>). Hidden when fewer than 2 samples exist for the window. |
 | `m_token7d`        | Same, for the last 7 days. |
 | `m_tokenInSpeed`   | Per-API-call input speed — e.g. dim-gray `in:32.4 t/s`. **v0.4.0+**: math is `delta(current_usage.input_tokens) / delta(cost.total_api_duration_ms) * 1000`. Always renders — every missing-data case (first tick, no-API-call, session change, regression) **AND** the zero-token-delta case collapse to **`in:-- t/s`** rather than `0.0 t/s`. One consistent "no throughput to report" signal across all branches. |
 | `m_tokenOutSpeed`  | Same for output tokens. |
-| `m_tokenInAvg`     | Per-session running-average input speed — e.g. dim-gray `in:18.2 t/s`. **v0.4.0+**: math is `sum(delta_in) / sum(delta_api) * 1000`, accumulator stored under `tickAvg:<sessionId>` in `state/cache.json` (separate from the per-tick `tickSpeed:` snapshot). Only valid-API-call ticks contribute (`delta_api > 0` AND `delta_in >= 0`); idle and regression ticks don't accumulate. Always renders — `in:--` when no valid tick has accumulated yet (sumApi is 0). |
+| `m_tokenInAvg`     | Per-session running-average input speed — e.g. dim-gray `in:18.2 t/s`. **v0.4.0+**: math is `sum(delta_in) / sum(delta_api) * 1000`, accumulator stored under `tickAvg:<sessionId>` in the per-project `state/<projectHash>/cache.json` (separate from the per-tick `tickSpeed:` snapshot). Only valid-API-call ticks contribute (`delta_api > 0` AND `delta_in >= 0`); idle and regression ticks don't accumulate. Always renders — `in:--` when no valid tick has accumulated yet (sumApi is 0). |
 | `m_tokenOutAvg`    | Same for output tokens. |
 | `m_totalTokenIn`   | Per-session running total of input tokens across valid-API-call ticks — e.g. `in:340`. **v0.4.0+**: reads the same `tickAvg:<sessionId>` cache slot as `m_tokenInAvg`'s numerator; `AvgSnapshot` is extended with `sumCache` to accommodate the cache-read module below. Only `delta_api > 0` ticks contribute; idle and regression ticks don't accumulate. Always renders — `in:0` when no valid tick has accumulated yet. |
 | `m_totalTokenOut`  | Same for output tokens — e.g. `out:265`. |
@@ -803,7 +803,7 @@ In addition to the tokenplan 5h/7d window percentages, the plugin reads Claude C
 - `cost.total_duration_ms` — session wall-clock duration (used by speed modules)
 - `session_id`, `cwd`, `transcript_path` — used to scope the state file for 5h/7d modules
 
-**Persistent state file** (only for `m_token5h` / `m_token7d`): one JSON line per tick, appended to `~/.claude/plugins/tokenplan-usage-hud/state/token-samples/<projectHash>/<sessionId>.jsonl`. ~120B per row, ~700KB over 7d. Lives in the stable `state/` directory — survives cache rolls and version bumps.
+**Persistent state file** (only for `m_token5h` / `m_token7d`): one JSON line per tick, appended to `~/.claude/plugins/tokenplan-usage-hud/state/<projectHash>/<sessionId>.jsonl` (v0.4.x+ Per-Project Layout; was `state/token-samples/<hash>/<sid>.jsonl` in v0.4.0–v0.4.<n-1>). ~120B per row, ~700KB over 7d. Lives in the stable `state/` directory — survives cache rolls and version bumps. Legacy `state/token-samples/<hash>/<sid>.jsonl` files can be preserved across an upgrade with `bash scripts/migrate-state.sh` (preview with `--dry-run`).
 
 **Example template** with token counts alongside the windows:
 
@@ -916,8 +916,14 @@ config field, a fetcher that returned an unexpected status code — it can
 append a JSONL entry to:
 
 ```
-~/.claude/plugins/tokenplan-usage-hud/state/diagnostics.jsonl
+~/.claude/plugins/tokenplan-usage-hud/state/<projectHash>/diagnostics.jsonl
 ```
+
+(`v0.4.x+` Per-Project Layout: the log is partitioned by project directory so
+multiple Claude Code sessions in different projects never contend over the
+same file. The legacy top-level `state/diagnostics.jsonl` is still written
+for plugin-level errors with no project affiliation — e.g. config-parse
+warnings emitted before any cwd is known.)
 
 Each line is a structured record:
 
@@ -953,8 +959,13 @@ runs after every append.
 
 ### Wiping the log
 
-`/tokenplan-usage-hud:clean --purge-runtime` wipes the diagnostics log plus
-the token-samples cache and the on-disk fetch cache. Preview first with
+`/tokenplan-usage-hud:clean --purge-runtime` walks every
+`state/<projectHash>/` subdir and wipes its `diagnostics.jsonl`,
+`cache.json`, and `<*.jsonl>` token-sample files (v0.4.x+ Per-Project
+Layout). It also cleans the legacy top-level `state/diagnostics.jsonl`,
+`state/cache.json`, and the legacy `state/token-samples/` tree for users
+upgrading from v0.4.0–v0.4.<n-1>. Top-level `upstream-cmd.{sh,txt}` and
+`config.json` are NEVER purged. Preview first with
 `/tokenplan-usage-hud:clean --purge-runtime --dry-run`.
 
 ## Auth
@@ -965,7 +976,7 @@ The plugin reuses `process.env.ANTHROPIC_AUTH_TOKEN` to call the provider's plan
 
 The Claude Code statusline is updated in response to interaction events by default (every prompt, every tool result). Starting with **Claude Code 2.1.97**, the `statusLine.refreshInterval` field is honored, letting the statusline refresh on a fixed cadence instead. Two scopes of "refresh interval" are involved and they're independent:
 
-- **This plugin's 60 s TTL** — how long we cache a successful API response before re-fetching. MiniMax and DeepSeek have different rate-limit policies and refresh cadences; 60 s is a deliberate default that keeps the statusline responsive without hammering the API. Cache entries are shadowed to disk under `state/cache.json` (sibling of `config.json`, wiped by `:uninstall`), so the TTL is honored **across per-tick child-process spawns** — the second tick within 60 s reuses the first tick's value instead of re-fetching.
+- **This plugin's 60 s TTL** — how long we cache a successful API response before re-fetching. MiniMax and DeepSeek have different rate-limit policies and refresh cadences; 60 s is a deliberate default that keeps the statusline responsive without hammering the API. Cache entries are shadowed to disk under `state/<projectHash>/cache.json` (sibling of `config.json`, wiped by `:uninstall`; v0.4.x+ Per-Project Layout — was `state/cache.json` in v0.4.0–v0.4.<n-1>), so the TTL is honored **across per-tick child-process spawns** — the second tick within 60 s reuses the first tick's value instead of re-fetching. Per-project isolation: `render.ts` prefixes every cache key with `<projectHash>:` so different projects never collide on the same `cache.json`.
 - **Claude Code's `statusLine.refreshInterval`** — how often the harness invokes the statusline command. Set in `~/.claude/settings.json` independently of this plugin:
 
   ```json
@@ -1109,7 +1120,7 @@ scripts/
   wrapper.sh          # bash wrapper: TOKENPLAN_UPSTREAM_CMD → TOKENPLAN_UPSTREAM → us
   install.sh          # settings.json patcher (install + thin shim for --uninstall)
   uninstall.sh        # self-contained uninstaller (used by :uninstall and dev:uninstall)
-  clean.sh            # trim old .bak.<ts> files; --purge-runtime also wipes state/diagnostics.jsonl + token-samples
+  clean.sh            # trim old .bak.<ts> files; --purge-runtime also wipes state/<projectHash>/{cache.json,diagnostics.jsonl,*.jsonl} + legacy top-level + token-samples
   lib/edit-settings.mjs  # ESM helper used by install.sh
   dev-uninstall.sh    # DEV-ONLY thin shim → exec uninstall.sh
 settings.example.json # template (NEVER commit real settings.json)

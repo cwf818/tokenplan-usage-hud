@@ -72,7 +72,7 @@ describe("diagnostics — append + readLatest", () => {
 
   it("does NOT write to disk when gate is off (default)", () => {
     disable();
-    append("error", "config", "should not be persisted", 1_000);
+    append("error", "config", "should not be persisted", 1_000, null);
     // The diagnostics file path lives under CLAUDE_CONFIG_DIR; assert
     // it (and its parent dirs) do not exist.
     const p = diagnosticsPath();
@@ -81,8 +81,8 @@ describe("diagnostics — append + readLatest", () => {
 
   it("writes one JSONL row per call when gate is on", () => {
     enable();
-    append("warning", "config", "first", 1_000);
-    append("error", "fetch", "second", 2_000);
+    append("warning", "config", "first", 1_000, null);
+    append("error", "fetch", "second", 2_000, null);
 
     const raw = readFileSync(diagnosticsPath(), "utf8");
     const lines = raw.split("\n").filter((l) => l.length > 0);
@@ -102,25 +102,25 @@ describe("diagnostics — append + readLatest", () => {
 
   it("readLatest returns the most recent matching entry by level", () => {
     enable();
-    append("warning", "a", "old warn", 1_000);
-    append("error", "a", "err 1", 2_000);
-    append("warning", "a", "new warn", 3_000);
-    append("error", "a", "err 2", 4_000);
+    append("warning", "a", "old warn", 1_000, null);
+    append("error", "a", "err 1", 2_000, null);
+    append("warning", "a", "new warn", 3_000, null);
+    append("error", "a", "err 2", 4_000, null);
 
     assert.deepEqual(
-      readLatest("warning"),
+      readLatest("warning", null),
       { at: 3_000, level: "warning", source: "a", msg: "new warn" },
     );
     assert.deepEqual(
-      readLatest("error"),
+      readLatest("error", null),
       { at: 4_000, level: "error", source: "a", msg: "err 2" },
     );
   });
 
   it("readLatest returns null when no entry of that level exists", () => {
     enable();
-    append("warning", "a", "only a warning", 1_000);
-    assert.equal(readLatest("error"), null);
+    append("warning", "a", "only a warning", 1_000, null);
+    assert.equal(readLatest("error", null), null);
   });
 
   it("readLatest returns null when the file doesn't exist (gate off path)", () => {
@@ -128,16 +128,16 @@ describe("diagnostics — append + readLatest", () => {
     // No prior append — file doesn't exist. readLatest is intentionally
     // NOT gated (reads whatever is on disk), so this just confirms the
     // missing-file branch returns null cleanly.
-    assert.equal(readLatest("error"), null);
-    assert.equal(readLatest("warning"), null);
+    assert.equal(readLatest("error", null), null);
+    assert.equal(readLatest("warning", null), null);
   });
 
   it("caps the file at 200 lines, keeping the most recent", () => {
     enable();
     for (let i = 0; i < 250; i++) {
-      append("error", "flood", `e${i}`, i);
+      append("error", "flood", `e${i}`, i, null);
     }
-    const raw = readFileSync(diagnosticsPath(), "utf8");
+    const raw = readFileSync(diagnosticsPath(null), "utf8");
     const lines = raw.split("\n").filter((l) => l.length > 0);
     assert.equal(lines.length, 200, "must keep only the last 200");
 
@@ -146,6 +146,50 @@ describe("diagnostics — append + readLatest", () => {
     // First 50 were dropped, so the first kept is e50.
     assert.equal(firstKept.msg, "e50");
     assert.equal(lastKept.msg, "e249");
+  });
+
+  // v0.4.x+ Per-Project Layout: when a cwd is provided, the entry
+  // is written to `state/<projectHash>/diagnostics.jsonl` rather
+  // than the top-level file. Two concurrent projects must not see
+  // each other's entries when readLatest is given the same cwd.
+  it("per-project: append with cwd lands in state/<hash>/diagnostics.jsonl", () => {
+    enable();
+    const cwdA = "D:\\WorkSpace\\alpha";
+    const cwdB = "D:\\WorkSpace\\beta";
+    const pathA = diagnosticsPath(cwdA);
+    const pathB = diagnosticsPath(cwdB);
+    // Different projects → different files (never the legacy top-level).
+    assert.notEqual(pathA, pathB);
+    assert.ok(pathA.includes("alpha") || pathA.includes("d--workspace-alpha"),
+      `expected per-project path, got: ${pathA}`);
+    const pathAParent = pathA.split(/[\\/]/).slice(-2, -1)[0];
+    assert.ok(!pathA.endsWith("diagnostics.jsonl") || pathAParent === "d--workspace-alpha",
+      `expected pathA under a per-project subdir: ${pathA}`);
+
+    append("error", "src", "from A", 1_000, cwdA);
+    append("error", "src", "from B", 2_000, cwdB);
+
+    // Top-level file should NOT exist (nothing was written without cwd).
+    assert.equal(existsSyncSafe(diagnosticsPath(null)), false,
+      "no top-level file when only per-project writes happened");
+
+    // Each project reads back only its own entry.
+    assert.deepEqual(readLatest("error", cwdA), {
+      at: 1_000, level: "error", source: "src", msg: "from A",
+    });
+    assert.deepEqual(readLatest("error", cwdB), {
+      at: 2_000, level: "error", source: "src", msg: "from B",
+    });
+  });
+
+  it("per-project: empty-string cwd falls back to top-level", () => {
+    enable();
+    append("error", "src", "top-level fallback", 1_000, "");
+    // Empty string is treated as "no project" — file lands at top level.
+    assert.equal(existsSyncSafe(diagnosticsPath(null)), true);
+    assert.deepEqual(readLatest("error", null), {
+      at: 1_000, level: "error", source: "src", msg: "top-level fallback",
+    });
   });
 
   it("formatEntry caps message at 80 chars with ellipsis", () => {

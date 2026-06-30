@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.4.0 (in development)
+## v0.4.0
 
 ### Added
 
@@ -220,6 +220,87 @@
   mismatch → silent drop (no warn). `:color:` is silently
   ignored on `m_template`; put `:color:` on the inner
   modules if needed.
+
+### Changed (BREAKING) — Per-Project State Layout
+
+The plugin's runtime state directory is now partitioned by
+project, so multiple Claude Code sessions running in
+**different** project directories never contend over the same
+files. Assumption: one project directory → one Claude Code
+session; multi-Claude workflows come from opening the project
+in different directories.
+
+**New layout** under
+`~/.claude/plugins/tokenplan-usage-hud/state/`:
+
+```
+state/
+  upstream-cmd.sh              # top-level — install/uninstall dependency, NOT touched
+  upstream-cmd.txt             # top-level — install/uninstall dependency, NOT touched
+  config.json                  # top-level — install/uninstall dependency, NOT touched
+  <projectHash>/               # e.g. d--workspace-tokenplan-usage-hud
+    cache.json                 # disk-shadowed TTL cache (per-project key isolation)
+    diagnostics.jsonl          # append-only warning/error log (per-project)
+    <sessionId>.jsonl          # token samples (was state/token-samples/<hash>/<sid>.jsonl)
+```
+
+- `cache.json`, `diagnostics.jsonl`, and token-samples have
+  moved **off the top-level** and into
+  `state/<projectHash(cwd)>/`. The `projectHash(cwd)` helper
+  (lowercased, `\/: ` → `-`, control chars stripped, capped at
+  80 chars) was already exported from `src/token-store.ts` —
+  every per-tick IO path now derives its path from the cwd in
+  `TokenSnapshot`.
+- Cache key isolation across projects: `src/render.ts` prefixes
+  every cache key with `<projectHash>:<key>`. The cache module
+  API itself is unchanged — the prefix lives in render.ts so
+  the disk format stays single-keyed and cache tests still pass
+  with no mocks. Per-project `cache.json` files never share
+  keys.
+- Diagnostics: `append(level, source, msg, now?, cwd?)` /
+  `readLatest(level, cwd?)` / `diagnosticsPath(cwd?)` gained
+  an optional `cwd` argument. When omitted or null, writes fall
+  back to the legacy top-level `state/diagnostics.jsonl` so
+  plugin-level errors (e.g. config-parse warnings) still have
+  somewhere to go. `src/index.ts` passes `tokens?.cwd ?? null`.
+- Token samples: `sampleFilePath` now builds
+  `state/<projectHash(cwd)>/<sessionId>.jsonl` directly (the
+  intermediate `token-samples/` directory is gone). The
+  `m_token5h` / `m_token7d` modules continue to call
+  `readSamples(t.cwd, ...)` and get per-project isolation
+  transparently.
+
+**Migration for users upgrading from v0.4.0–v0.4.<n-1>**:
+legacy top-level `cache.json` and `diagnostics.jsonl` are NOT
+auto-migrated (no project information is recoverable from
+them — start fresh). Legacy
+`state/token-samples/<projectHash>/<sessionId>.jsonl` files
+are also not auto-migrated on tick (would cost 3–10ms IO per
+tick for time-decaying data). To preserve old token samples,
+run the bundled one-shot helper:
+
+```bash
+bash scripts/migrate-state.sh         # actually move
+bash scripts/migrate-state.sh --dry-run  # preview only
+```
+
+It `mv -n`s each
+`state/token-samples/<hash>/<sid>.jsonl` →
+`state/<hash>/<sid>.jsonl`, then `rmdir`s the empty project
+subdirs and the empty `token-samples/` parent. Idempotent.
+
+**Cleanup**: `clean.sh --purge-runtime` now walks every
+`state/*/` subdir and removes its `cache.json`,
+`diagnostics.jsonl`, and `<*.jsonl>` files. It still cleans
+the legacy top-level `cache.json` / `diagnostics.jsonl` and
+the `state/token-samples/` tree (one-shot upgrade path for
+users who don't bother with `migrate-state.sh`). Top-level
+`upstream-cmd.{sh,txt}` and `config.json` are NEVER purged —
+install/uninstall depends on them.
+
+`scripts/uninstall.sh` is unchanged at the code level — the
+existing `rm -rf "$STATE_DIR"` is naturally compatible with
+the per-project layout.
 
 ## v0.3.6
 
