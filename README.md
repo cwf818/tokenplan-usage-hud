@@ -23,7 +23,7 @@ ANSI colors are 5-band (256-color SGR): bright green / dark green / yellow / ora
 
 ## What's new
 
-- **v0.4.0 (in development)** — exposes 16 new statusline modules reading the captured Claude Code stdin payload: session identity (`m_session`, `m_model`, `m_effort`, `m_repo`, `m_ccVersion`), session metrics (`m_sessionDuration`, `m_sessionApiDuration`, `m_linesAdded`, `m_linesRemoved`), cumulative token counters (`m_tokenInTotal`, `m_tokenOutTotal`), context-window stats (`m_contextSize`, `m_contextUsed`, `m_windowContext`). Also: `m_tokenIn` / `m_tokenOut` and `m_tokenInSpeed` / `m_tokenOutSpeed` now read the per-turn `current_usage` fields instead of session-cumulative. See [CHANGELOG.md](CHANGELOG.md) for the full v0.4.0 list.
+- **v0.4.0 (in development)** — exposes 16 new statusline modules reading the captured Claude Code stdin payload: session identity (`m_session`, `m_model`, `m_effort`, `m_repo`, `m_ccVersion`), session metrics (`m_sessionDuration`, `m_sessionApiDuration`, `m_linesAdded`, `m_linesRemoved`), cumulative token counters (`m_tokenInTotal`, `m_tokenOutTotal`), context-window stats (`m_contextSize`, `m_contextUsed`, `m_windowContext`). Also: `m_tokenIn` / `m_tokenOut` and `m_tokenInSpeed` / `m_tokenOutSpeed` now read the per-turn `current_usage` fields instead of session-cumulative. **BREAKING**: the `lineTemplate: { plan, balance }` config field is removed — replaced by `lineTemplates` (registry of reusable fragments) + `statuslineTemplate` (the rendered template). See [CHANGELOG.md](CHANGELOG.md) for the full v0.4.0 list and the [Upgrading to v0.4.0](#upgrading-to-v040-from-v03x) section below for the migration recipe.
 
 ## Install
 
@@ -376,22 +376,28 @@ A reference with every field is at [config.example.json](./config.example.json).
     // < hi → warn (yellow), ≥ hi → good (green).
     "cacheHitThresholds": [50, 80],
   },
-  "lineTemplate": {
-    // Custom line layout. Each entry is either a display module
-    // ("m_<name>") or a separator reference ("s_<n>"). The renderer
-    // walks the array left-to-right and concatenates each module's
-    // output. See "Module tokens" below for the full list. Modules
-    // that return no content (e.g. a window with no data) cause
-    // their surrounding s_N tokens to disappear too, so a hidden
-    // window doesn't leave orphan separators in the output.
-    "plan": [
-      "m_modeLabel", "s_0",
-      "m_window5h", "s_0", "m_countdown5h",
-      "s_0", "s_1", "s_0",
-      "m_window7d", "s_0", "m_countdown7d",
-    ],
-    "balance": ["m_modeLabel", "s_0", "m_balance"],
+  "lineTemplates": {
+    // v0.4.0+ — registry of reusable template fragments. Each value
+    // is a token array. Allowed tokens: any m_* module EXCEPT
+    // m_template, plus s_* separators. Keys are user-chosen; the
+    // renderer reads from this registry when it sees an
+    // `m_template:<key>` token inside `statuslineTemplate`.
+    // Default entries `plan` and `balance` point at the v0.3.x
+    // defaults so existing internal lookups still resolve; they're
+    // auto-merged with your custom keys (your keys win on
+    // collision).
+    //
+    // Example: a shared `header` chunk used in both plan and
+    // balance templates.
+    "header": ["m_modeLabel", "s_0"]
   },
+  "statuslineTemplate": "1line",  // or a raw array, e.g.:
+  // ["m_template:header:mode:plan", "s_0", "m_window5h"],
+
+  // v0.4.0+ replaces the v0.3.x `lineTemplate: { plan, balance }`
+  // shape with the two fields above. See the "Upgrading to v0.4.0"
+  // section below for the migration notes. The loader warns once
+  // per config load and ignores the legacy field.
   "providers": {
     // v0.2.21: declarative provider registry. The plugin picks a
     // provider by matching ANTHROPIC_BASE_URL against each entry's
@@ -458,7 +464,12 @@ The cache key for a provider's response is its name (so two TOKEN_PLAN providers
 
 ### Module tokens
 
-The line layout is declared as an ordered list of tokens in `lineTemplate.plan` (MiniMax) and `lineTemplate.balance` (DeepSeek). Three token shapes:
+The line layout is declared as `statuslineTemplate` (v0.4.0+). It accepts a **preset name** (e.g. `"1line"`, `"standard"`, `"abundant"`) OR a raw token array. The default is `"1line"` — the same shape v0.3.x rendered with its default `lineTemplate.plan`.
+
+- For shared / reusable fragments, register them under `lineTemplates` and pull them into `statuslineTemplate` with `m_template:<key>[:mode:<plan|balance>]`. See [`m_template`](#mtemplatekeymodenulldrop-v040) below.
+- String-form `statuslineTemplate` only accepts the FIXED preset names (the renderer looks them up in the bundled `PLAN_PRESETS` / `BALANCE_PRESETS` tables; the table to search is chosen by the provider's TYPE — TOKEN_PLAN → `PLAN_PRESETS`, BALANCE → `BALANCE_PRESETS`). Arbitrary `lineTemplates` keys are NOT accepted as preset names; use the array form with `m_template:<key>` instead.
+
+Three token shapes:
 
 - **`m_<name>`** — a display module, rendered in order. Modules that have no content in the current context (e.g. `m_window7d` when the weekly data is missing) emit nothing, AND their immediately adjacent `s_N` tokens are skipped too — so a hidden window doesn't leave orphan separators in the output.
 - **`s_<n>`** — a separator reference, looked up in `separators[n]`. Out-of-range references expand to `""` and trigger a one-time stderr warning.
@@ -512,6 +523,7 @@ captured by `/statusline`):
 | `m_contextSize`          | Context window size (compact) — e.g. `200.0k`. Reads stdin `context_window.context_window_size`. |
 | `m_contextUsed`          | Context used percentage — e.g. `63%`. Reads stdin `context_window.used_percentage`. |
 | `m_windowContext`        | Context bar + 5-band-colored percentage, parallel to `m_window5h` / `m_window7d` — e.g. `▓▓▓▓▓░░░ 63%`. Synthesized from `used_percentage`. |
+| `m_template:<key>` (v0.4.0+) | Expand a `lineTemplates[<key>]` fragment into the current render. See [`m_template`](#mtemplatekeymodenulldrop-v040) below. |
 
 **Visibility of `m_age` (priority: template-driven, stale fallback):**
 - If your `lineTemplate` includes `m_age`, the module emits **unconditionally** (no stale gating). Emoji reflects the fetch state: `🔗 X ago` on fresh ticks (showing the cache age), `⛓️‍💥 X ago` on stale (showing time since last successful fetch). Hidden only when `ageMs` is missing.
@@ -617,6 +629,69 @@ The bare forms are byte-for-byte unchanged — the global `display` config (defa
 Valid values are exactly `used` or `remaining` (case-sensitive). `display:USED`, `display:` (empty), or any other value is a parse-fail — the token is dropped and the standard one-shot "unknown lineTemplate module" warn fires.
 
 **Note:** the remaining-mode palette is the *reverse* of the used-mode palette: high remaining = healthy = brightGreen, low remaining = red. So `m_window5h:display:remaining` at 38% used renders 62% in the band-3 remaining color (darkGreen) — not the band-3 used color (orange). See [`formatOneChunk` / `splitBar`](src/render.ts) for the exact mapping.
+
+### `m_template:<key>[:mode:<plan|balance>]` (v0.4.0+)
+
+Pulls a registered fragment from `lineTemplates` into the rendered template. Use it to share chunks (e.g. a `Usage:` / `Balance:` label, a separator) across plan and balance templates without duplicating tokens.
+
+**Token forms**
+
+| Token form | Required params | Optional params | Description |
+| ---------- | --------------- | --------------- | ----------- |
+| `m_template:<key>`             | `key` (the `lineTemplates` entry to expand) | `mode` (default `plan`), `nulldrop` (accepted, no-op for this module) | Expand the registered fragment into the current render. |
+| `m_template:<key>:mode:plan`   | `key`               | `nulldrop` | Same, but the chunk only renders when the provider's mode key is `plan`. |
+| `m_template:<key>:mode:balance`| `key`               | `nulldrop` | Same, but only renders when the provider's mode key is `balance`. |
+
+**Behavior:**
+
+- **Missing key** → warns once and drops the chunk (same as any unknown module).
+- **Mode mismatch** → silently drops (no warn). The user explicitly asked for a mode filter, so no error is needed.
+- **Nesting is impossible**: the loader strips any `m_template:` tokens from `lineTemplates` entries at load time. A `lineTemplates` value cannot contain another `m_template:` token, so recursion cannot happen.
+- **`:color:` is silently ignored on `m_template`**: put `:color:` on the inner modules if you want per-module coloring. Color propagation across expanded templates was deferred (the cost/complexity didn't justify the feature).
+
+**Example — share a label across both providers:**
+
+```jsonc
+{
+  "lineTemplates": {
+    "header": ["m_modeLabel", "s_0"]
+  },
+  "statuslineTemplate": [
+    "m_template:header:mode:plan",  // visible only on plan providers (TOKEN_PLAN)
+    "m_window5h", "s_0", "m_countdown5h",
+    "s_2",
+    "m_tokenIn"
+  ]
+  // On a DeepSeek provider the header chunk drops (mode:plan ≠ balance)
+  // and the renderer falls through to the default balance rendering
+  // (BALANCE_PRESETS["simple"] = ["m_modeLabel", "s_0", "m_balance"]).
+}
+```
+
+### Upgrading to v0.4.0 from v0.3.x
+
+The `lineTemplate: { plan, balance }` config field is **removed** in v0.4.0. The loader emits one `tokenplan-usage-hud: config lineTemplate is removed in v0.4.0; use lineTemplates + statuslineTemplate. See CHANGELOG.md for the upgrade path. Ignoring the legacy field.` warning per config load and ignores the legacy field — there is **no auto-promotion** of `lineTemplate.plan` → `lineTemplates.plan`.
+
+To migrate a customized `lineTemplate`:
+
+```diff
+- "lineTemplate": {
+-   "plan":   ["m_modeLabel", "s_0", "m_window5h", "s_0", "m_countdown7d"],
+-   "balance": ["m_modeLabel", "s_0", "m_balance"]
+- }
++ "lineTemplates": {
++   // Optional — only needed if you want to share fragments.
++   // The renderer reads `statuslineTemplate` first; if you don't
++   // need shared chunks, just set `statuslineTemplate` below and
++   // skip this block.
++ },
++ "statuslineTemplate": [
++   "m_modeLabel", "s_0",
++   "m_window5h", "s_0", "m_window7d"
++ ]
+```
+
+The default `statuslineTemplate` is `"1line"`, which reproduces the v0.3.6 default rendering — only customized configs require manual migration. To switch presets, set `"statuslineTemplate": "standard"` / `"abundant"` / `"complete"` (the full list lives in `PLAN_PRESETS` / `BALANCE_PRESETS` at the top of `src/config.ts`).
 
 ### `m_quote` (v0.3.6+)
 

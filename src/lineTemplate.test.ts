@@ -44,10 +44,7 @@ beforeEach(() => {
 describe("lineTemplate — custom template (drop the 7d window)", () => {
   beforeEach(() => {
     __resetForTest({
-      lineTemplate: {
-        plan: ["m_modeLabel", "s_0", "m_window5h", "s_0", "m_countdown5h"],
-        balance: ["m_modeLabel", "s_0", "m_balance"],
-      },
+      statuslineTemplate:["m_modeLabel", "s_0", "m_window5h", "s_0", "m_countdown5h"],
     });
   });
   afterEach(() => __resetForTest());
@@ -72,15 +69,12 @@ describe("lineTemplate — custom separators", () => {
   it("swaps the inter-window separator to ' / '", () => {
     __resetForTest({
       separators: [" ", " / "],
-      lineTemplate: {
-        plan: [
-          "m_modeLabel", "s_0",
-          "m_window5h", "s_0", "m_countdown5h",
-          "s_0", "s_1", "s_0",
-          "m_window7d", "s_0", "m_countdown7d",
-        ],
-        balance: ["m_modeLabel", "s_0", "m_balance"],
-      },
+      statuslineTemplate:[
+        "m_modeLabel", "s_0",
+        "m_window5h", "s_0", "m_countdown5h",
+        "s_0", "s_1", "s_0",
+        "m_window7d", "s_0", "m_countdown7d",
+      ],
     });
     try {
       const line = renderProviderLine("minimax", {
@@ -104,10 +98,7 @@ describe("lineTemplate — unknown module token", () => {
   it("expands unknown m_ tokens to '' and warns once on stderr", () => {
     __resetUnknownModuleWarnForTest();
     __resetForTest({
-      lineTemplate: {
-        plan: ["m_modeLabel", "s_0", "m_window5h", "s_0", "m_foo"],
-        balance: ["m_modeLabel", "s_0", "m_balance"],
-      },
+      statuslineTemplate:["m_modeLabel", "s_0", "m_window5h", "s_0", "m_foo"],
     });
     // Capture stderr.
     const err = process.stderr as unknown as { write: (c: string) => boolean };
@@ -163,15 +154,12 @@ describe("lineTemplate — forced visibility of m_age on stale", () => {
     // heuristic. Confirms the refactor.
     __resetForTest({
       separators: [" ago"],
-      lineTemplate: {
-        plan: [
-          "m_modeLabel", "s_0",
-          "m_window5h", "s_0", "m_countdown5h",
-          "s_0", "s_1", "s_0",
-          "m_window7d", "s_0", "m_countdown7d",
-        ],
-        balance: ["m_modeLabel", "s_0", "m_balance"],
-      },
+      statuslineTemplate:[
+        "m_modeLabel", "s_0",
+        "m_window5h", "s_0", "m_countdown5h",
+        "s_0", "s_1", "s_0",
+        "m_window7d", "s_0", "m_countdown7d",
+      ],
     });
     try {
       const line = renderProviderLine("minimax", {
@@ -195,16 +183,13 @@ describe("lineTemplate — forced visibility of m_age on stale", () => {
 
   it("does NOT double-append when m_age IS in the template", () => {
     __resetForTest({
-      lineTemplate: {
-        plan: [
-          "m_modeLabel", "s_0",
-          "m_window5h", "s_0", "m_countdown5h",
-          "s_0", "s_1", "s_0",
-          "m_window7d", "s_0", "m_countdown7d",
-          "s_0", "m_age",
-        ],
-        balance: ["m_modeLabel", "s_0", "m_balance", "s_0", "m_age"],
-      },
+      statuslineTemplate:[
+        "m_modeLabel", "s_0",
+        "m_window5h", "s_0", "m_countdown5h",
+        "s_0", "s_1", "s_0",
+        "m_window7d", "s_0", "m_countdown7d",
+        "s_0", "m_age",
+      ],
     });
     try {
       const line = renderProviderLine("minimax", {
@@ -243,14 +228,11 @@ describe("lineTemplate — forced visibility of m_age on stale", () => {
     // in the lineTemplate, the module emits unconditionally. Fresh +
     // ageMs > 0 → 🔗 X ago.
     __resetForTest({
-      lineTemplate: {
-        plan: [
-          "m_modeLabel", "s_0",
-          "m_window5h", "s_0", "m_countdown5h",
-          "s_0", "m_age",
-        ],
-        balance: ["m_modeLabel", "s_0", "m_balance", "s_0", "m_age"],
-      },
+      statuslineTemplate:[
+        "m_modeLabel", "s_0",
+        "m_window5h", "s_0", "m_countdown5h",
+        "s_0", "m_age",
+      ],
     });
     try {
       const line = renderProviderLine("minimax", {
@@ -272,10 +254,7 @@ describe("lineTemplate — forced visibility of m_age on stale", () => {
 describe("lineTemplate — m_version module", () => {
   it("renders 'v' + ctx.version when m_version is in the template", () => {
     __resetForTest({
-      lineTemplate: {
-        plan: ["m_modeLabel", "s_0", "m_window5h", "s_0", "m_version"],
-        balance: ["m_modeLabel", "s_0", "m_balance", "s_0", "m_version"],
-      },
+      statuslineTemplate:["m_modeLabel", "s_0", "m_window5h", "s_0", "m_version"],
     });
     try {
       const line = renderProviderLine("minimax", {
@@ -295,10 +274,7 @@ describe("lineTemplate — m_version module", () => {
 
   it("renders nothing when version is empty (m_version module returns null)", () => {
     __resetForTest({
-      lineTemplate: {
-        plan: ["m_modeLabel", "s_0", "m_window5h", "s_0", "m_version"],
-        balance: ["m_modeLabel", "s_0", "m_balance", "s_0", "m_version"],
-      },
+      statuslineTemplate:["m_modeLabel", "s_0", "m_window5h", "s_0", "m_version"],
     });
     try {
       const line = renderProviderLine("minimax", {
@@ -372,10 +348,7 @@ describe("lineTemplate — m_label inline-args tokens", () => {
   beforeEach(() => {
     __resetUnknownModuleWarnForTest();
     __resetForTest({
-      lineTemplate: {
-        plan: ["m_label:hello"],
-        balance: ["m_label:hello"],
-      },
+      statuslineTemplate:["m_label:hello"],
     });
   });
   afterEach(() => __resetForTest());
@@ -391,7 +364,7 @@ describe("lineTemplate — m_label inline-args tokens", () => {
 
   it("m_label:hello:color:red wraps the chunk in red SGR + RESET", () => {
     __resetForTest({
-      lineTemplate: { plan: ["m_label:hello:color:red"], balance: ["m_label:hello:color:red"] },
+      statuslineTemplate:["m_label:hello:color:red"],
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
@@ -403,7 +376,7 @@ describe("lineTemplate — m_label inline-args tokens", () => {
 
   it("m_label:hello:color:brightBlack resolves to \\x1b[90m", () => {
     __resetForTest({
-      lineTemplate: { plan: ["m_label:hi:color:brightBlack"], balance: ["m_label:hi:color:brightBlack"] },
+      statuslineTemplate:["m_label:hi:color:brightBlack"],
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
@@ -415,7 +388,7 @@ describe("lineTemplate — m_label inline-args tokens", () => {
 
   it("m_label accepts a raw SGR string for color", () => {
     __resetForTest({
-      lineTemplate: { plan: ["m_label:x:color:\x1b[36m"], balance: ["m_label:x:color:\x1b[36m"] },
+      statuslineTemplate:["m_label:x:color:\x1b[36m"],
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
@@ -427,7 +400,7 @@ describe("lineTemplate — m_label inline-args tokens", () => {
 
   it("m_label:hello:color:garbage is a hard noop (drops and warns)", () => {
     __resetForTest({
-      lineTemplate: { plan: ["m_label:hello:color:garbage"], balance: ["m_label:hello:color:garbage"] },
+      statuslineTemplate:["m_label:hello:color:garbage"],
     });
     const { value: line, warns } = withCapturedStderr(() =>
       renderProviderLine("minimax", {
@@ -443,7 +416,7 @@ describe("lineTemplate — m_label inline-args tokens", () => {
 
   it("m_label::color:red (empty string) drops and warns", () => {
     __resetForTest({
-      lineTemplate: { plan: ["m_label::color:red"], balance: ["m_label::color:red"] },
+      statuslineTemplate:["m_label::color:red"],
     });
     const { value: line, warns } = withCapturedStderr(() =>
       renderProviderLine("minimax", {
@@ -458,7 +431,7 @@ describe("lineTemplate — m_label inline-args tokens", () => {
 
   it("m_label:hello:color (odd arg count) drops and warns", () => {
     __resetForTest({
-      lineTemplate: { plan: ["m_label:hello:color"], balance: ["m_label:hello:color"] },
+      statuslineTemplate:["m_label:hello:color"],
     });
     const { value: line, warns } = withCapturedStderr(() =>
       renderProviderLine("minimax", {
@@ -473,7 +446,7 @@ describe("lineTemplate — m_label inline-args tokens", () => {
 
   it("m_label:hello:unknown:foo (unknown param) drops and warns", () => {
     __resetForTest({
-      lineTemplate: { plan: ["m_label:hello:unknown:foo"], balance: ["m_label:hello:unknown:foo"] },
+      statuslineTemplate:["m_label:hello:unknown:foo"],
     });
     const { value: line, warns } = withCapturedStderr(() =>
       renderProviderLine("minimax", {
@@ -488,10 +461,7 @@ describe("lineTemplate — m_label inline-args tokens", () => {
 
   it("m_label:hello:color:red:extra:stuff (odd total) drops and warns", () => {
     __resetForTest({
-      lineTemplate: {
-        plan: ["m_label:hello:color:red:extra:stuff"],
-        balance: ["m_label:hello:color:red:extra:stuff"],
-      },
+      statuslineTemplate:["m_label:hello:color:red:extra:stuff"],
     });
     const { value: line, warns } = withCapturedStderr(() =>
       renderProviderLine("minimax", {
@@ -512,7 +482,7 @@ describe("lineTemplate — s_<n>:color inline-args tokens", () => {
   it("s_0:color:red wraps the separator in red SGR + RESET", () => {
     __resetForTest({
       separators: [" "],
-      lineTemplate: { plan: ["s_0:color:red"], balance: ["s_0:color:red"] },
+      statuslineTemplate:["s_0:color:red"],
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
@@ -525,7 +495,7 @@ describe("lineTemplate — s_<n>:color inline-args tokens", () => {
   it("s_0:color:garbage is a hard noop (drops and warns)", () => {
     __resetForTest({
       separators: [" "],
-      lineTemplate: { plan: ["s_0:color:garbage"], balance: ["s_0:color:garbage"] },
+      statuslineTemplate:["s_0:color:garbage"],
     });
     const { value: line, warns } = withCapturedStderr(() =>
       renderProviderLine("minimax", {
@@ -542,7 +512,7 @@ describe("lineTemplate — s_<n>:color inline-args tokens", () => {
   it("s_999:color:red (out-of-range index) drops and warns", () => {
     __resetForTest({
       separators: [" "],
-      lineTemplate: { plan: ["s_999:color:red"], balance: ["s_999:color:red"] },
+      statuslineTemplate:["s_999:color:red"],
     });
     const { value: line, warns } = withCapturedStderr(() =>
       renderProviderLine("minimax", {
@@ -558,7 +528,7 @@ describe("lineTemplate — s_<n>:color inline-args tokens", () => {
   it("s_abc:color:red (non-numeric index) drops and warns", () => {
     __resetForTest({
       separators: [" "],
-      lineTemplate: { plan: ["s_abc:color:red"], balance: ["s_abc:color:red"] },
+      statuslineTemplate:["s_abc:color:red"],
     });
     const { value: line, warns } = withCapturedStderr(() =>
       renderProviderLine("minimax", {
@@ -574,10 +544,7 @@ describe("lineTemplate — s_<n>:color inline-args tokens", () => {
   it("s_0:color:red:extra:stuff (odd total) drops and warns", () => {
     __resetForTest({
       separators: [" "],
-      lineTemplate: {
-        plan: ["s_0:color:red:extra:stuff"],
-        balance: ["s_0:color:red:extra:stuff"],
-      },
+      statuslineTemplate:["s_0:color:red:extra:stuff"],
     });
     const { value: line, warns } = withCapturedStderr(() =>
       renderProviderLine("minimax", {
@@ -593,7 +560,7 @@ describe("lineTemplate — s_<n>:color inline-args tokens", () => {
   it("s_ (just the prefix, no params) resolves to seps[0]", () => {
     __resetForTest({
       separators: ["X", "YY"],
-      lineTemplate: { plan: ["s_"], balance: ["s_"] },
+      statuslineTemplate:["s_"],
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
@@ -610,7 +577,7 @@ describe("lineTemplate — m_modeLabel:color inline-args tokens", () => {
 
   it("m_modeLabel:color:red on a plan template wraps the Usage: prefix in red", () => {
     __resetForTest({
-      lineTemplate: { plan: ["m_modeLabel:color:red"], balance: [] },
+      statuslineTemplate:["m_modeLabel:color:red"],
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
@@ -622,7 +589,7 @@ describe("lineTemplate — m_modeLabel:color inline-args tokens", () => {
 
   it("m_modeLabel:color:red on a deepseek balance template wraps Balance: in red", () => {
     __resetForTest({
-      lineTemplate: { plan: [], balance: ["m_modeLabel:color:red"] },
+      statuslineTemplate:["m_modeLabel:color:red"],
     });
     const line = renderProviderLine("deepseek", {
       mode: "used", nowMs: Date.now(),
@@ -635,7 +602,7 @@ describe("lineTemplate — m_modeLabel:color inline-args tokens", () => {
 
   it("m_modeLabel:color:garbage is a hard noop (drops and warns)", () => {
     __resetForTest({
-      lineTemplate: { plan: ["m_modeLabel:color:garbage"], balance: [] },
+      statuslineTemplate:["m_modeLabel:color:garbage"],
     });
     const { value: line, warns } = withCapturedStderr(() =>
       renderProviderLine("minimax", {
@@ -665,10 +632,7 @@ describe("lineTemplate — m_window5h / m_window7d :color override", () => {
 
   it("m_window5h:color:red replaces the band-based color with red", () => {
     __resetForTest({
-      lineTemplate: {
-        plan: ["m_window5h:color:red"],
-        balance: ["m_window5h:color:red"],
-      },
+      statuslineTemplate:["m_window5h:color:red"],
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
@@ -684,10 +648,7 @@ describe("lineTemplate — m_window5h / m_window7d :color override", () => {
 
   it("m_window7d:color:darkGreen replaces the band-based color with darkGreen", () => {
     __resetForTest({
-      lineTemplate: {
-        plan: ["m_window7d:color:darkGreen"],
-        balance: ["m_window7d:color:darkGreen"],
-      },
+      statuslineTemplate:["m_window7d:color:darkGreen"],
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
@@ -702,10 +663,7 @@ describe("lineTemplate — m_window5h / m_window7d :color override", () => {
 
   it("bare m_window5h is byte-for-byte unchanged when no :color: is supplied", () => {
     __resetForTest({
-      lineTemplate: {
-        plan: ["m_window5h"],
-        balance: ["m_window5h"],
-      },
+      statuslineTemplate:["m_window5h"],
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
@@ -720,10 +678,7 @@ describe("lineTemplate — m_window5h / m_window7d :color override", () => {
 
   it("m_window5h:color:garbage is a hard noop (drops and warns)", () => {
     __resetForTest({
-      lineTemplate: {
-        plan: ["m_window5h:color:garbage"],
-        balance: ["m_window5h:color:garbage"],
-      },
+      statuslineTemplate:["m_window5h:color:garbage"],
     });
     const { value: line, warns } = withCapturedStderr(() =>
       renderProviderLine("minimax", {
@@ -750,7 +705,7 @@ describe("lineTemplate — m_window5h / m_window7d / m_windowContext :display ov
 
   it("bare m_window5h honors the global config (default 'used') — renders 38% at darkGreen", () => {
     __resetForTest({
-      lineTemplate: { plan: ["m_window5h"], balance: ["m_window5h"] },
+      statuslineTemplate:["m_window5h"],
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
@@ -764,10 +719,7 @@ describe("lineTemplate — m_window5h / m_window7d / m_windowContext :display ov
 
   it("m_window5h:display:remaining inverts 38% used → renders 62% at band 3 (darkGreen)", () => {
     __resetForTest({
-      lineTemplate: {
-        plan: ["m_window5h:display:remaining"],
-        balance: ["m_window5h:display:remaining"],
-      },
+      statuslineTemplate:["m_window5h:display:remaining"],
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
@@ -786,10 +738,7 @@ describe("lineTemplate — m_window5h / m_window7d / m_windowContext :display ov
 
   it("m_window5h:display:used is byte-identical to bare when ctx.mode is 'used'", () => {
     __resetForTest({
-      lineTemplate: {
-        plan: ["m_window5h:display:used"],
-        balance: ["m_window5h:display:used"],
-      },
+      statuslineTemplate:["m_window5h:display:used"],
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
@@ -805,10 +754,7 @@ describe("lineTemplate — m_window5h / m_window7d / m_windowContext :display ov
     // Tests that color and display compose: override color REPLACES the
     // band color (yellow, NOT orange); display inverts the percentage.
     __resetForTest({
-      lineTemplate: {
-        plan: ["m_window5h:display:remaining:color:yellow"],
-        balance: ["m_window5h:display:remaining:color:yellow"],
-      },
+      statuslineTemplate:["m_window5h:display:remaining:color:yellow"],
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
@@ -823,10 +769,7 @@ describe("lineTemplate — m_window5h / m_window7d / m_windowContext :display ov
 
   it("m_window7d:display:remaining inverts 60% used → renders 40% at band 2 (yellow)", () => {
     __resetForTest({
-      lineTemplate: {
-        plan: ["m_window7d:display:remaining"],
-        balance: ["m_window7d:display:remaining"],
-      },
+      statuslineTemplate:["m_window7d:display:remaining"],
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
@@ -844,10 +787,7 @@ describe("lineTemplate — m_window5h / m_window7d / m_windowContext :display ov
   it("m_windowContext:display:remaining inverts 63% used → renders 37% at band 1 (orange)", () => {
     // Mirror of the v0.4.0 captured stdin: context_window.used_percentage=63.
     __resetForTest({
-      lineTemplate: {
-        plan: ["m_windowContext:display:remaining"],
-        balance: ["m_windowContext:display:remaining"],
-      },
+      statuslineTemplate:["m_windowContext:display:remaining"],
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
@@ -870,10 +810,7 @@ describe("lineTemplate — m_window5h / m_window7d / m_windowContext :display ov
 
   it("m_windowContext:display:used reproduces the bare path's 63% (orange band)", () => {
     __resetForTest({
-      lineTemplate: {
-        plan: ["m_windowContext:display:used"],
-        balance: ["m_windowContext:display:used"],
-      },
+      statuslineTemplate:["m_windowContext:display:used"],
     });
     const line = renderProviderLine("minimax", {
       mode: "remaining", nowMs: Date.now(),
@@ -895,10 +832,7 @@ describe("lineTemplate — m_window5h / m_window7d / m_windowContext :display ov
 
   it("m_window5h:display:garbage is a hard noop (drops and warns)", () => {
     __resetForTest({
-      lineTemplate: {
-        plan: ["m_window5h:display:garbage"],
-        balance: ["m_window5h:display:garbage"],
-      },
+      statuslineTemplate:["m_window5h:display:garbage"],
     });
     const { value: line, warns } = withCapturedStderr(() =>
       renderProviderLine("minimax", {
@@ -919,10 +853,7 @@ describe("lineTemplate — m_window5h / m_window7d / m_windowContext :display ov
     // intentional — silent normalization would mask user typos and
     // leave "Remaining" rendering as a different mode than expected.
     __resetForTest({
-      lineTemplate: {
-        plan: ["m_window5h:display:USED"],
-        balance: ["m_window5h:display:USED"],
-      },
+      statuslineTemplate:["m_window5h:display:USED"],
     });
     const { value: line, warns } = withCapturedStderr(() =>
       renderProviderLine("minimax", {
@@ -939,10 +870,7 @@ describe("lineTemplate — m_window5h / m_window7d / m_windowContext :display ov
   it("m_window5h:display: (empty value) is a hard noop (drops and warns)", () => {
     // Empty value → resolver sees "" → null → badarg.
     __resetForTest({
-      lineTemplate: {
-        plan: ["m_window5h:display:"],
-        balance: ["m_window5h:display:"],
-      },
+      statuslineTemplate:["m_window5h:display:"],
     });
     const { value: line, warns } = withCapturedStderr(() =>
       renderProviderLine("minimax", {
@@ -963,10 +891,7 @@ describe("lineTemplate — plain-text modules :color override", () => {
 
   it("m_version:color:yellow wraps v0.2.17 in yellow SGR + RESET", () => {
     __resetForTest({
-      lineTemplate: {
-        plan: ["m_version:color:yellow"],
-        balance: ["m_version:color:yellow"],
-      },
+      statuslineTemplate:["m_version:color:yellow"],
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
@@ -979,10 +904,7 @@ describe("lineTemplate — plain-text modules :color override", () => {
 
   it("m_version without :color: stays plain text (byte-for-byte identical)", () => {
     __resetForTest({
-      lineTemplate: {
-        plan: ["m_version"],
-        balance: ["m_version"],
-      },
+      statuslineTemplate:["m_version"],
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
@@ -995,10 +917,7 @@ describe("lineTemplate — plain-text modules :color override", () => {
 
   it("m_version:color:garbage is a hard noop (drops and warns)", () => {
     __resetForTest({
-      lineTemplate: {
-        plan: ["m_version:color:garbage"],
-        balance: ["m_version:color:garbage"],
-      },
+      statuslineTemplate:["m_version:color:garbage"],
     });
     const { value: line, warns } = withCapturedStderr(() =>
       renderProviderLine("minimax", {
@@ -1013,10 +932,7 @@ describe("lineTemplate — plain-text modules :color override", () => {
 
   it("m_countdown5h:color:darkGreen wraps the bare '5h' suffix in darkGreen", () => {
     __resetForTest({
-      lineTemplate: {
-        plan: ["m_countdown5h:color:darkGreen"],
-        balance: ["m_countdown5h:color:darkGreen"],
-      },
+      statuslineTemplate:["m_countdown5h:color:darkGreen"],
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
@@ -1030,10 +946,7 @@ describe("lineTemplate — plain-text modules :color override", () => {
 
   it("m_countdown7d:color:red wraps the bare '7d' suffix in red", () => {
     __resetForTest({
-      lineTemplate: {
-        plan: ["m_countdown7d:color:red"],
-        balance: ["m_countdown7d:color:red"],
-      },
+      statuslineTemplate:["m_countdown7d:color:red"],
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
@@ -1052,10 +965,7 @@ describe("lineTemplate — colored modules :color override (user wins)", () => {
 
   it("m_balance:color:red replaces the band-based color with red", () => {
     __resetForTest({
-      lineTemplate: {
-        plan: [],
-        balance: ["m_balance:color:red"],
-      },
+      statuslineTemplate:["m_balance:color:red"],
     });
     const line = renderProviderLine("deepseek", {
       mode: "used", nowMs: Date.now(),
@@ -1069,10 +979,7 @@ describe("lineTemplate — colored modules :color override (user wins)", () => {
 
   it("bare m_balance keeps the band-based color", () => {
     __resetForTest({
-      lineTemplate: {
-        plan: [],
-        balance: ["m_balance"],
-      },
+      statuslineTemplate:["m_balance"],
     });
     const line = renderProviderLine("deepseek", {
       mode: "used", nowMs: Date.now(),
@@ -1086,10 +993,7 @@ describe("lineTemplate — colored modules :color override (user wins)", () => {
 
   it("m_age:color:red replaces STALE_COLOR with red", () => {
     __resetForTest({
-      lineTemplate: {
-        plan: ["m_age:color:red"],
-        balance: ["m_age:color:red"],
-      },
+      statuslineTemplate:["m_age:color:red"],
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
@@ -1105,10 +1009,7 @@ describe("lineTemplate — colored modules :color override (user wins)", () => {
 
   it("bare m_age keeps STALE_COLOR", () => {
     __resetForTest({
-      lineTemplate: {
-        plan: ["m_age"],
-        balance: ["m_age"],
-      },
+      statuslineTemplate:["m_age"],
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
@@ -1122,10 +1023,7 @@ describe("lineTemplate — colored modules :color override (user wins)", () => {
 
   it("m_cacheRead:color:yellow replaces STALE_COLOR with yellow", () => {
     __resetForTest({
-      lineTemplate: {
-        plan: ["m_cacheRead:color:yellow"],
-        balance: ["m_cacheRead:color:yellow"],
-      },
+      statuslineTemplate:["m_cacheRead:color:yellow"],
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
@@ -1149,10 +1047,7 @@ describe("lineTemplate — colored modules :color override (user wins)", () => {
     // tick with smaller values, then verify the override color
     // wraps the chunk and STALE_COLOR is absent.
     __resetForTest({
-      lineTemplate: {
-        plan: ["m_tokenInSpeed:color:red"],
-        balance: ["m_tokenInSpeed:color:red"],
-      },
+      statuslineTemplate:["m_tokenInSpeed:color:red"],
     });
     // The cache needs to be primed for sess-speed. We import
     // the helper from render.ts so the test is self-contained.
@@ -1177,10 +1072,7 @@ describe("lineTemplate — colored modules :color override (user wins)", () => {
 
   it("m_cacheHitRate:color:brightGreen replaces the band-based cache color with brightGreen", () => {
     __resetForTest({
-      lineTemplate: {
-        plan: ["m_cacheHitRate:color:brightGreen"],
-        balance: ["m_cacheHitRate:color:brightGreen"],
-      },
+      statuslineTemplate:["m_cacheHitRate:color:brightGreen"],
     });
     // v0.4.0+ session-aggregate formula:
     //   sumCacheRead / (sumCacheRead + sumIn) * 100
@@ -1217,10 +1109,7 @@ describe("lineTemplate — plain token-usage modules :color override", () => {
     // Seed prev so we have a non-zero delta to render, and seed
     // totalApiDurationMs so the gate is satisfied.
     __resetForTest({
-      lineTemplate: {
-        plan: ["m_tokenIn:color:brightGreen"],
-        balance: ["m_tokenIn:color:brightGreen"],
-      },
+      statuslineTemplate:["m_tokenIn:color:brightGreen"],
     });
     setPrevTick("sess-tok-in", { apiMs: 0, in: 0, out: 0, cacheRead: 0 });
     const line = renderProviderLine("minimax", {
@@ -1243,10 +1132,7 @@ describe("lineTemplate — plain token-usage modules :color override", () => {
     // and totalApiDurationMs so the gate (delta_api > 0) fires.
     // The bare form keeps the chunk uncolored.
     __resetForTest({
-      lineTemplate: {
-        plan: ["m_tokenIn"],
-        balance: ["m_tokenIn"],
-      },
+      statuslineTemplate:["m_tokenIn"],
     });
     setPrevTick("sess-tok-in-bare", { apiMs: 0, in: 0, out: 0, cacheRead: 0 });
     const line = renderProviderLine("minimax", {
@@ -1266,10 +1152,7 @@ describe("lineTemplate — plain token-usage modules :color override", () => {
 
   it("m_ctx:color:orange wraps the 'ctx:N' chunk in orange", () => {
     __resetForTest({
-      lineTemplate: {
-        plan: ["m_ctx:color:orange"],
-        balance: ["m_ctx:color:orange"],
-      },
+      statuslineTemplate:["m_ctx:color:orange"],
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
@@ -1299,10 +1182,7 @@ describe("lineTemplate — plain token-usage modules :color override", () => {
     // silent (no "unknown lineTemplate module" warn — the dispatcher
     // got past the schema and the renderer returned a value).
     __resetForTest({
-      lineTemplate: {
-        plan: ["m_tokenOut:color:yellow"],
-        balance: ["m_tokenOut:color:yellow"],
-      },
+      statuslineTemplate:["m_tokenOut:color:yellow"],
     });
     const { value: line, warns } = withCapturedStderr(() =>
       renderProviderLine("minimax", {
@@ -1329,10 +1209,7 @@ describe("lineTemplate — plain token-usage modules :color override", () => {
 
   it("m_tokenIn:color:garbage is a hard noop (drops and warns)", () => {
     __resetForTest({
-      lineTemplate: {
-        plan: ["m_tokenIn:color:garbage"],
-        balance: ["m_tokenIn:color:garbage"],
-      },
+      statuslineTemplate:["m_tokenIn:color:garbage"],
     });
     const { value: line, warns } = withCapturedStderr(() =>
       renderProviderLine("minimax", {
@@ -1372,7 +1249,7 @@ describe("lineTemplate — inline-args regression / round-trip", () => {
 
   it("compose() round-trip preserves an inline-colored chunk without bleeding upstream", () => {
     __resetForTest({
-      lineTemplate: { plan: ["m_label:foo:color:red"], balance: [] },
+      statuslineTemplate:["m_label:foo:color:red"],
     });
     // Upstream with its own unclosed red SGR — common case when the
     // upstream statusline forgot to close its color.
@@ -1392,5 +1269,125 @@ describe("lineTemplate — inline-args regression / round-trip", () => {
     // The plan line is closed by \x1b[0m (own RESET) so it should not
     // bleed into anything else.
     assert.ok(composed.includes("\x1b[38;5;196mfoo\x1b[0m"));
+  });
+});
+
+// ----- v0.4.0+ m_template module -----
+//
+// End-to-end coverage for the new `m_template:<key>[:mode:<plan|balance>]`
+// inline-arg token. The dispatcher expands `m_template` into the
+// registered `lineTemplates[key]` fragment, filtered by the
+// `providerModeKey` thread (so the same key can render differently for
+// plan vs balance providers).
+describe("m_template — legacy lineTemplate warns once and is ignored (v0.4.0 hard break)", () => {
+  beforeEach(() => {
+    __resetForTest();
+  });
+  afterEach(() => __resetForTest());
+
+  it("after a legacy config load, the renderer still produces output (uses new defaults, NOT legacy arrays)", async () => {
+    // The validator path — applyOverrides runs only on
+    // config.json / provider.config load. To exercise it end-to-end
+    // from a renderer POV, we write a config.json with the legacy
+    // field, call loadConfig, then render.
+    const fs = await import("node:fs");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const { loadConfig, __testing } = await import("./config.ts");
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tokenplan-m_template-"));
+    __testing.setPathResolver(() => path.join(tmpDir, "config.json"));
+    try {
+      fs.writeFileSync(
+        path.join(tmpDir, "config.json"),
+        JSON.stringify({
+          lineTemplate: {
+            plan: ["m_modeLabel", "s_0", "m_window5h"],
+            balance: ["m_modeLabel", "s_0", "m_balance"],
+          },
+        }),
+      );
+      const cfg = await loadConfig();
+      // Legacy field was ignored. statuslineTemplate stays at the
+      // default ("1line"), so the renderer resolves to PLAN_PRESETS
+      // / BALANCE_PRESETS, NOT to the legacy arrays.
+      assert.equal(cfg.statuslineTemplate, "1line");
+      // Render through the minimax path — output should reflect the
+      // default preset shape (m_window5h + m_window7d, NOT just
+      // m_window5h as the legacy plan array would suggest).
+      const line = renderProviderLine("minimax", {
+        mode: "used",
+        nowMs: Date.now(),
+        fiveHour: { pct: 38, resetAt: null },
+        weekly: { pct: 60, resetAt: null },
+        ageMs: null,
+        stale: false,
+        version: "",
+      });
+      assert.ok(strip(line).includes("5h"), `got: ${line}`);
+      assert.ok(strip(line).includes("7d"), `got: ${line}`);
+    } finally {
+      __testing.resetPathResolver();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("m_template — end-to-end expansion on minimax (plan mode)", () => {
+  beforeEach(() => {
+    __resetForTest({
+      lineTemplates: {
+        shared: ["m_modeLabel", "s_0", "m_window5h", "s_0", "m_countdown5h"],
+      },
+      statuslineTemplate: ["m_template:shared:mode:plan"],
+    });
+  });
+  afterEach(() => __resetForTest());
+
+  it("m_template:shared expands into the registered fragment", () => {
+    const line = renderProviderLine("minimax", {
+      mode: "used",
+      nowMs: Date.now(),
+      fiveHour: { pct: 38, resetAt: null },
+      weekly: null,
+      ageMs: null,
+      stale: false,
+      version: "",
+    });
+    // mode:plan matches the minimax provider's mode key, so the
+    // shared fragment renders and we see 5h label + 38%.
+    assert.ok(strip(line).includes("5h"), `got: ${line}`);
+    assert.ok(strip(line).includes("38%"), `got: ${line}`);
+  });
+});
+
+describe("m_template — mode filter drops on mismatch (deepseek vs plan)", () => {
+  beforeEach(() => {
+    __resetForTest({
+      lineTemplates: {
+        shared: ["m_modeLabel", "s_0", "m_window5h"],
+      },
+      // Combine m_template:shared:mode:plan (will drop on deepseek)
+      // with an unconditional m_balance chunk. The m_balance chunk
+      // is the deepseek-only default and proves the rest of the
+      // template still renders when one chunk is filtered out.
+      statuslineTemplate: ["m_template:shared:mode:plan", "s_0", "m_balance"],
+    });
+  });
+  afterEach(() => __resetForTest());
+
+  it("mode:plan chunk drops on a deepseek provider (providerModeKey is 'balance')", () => {
+    const line = renderProviderLine("deepseek", {
+      mode: "used",
+      nowMs: Date.now(),
+      balance: { isAvailable: true, entries: [{ currency: "USD", totalBalance: 25 }], minValue: 25 },
+      ageMs: null,
+      stale: false,
+      version: "",
+    });
+    // The shared chunk is dropped because providerModeKey=balance
+    // and the chunk wants mode:plan. No 5h content should leak.
+    assert.ok(!strip(line).includes("5h"), `got: ${line}`);
+    // The m_balance chunk should still render.
+    assert.ok(strip(line).includes("$25"), `got: ${line}`);
   });
 });

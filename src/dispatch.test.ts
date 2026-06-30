@@ -93,14 +93,11 @@ describe("buildProviderLine — fresh (no age suffix; data just arrived)", () =>
     // (no stale gating). Fresh + ageMs > 0 → 🔗 X ago.
     pinDefaults();
     __resetForTest({
-      lineTemplate: {
-        plan: [
-          "m_modeLabel", "s_0",
-          "m_window5h", "s_0", "m_countdown5h",
-          "s_0", "m_age",
-        ],
-        balance: ["m_modeLabel", "s_0", "m_balance"],
-      },
+      statuslineTemplate: [
+        "m_modeLabel", "s_0",
+        "m_window5h", "s_0", "m_countdown5h",
+        "s_0", "m_age",
+      ],
     });
     try {
       const result: FetchResult<Remains> = {

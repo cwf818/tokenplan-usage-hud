@@ -351,10 +351,7 @@ describe("lineTemplate — m_quote inline-args", () => {
   beforeEach(() => {
     __resetUnknownModuleWarnForTest();
     __resetForTest({
-      lineTemplate: {
-        plan: ["m_quote"],
-        balance: ["m_quote"],
-      },
+      statuslineTemplate:["m_quote"],
     });
   });
   afterEach(() => __resetForTest());
@@ -377,10 +374,7 @@ describe("lineTemplate — m_quote inline-args", () => {
 
   it("m_quote:color:red wraps the quote in red SGR + RESET", () => {
     __resetForTest({
-      lineTemplate: {
-        plan: ["m_quote:color:red"],
-        balance: ["m_quote:color:red"],
-      },
+      statuslineTemplate:["m_quote:color:red"],
     });
     const line = renderProviderLine("minimax", {
       mode: "used",
@@ -401,10 +395,7 @@ describe("lineTemplate — m_quote inline-args", () => {
 
   it("m_quote:color:rainbow produces per-character multi-color output", () => {
     __resetForTest({
-      lineTemplate: {
-        plan: ["m_quote:color:rainbow"],
-        balance: ["m_quote:color:rainbow"],
-      },
+      statuslineTemplate:["m_quote:color:rainbow"],
     });
     const line = renderProviderLine("minimax", {
       mode: "used",
@@ -429,10 +420,7 @@ describe("lineTemplate — m_quote inline-args", () => {
 
   it("m_quote:color:rand-rainbow uses a different palette offset than :rainbow", () => {
     __resetForTest({
-      lineTemplate: {
-        plan: ["m_quote:color:rainbow"],
-        balance: ["m_quote:color:rainbow"],
-      },
+      statuslineTemplate:["m_quote:color:rainbow"],
     });
     const a = renderProviderLine("minimax", {
       mode: "used",
@@ -445,10 +433,7 @@ describe("lineTemplate — m_quote inline-args", () => {
       version: "",
     });
     __resetForTest({
-      lineTemplate: {
-        plan: ["m_quote:color:rand-rainbow"],
-        balance: ["m_quote:color:rand-rainbow"],
-      },
+      statuslineTemplate:["m_quote:color:rand-rainbow"],
     });
     const b = renderProviderLine("minimax", {
       mode: "used",
@@ -468,10 +453,7 @@ describe("lineTemplate — m_quote inline-args", () => {
 
   it("m_quote:color:hue emits one SGR wrap around the whole quote", () => {
     __resetForTest({
-      lineTemplate: {
-        plan: ["m_quote:color:hue"],
-        balance: ["m_quote:color:hue"],
-      },
+      statuslineTemplate:["m_quote:color:hue"],
     });
     const line = renderProviderLine("minimax", {
       mode: "used",
@@ -495,10 +477,7 @@ describe("lineTemplate — m_quote inline-args", () => {
     // 2023-11-15 00:00:00 UTC; adding 6h stays in the same day.
     const baseMs = 1_700_006_400_000;
     __resetForTest({
-      lineTemplate: {
-        plan: ["m_quote:freq:d"],
-        balance: ["m_quote:freq:d"],
-      },
+      statuslineTemplate:["m_quote:freq:d"],
     });
     const a = renderProviderLine("minimax", {
       mode: "used",
@@ -525,10 +504,7 @@ describe("lineTemplate — m_quote inline-args", () => {
 
   it("m_quote:freq:m uses the minute bucket (1 quote per minute)", () => {
     __resetForTest({
-      lineTemplate: {
-        plan: ["m_quote:freq:m"],
-        balance: ["m_quote:freq:m"],
-      },
+      statuslineTemplate:["m_quote:freq:m"],
     });
     const a = renderProviderLine("minimax", {
       mode: "used",
@@ -559,10 +535,7 @@ describe("lineTemplate — m_quote inline-args", () => {
     // index is consistent across the shift.
     const baseMs = 1_700_006_400_000;
     __resetForTest({
-      lineTemplate: {
-        plan: ["m_quote:freq:hd"],
-        balance: ["m_quote:freq:hd"],
-      },
+      statuslineTemplate:["m_quote:freq:hd"],
     });
     const a = renderProviderLine("minimax", {
       mode: "used",
@@ -589,10 +562,7 @@ describe("lineTemplate — m_quote inline-args", () => {
 
   it("m_quote:freq:hh uses the half-hour bucket", () => {
     __resetForTest({
-      lineTemplate: {
-        plan: ["m_quote:freq:hh"],
-        balance: ["m_quote:freq:hh"],
-      },
+      statuslineTemplate:["m_quote:freq:hh"],
     });
     const a = renderProviderLine("minimax", {
       mode: "used",
@@ -620,10 +590,7 @@ describe("lineTemplate — m_quote inline-args", () => {
 
   it("m_quote:freq:bogus drops and warns (parse failure)", () => {
     __resetForTest({
-      lineTemplate: {
-        plan: ["m_quote:freq:bogus"],
-        balance: ["m_quote:freq:bogus"],
-      },
+      statuslineTemplate:["m_quote:freq:bogus"],
     });
     const { value: line, warns } = withCapturedStderr(() =>
       renderProviderLine("minimax", {
@@ -646,10 +613,7 @@ describe("lineTemplate — m_quote inline-args", () => {
 
   it("m_quote:color:bogus drops and warns (parse failure)", () => {
     __resetForTest({
-      lineTemplate: {
-        plan: ["m_quote:color:bogus"],
-        balance: ["m_quote:color:bogus"],
-      },
+      statuslineTemplate:["m_quote:color:bogus"],
     });
     const { value: line, warns } = withCapturedStderr(() =>
       renderProviderLine("minimax", {
@@ -672,10 +636,7 @@ describe("lineTemplate — m_quote inline-args", () => {
 
   it("m_quote:freq:h:color:red renders red with the hourly quote", () => {
     __resetForTest({
-      lineTemplate: {
-        plan: ["m_quote:freq:h:color:red"],
-        balance: ["m_quote:freq:h:color:red"],
-      },
+      statuslineTemplate:["m_quote:freq:h:color:red"],
     });
     const line = renderProviderLine("minimax", {
       mode: "used",

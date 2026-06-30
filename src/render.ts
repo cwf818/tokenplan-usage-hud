@@ -14,8 +14,9 @@
 // shims that expand the default templates; new code should call
 // `renderProviderLine` directly.
 
-import { configStore } from "./config.ts";
+import { configStore, warn } from "./config.ts";
 import { templateKeyForProvider } from "./providers.ts";
+import { PLAN_PRESETS, BALANCE_PRESETS } from "./config.ts";
 import type { TokenSnapshot } from "./types.ts";
 import {
   buildRainbow,
@@ -606,6 +607,14 @@ type RenderContext = {
   // Synthesized from tokens.contextWindow.usedPct; only `pct` is
   // read by formatOneChunk. Null when stdin lacks used_percentage.
   contextWindow: Window | null;
+  // v0.4.0+ — the provider's mode key ("plan" or "balance").
+  // Populated by renderProviderLine from templateKeyForProvider so
+  // the m_template:mode:<plan|balance> filter has a comparison
+  // target. Defaults to "plan" when ctx is built directly (e.g.
+  // ctxFor in tests, or a future caller that doesn't thread the
+  // provider through). Tests that build RenderContext manually
+  // should set this explicitly when exercising m_template.
+  providerModeKey: "plan" | "balance";
 };
 
 type Module = (ctx: RenderContext) => string | null;
@@ -2190,6 +2199,27 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
   m_contextSize: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_contextUsed: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_windowContext: { named: { ...COLOR_PARAM.named, ...DISPLAY_PARAM.named, ...NULDROP_PARAM.named } },
+  // v0.4.0+ — sub-template reference. First argument is the key
+  // into cfg().lineTemplates (the user's reusable-fragment
+  // registry). Optional `:mode:<plan|balance>` filter (default
+  // "plan"): when the current provider's mode key does not match,
+  // the chunk drops so adjacent separators are skipped. We do
+  // NOT accept `:color:` here — propagating a color across an
+  // expanded template requires a more invasive design (the
+  // expansion's internal modules would need to inherit or be
+  // re-styled). Users wanting per-chunk color put `:color:` on
+  // the inner modules inside their lineTemplates entry.
+  m_template: {
+    implicit: {
+      name: "key",
+      resolver: (raw) =>
+        typeof raw === "string" && raw !== "" ? raw : null,
+    },
+    named: {
+      mode: (raw) => (raw === "plan" || raw === "balance" ? raw : null),
+      ...NULDROP_PARAM.named,
+    },
+  },
 };
 
 // Pure helper: wrap a plain-text body in `<color>…<RESET>`. Returns
@@ -2522,6 +2552,28 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     if (color) return formatOneChunkColored(ctx.contextWindow, mode, color);
     return formatOneChunk(ctx.contextWindow, mode);
   },
+  // v0.4.0+ — expand a registered lineTemplates fragment. The
+  // loader strips any `m_template:` tokens from lineTemplates
+  // arrays (config.ts applyOverrides), so the recursive call below
+  // cannot itself reach an `m_template:` token. We `.slice()` the
+  // inner array to defend against any future in-place mutation.
+  // Missing key → warn + drop (renderer null path, same as bare
+  // MODULES drop). Mode mismatch → silent drop (no warn; the user
+  // explicitly asked for a mode filter).
+  m_template: (params, ctx) => {
+    const key = params.key as string;
+    const inner = cfg().lineTemplates[key];
+    if (!inner) {
+      warn(
+        `m_template: lineTemplates["${key}"] is undefined; dropping chunk`,
+      );
+      return null;
+    }
+    const want = (params.mode as "plan" | "balance" | undefined) ?? "plan";
+    if (ctx.providerModeKey !== want) return null;
+    const lines = renderTemplate(inner.slice(), ctx);
+    return lines.join("\n");
+  },
 };
 
 // Extract the `m_tokenTotal` body as a pure helper so the inline
@@ -2771,6 +2823,10 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
         inline = expandInlineToken(tok, "m_contextUsed", 14, ctx);
       } else if (tok.startsWith("m_windowContext:")) {
         inline = expandInlineToken(tok, "m_windowContext", 16, ctx);
+      } else if (tok.startsWith("m_template:")) {
+        // m_template:<key>[:mode:<plan|balance>][:nulldrop:<bool>]
+        // → skip "m_template:" (length 11).
+        inline = expandInlineToken(tok, "m_template", 11, ctx);
       }
       // Parse failure (bad :color:, unknown param, odd segment count)
       // → warn + drop. Renderer returning null for valid args (e.g.
@@ -2841,7 +2897,7 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
 // lineTemplate.
 export function renderProviderLine(
   provider: import("./types.ts").Provider,
-  ctx: Omit<RenderContext, "fiveHour" | "weekly" | "balance" | "tokens" | "contextWindow"> & {
+  ctx: Omit<RenderContext, "fiveHour" | "weekly" | "balance" | "tokens" | "contextWindow" | "providerModeKey"> & {
     fiveHour?: Window | null;
     weekly?: Window | null;
     balance?: BalanceLike | null;
@@ -2864,6 +2920,20 @@ export function renderProviderLine(
       : usedPct != null
         ? { pct: usedPct }
         : null;
+  // v0.2.21: template picked by provider TYPE via providers.ts, not
+  // by provider-name literal. Same outward behavior — defaults put
+  // TOKEN_PLAN at "plan" and BALANCE at "balance" — but the
+  // indirection lets a third provider slot in without code changes.
+  //
+  // v0.4.0+ — the template is now resolved from `cfg().statuslineTemplate`,
+  // which is a top-level rendered-template field. String form is
+  // looked up against PLAN_PRESETS / BALANCE_PRESETS (whichever
+  // contains the name); array form is passed through unchanged and
+  // may include `m_template` references that pull from
+  // `cfg().lineTemplates`. The mode key is threaded through to the
+  // full ctx so `m_template:mode:<plan|balance>` can filter chunks.
+  const templateKey = templateKeyForProvider(provider);
+  const cfgSnap = cfg();
   const fullCtx: RenderContext = {
     mode: ctx.mode,
     nowMs: ctx.nowMs,
@@ -2875,13 +2945,40 @@ export function renderProviderLine(
     version: ctx.version,
     tokens: ctx.tokens ?? null,
     contextWindow,
+    providerModeKey: templateKey,
   };
-  // v0.2.21: template picked by provider TYPE via providers.ts, not
-  // by provider-name literal. Same outward behavior — defaults put
-  // TOKEN_PLAN at "plan" and BALANCE at "balance" — but the
-  // indirection lets a third provider slot in without code changes.
-  const templateKey = templateKeyForProvider(provider);
-  const template = cfg().lineTemplate[templateKey];
+  const statuslineRaw = cfgSnap.statuslineTemplate;
+  let template: string[];
+  if (typeof statuslineRaw === "string") {
+    // Provider-aware resolution: a balance provider looks up its
+    // preset name against BALANCE_PRESETS (currently "simple" /
+    // "simple-alone"); a plan provider looks up against PLAN_PRESETS
+    // ("1line", "simple", "standard", …). Each table is searched
+    // independently — there is no cross-table fallback, because the
+    // two tables hold DIFFERENT shapes (plan = 5h/7d windows;
+    // balance = m_balance). Falling back across tables would silently
+    // render a plan preset on a balance provider (no m_balance) or
+    // a balance preset on a plan provider (no 5h/7d).
+    let resolved: string[];
+    if (templateKey === "balance") {
+      resolved = Object.prototype.hasOwnProperty.call(
+        BALANCE_PRESETS,
+        statuslineRaw,
+      )
+        ? BALANCE_PRESETS[statuslineRaw].slice()
+        : BALANCE_PRESETS["simple"].slice();
+    } else {
+      resolved = Object.prototype.hasOwnProperty.call(
+        PLAN_PRESETS,
+        statuslineRaw,
+      )
+        ? PLAN_PRESETS[statuslineRaw].slice()
+        : PLAN_PRESETS["1line"].slice();
+    }
+    template = resolved;
+  } else {
+    template = statuslineRaw;
+  }
   const lines = renderTemplate(template, fullCtx);
   // Forced visibility for the age annotation (stale-only fallback):
   // when the user did NOT put m_age in their lineTemplate AND the

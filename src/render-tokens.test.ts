@@ -26,6 +26,7 @@ import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { __resetGitInfoCacheForTest } from "./git-info.ts";
 import type { TokenSnapshot } from "./types.ts";
+import type { Window } from "./render.ts";
 
 const STALE = "\x1b[90m";
 const GREEN = "\x1b[38;5;41m";
@@ -61,8 +62,9 @@ const fakeSnapshot = (overrides: Partial<TokenSnapshot> = {}): TokenSnapshot => 
 // fiveHour/weekly/balance — we only exercise m_token* paths.
 const ctxFor = (
   tokens: TokenSnapshot | null,
-  fiveHour = null,
-  weekly = null,
+  fiveHour: Window | null = null,
+  weekly: Window | null = null,
+  providerModeKey: "plan" | "balance" = "plan",
 ) => ({
   mode: "used" as const,
   nowMs: 1_000_000,
@@ -80,6 +82,10 @@ const ctxFor = (
     tokens?.contextWindow?.usedPct != null
       ? { pct: tokens.contextWindow.usedPct }
       : null,
+  // v0.4.0+ — the provider mode key threading for m_template:mode:
+  // filtering. Tests that DON'T care about mode filtering use the
+  // default "plan"; m_template coverage in §5.3 overrides this.
+  providerModeKey,
 });
 
 // v0.4.0+ — the speed/delta/avg cache helpers (peekPrevTick /
@@ -714,10 +720,7 @@ describe("renderTemplate — newline separator (v0.4.0+ multi-line layout)", () 
   beforeEach(() => {
     __resetForTest({
       separators: [" ", " · ", "\n"],
-      lineTemplate: {
-        plan: ["m_tokenIn", "s_2", "m_ctx"],
-        balance: ["m_modeLabel", "s_0", "m_balance"],
-      },
+      statuslineTemplate: ["m_tokenIn", "s_2", "m_ctx"],
     });
   });
 
@@ -1726,5 +1729,68 @@ describe("renderTemplate — m_tokenInSpeed / m_tokenOutSpeed cache + scale (v0.
     // Render another idle tick to confirm cache is still 0.6.
     const out = renderTemplate(["m_tokenInSpeed"], ctxFor(fakeSnapshot())).join("\n");
     assert.equal(strip(out), "in:0.6 t/s");
+  });
+});
+
+// ----- v0.4.0+ m_template module -----
+//
+// Direct coverage of `m_template:<key>[:mode:<plan|balance>]` against
+// `renderTemplate` (no provider dispatch — ctx.providerModeKey is
+// set explicitly). The end-to-end "minimax renders the chunk" path
+// is in lineTemplate.test.ts; this file exercises the renderer in
+// isolation so a missing-key warn is easier to capture.
+describe("renderTemplate — m_template inline-args (v0.4.0+)", () => {
+  beforeEach(() => __resetForTest());
+
+  it("m_template:foo with ctx.providerModeKey='plan' expands the registered fragment", () => {
+    __resetForTest({
+      lineTemplates: { foo: ["m_window5h"] },
+    });
+    const out = renderTemplate(["m_template:foo"], ctxFor(null, { pct: 42 }));
+    // m_window5h at 42% should land in band 1 (orange) per the
+    // default band thresholds. Strip ANSI for stability.
+    assert.match(out.map(strip).join("\n"), /42%/);
+  });
+
+  it("m_template:foo with ctx.providerModeKey='balance' wants mode:plan → drops", () => {
+    __resetForTest({
+      lineTemplates: { foo: ["m_window5h"] },
+    });
+    const out = renderTemplate(
+      ["m_template:foo:mode:plan"],
+      ctxFor(null, null, null, "balance"),
+    );
+    // Dropped because providerModeKey=balance but mode wants plan.
+    // The dropped chunk leaves an empty array (separators are also
+    // skipped when their neighbors drop).
+    assert.deepEqual(out, []);
+  });
+
+  it("m_template:foo with ctx.providerModeKey='plan' wants mode:plan → renders", () => {
+    __resetForTest({
+      lineTemplates: { foo: ["m_window5h"] },
+    });
+    const out = renderTemplate(
+      ["m_template:foo:mode:plan"],
+      ctxFor(null, { pct: 42 }, null, "plan"),
+    );
+    assert.match(out.map(strip).join("\n"), /42%/);
+  });
+
+  it("m_template:nonexistent (missing key) warns and drops", () => {
+    let captured = "";
+    const err = process.stderr as unknown as { write: (chunk: string) => boolean };
+    const original = err.write;
+    err.write = (chunk) => {
+      captured += typeof chunk === "string" ? chunk : "";
+      return true;
+    };
+    try {
+      const out = renderTemplate(["m_template:nonexistent"], ctxFor(null));
+      assert.deepEqual(out, []);
+      assert.match(captured, /lineTemplates\["nonexistent"\] is undefined/);
+    } finally {
+      err.write = original;
+    }
   });
 });
