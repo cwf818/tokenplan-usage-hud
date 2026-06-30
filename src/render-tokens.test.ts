@@ -14,6 +14,7 @@ import {
   peekAvg,
   peekPrevTick,
   renderTemplate,
+  setAvg,
   setPrevTick,
 } from "./render.ts";
 import { __resetForTest } from "./config.ts";
@@ -21,6 +22,10 @@ import {
   __resetForTest as resetCacheForTest,
   setCachePathResolver,
 } from "./cache.ts";
+import {
+  __resetForTest as resetStatusForTest,
+  setStatusPathResolver,
+} from "./status-store.ts";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -59,7 +64,7 @@ const fakeSnapshot = (overrides: Partial<TokenSnapshot> = {}): TokenSnapshot => 
 });
 
 // renderTemplate needs the full RenderContext. Default seps are
-// [" ", "·"] so "s_0" → " " and "s_1" → "·". Tests don't care about
+// [" ", "·"] so "s_space" → " " and "s_dot" → "·". Tests don't care about
 // fiveHour/weekly/balance — we only exercise m_token* paths.
 const ctxFor = (
   tokens: TokenSnapshot | null,
@@ -100,7 +105,13 @@ beforeEach(() => {
   __resetForTest();
   _tmpDir = mkdtempSync(join(tmpdir(), "tokenplan-render-tokens-"));
   setCachePathResolver(() => join(_tmpDir, "cache.json"));
+  // v0.4.x — per-tick state lives in status.json under the
+  // project dir; tests must point that resolver at a tmp file
+  // too so the cache module's leftover disk shadow doesn't leak
+  // across tests.
+  setStatusPathResolver(() => join(_tmpDir, "status.json"));
   resetCacheForTest(); // clears in-memory Map + lazy-load guard
+  resetStatusForTest(); // clears status-store in-memory cache
 });
 // afterEach would be cleaner, but node:test supports only beforeEach
 // in this file's existing pattern; we cleanup via the next beforeEach's
@@ -585,7 +596,7 @@ describe("renderTemplate — m_token* modules", () => {
     // stable "0" sentinel (matching m_tokenIn / m_tokenOut
     // behavior).
     const out = renderTemplate(
-      ["m_totalTokenIn", "s_0", "m_totalTokenOut", "s_0", "m_totalTokenWithCacheIn"],
+      ["m_totalTokenIn", "s_space", "m_totalTokenOut", "s_space", "m_totalTokenWithCacheIn"],
       ctxFor(null),
     ).join("\n");
     assert.equal(strip(out), "in:0 out:0 cache:0");
@@ -616,11 +627,11 @@ describe("renderTemplate — m_token* modules", () => {
     const out = renderTemplate(
       [
         "m_totalTokenIn",
-        "s_0",
+        "s_space",
         "m_totalTokenOut",
-        "s_0",
+        "s_space",
         "m_totalTokenWithCacheIn",
-        "s_0",
+        "s_space",
         "m_tokenInAvg",
       ],
       ctxFor(fakeSnapshot({ sessionId: "sess-total-avg" })),
@@ -654,7 +665,7 @@ describe("renderTemplate — m_token* modules", () => {
     // m_cacheHitRate) still return null when stdin is missing;
     // their slots drop and adjacent separators are skipped.
     const out = renderTemplate(
-      ["m_tokenIn", "s_0", "m_tokenOut", "s_0", "m_ctx", "s_0", "m_cacheHitRate"],
+      ["m_tokenIn", "s_space", "m_tokenOut", "s_space", "m_ctx", "s_space", "m_cacheHitRate"],
       ctxFor(null),
     ).join("\n");
     assert.equal(strip(out), "in:0 out:0  ");
@@ -690,7 +701,7 @@ describe("renderTemplate — m_token* modules", () => {
     // Seed prev so m_tokenIn / m_tokenOut have a delta to render.
     setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 }, "D:\\test");
     const out = renderTemplate(
-      ["m_tokenIn", "s_0", "m_tokenOut", "s_0", "s_1", "s_0", "m_ctx"],
+      ["m_tokenIn", "s_space", "m_tokenOut", "s_space", "s_dot", "s_space", "m_ctx"],
       ctxFor(fakeSnapshot()),
     ).join("\n");
     // v0.4.0+ per-API-call delta:
@@ -721,26 +732,26 @@ describe("renderTemplate — newline separator (v0.4.0+ multi-line layout)", () 
   beforeEach(() => {
     __resetForTest({
       separators: [" ", " · ", "\n"],
-      statuslineTemplate: ["m_tokenIn", "s_2", "m_ctx"],
+      statuslineTemplate: ["m_tokenIn", "s_newline", "m_ctx"],
     });
   });
 
   it('a "\\n" separator splits the template into two rendered lines', () => {
     // Seed prev so m_tokenIn has a delta to render.
     setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 }, "D:\\test");
-    const out = renderTemplate(["m_tokenIn", "s_2", "m_ctx"], ctxFor(fakeSnapshot()));
+    const out = renderTemplate(["m_tokenIn", "s_newline", "m_ctx"], ctxFor(fakeSnapshot()));
     assert.deepEqual(out.map(strip), ["in:38", "ctx:163.5k"]);
   });
 
   it("trailing '\\n' separator does NOT emit a blank trailing line", () => {
     setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 }, "D:\\test");
-    const out = renderTemplate(["m_tokenIn", "s_2"], ctxFor(fakeSnapshot()));
+    const out = renderTemplate(["m_tokenIn", "s_newline"], ctxFor(fakeSnapshot()));
     assert.deepEqual(out.map(strip), ["in:38"]);
   });
 
   it("consecutive '\\n\\n' separators drop the empty middle line", () => {
     setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 }, "D:\\test");
-    const out = renderTemplate(["m_tokenIn", "s_2", "s_2", "m_ctx"], ctxFor(fakeSnapshot()));
+    const out = renderTemplate(["m_tokenIn", "s_newline", "s_newline", "m_ctx"], ctxFor(fakeSnapshot()));
     assert.deepEqual(out.map(strip), ["in:38", "ctx:163.5k"]);
   });
 
@@ -948,6 +959,244 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
   it("m_tokenOutTotal: 'out:155' (cumulative)", () => {
     const out = renderTemplate(["m_tokenOutTotal"], ctxFor(fakeSnapshot())).join("\n");
     assert.equal(strip(out), "out:155");
+  });
+
+  // ----- m_apiCalls (v0.4.x) -------------------------------------------
+  // Reads the project-wide tickStatus slot's sumApiCount. Survives
+  // session changes — the value reflects ALL sessions that have
+  // ticked in this cwd. Supports :color: and :nulldrop: like other
+  // text-style modules. Renders "calls:N"; placeholder is "calls:n/a".
+
+  it("m_apiCalls: drops when no project-wide tickStatus slot exists", () => {
+    // Fresh cwd, no prior write → tickStatus slot is null → drop.
+    const out = renderTemplate(
+      ["m_apiCalls"],
+      ctxFor(fakeSnapshot({ cwd: "D:\\no-project-state-yet" })),
+    );
+    assert.deepEqual(out, []);
+  });
+
+  it("m_apiCalls: renders 'calls:N' from project-wide sumApiCount", () => {
+    // Seed the project-wide slot with sumApiCount=7.
+    setAvg(
+      "sess-1",
+      { sumIn: 0, sumOut: 0, sumApi: 0, sumCache: 0 },
+      "D:\\test",
+      {
+        modelDisplayName: "claude-opus-4-8",
+        deltaApiCount: 1,
+        currentIn: 38,
+        currentOut: 155,
+        currentCacheRead: 163441,
+        currentApiMs: 60_000,
+        deltaIn: 38,
+        deltaOut: 155,
+        deltaCache: 163441,
+        deltaApiMs: 60_000,
+      },
+    );
+    // Subsequent ticks bump the same project-wide slot.
+    setAvg(
+      "sess-1",
+      { sumIn: 38, sumOut: 155, sumApi: 60_000, sumCache: 163441 },
+      "D:\\test",
+      {
+        modelDisplayName: "claude-opus-4-8",
+        deltaApiCount: 1,
+        currentIn: 200,
+        currentOut: 250,
+        currentCacheRead: 200_000,
+        currentApiMs: 65_000,
+        deltaIn: 200,
+        deltaOut: 250,
+        deltaCache: 200_000,
+        deltaApiMs: 5_000,
+      },
+    );
+    const out = renderTemplate(
+      ["m_apiCalls"],
+      ctxFor(fakeSnapshot({ sessionId: "sess-1" })),
+    ).join("\n");
+    assert.equal(strip(out), "calls:2");
+  });
+
+  it("m_apiCalls: no valid tick has landed yet → bare form drops (no slot exists)", () => {
+    // The project-wide tickStatus slot is only WRITTEN by setAvg
+    // when at least one delta is non-zero (or sumApiCount
+    // increments). A "zero deltas" tick passes through setAvg's
+    // gate without ever creating the slot — so a fresh project
+    // with no API calls reads as "no data" (drop on the bare
+    // form, placeholder on the inline form). This is distinct
+    // from the per-session slot which IS stamped on every
+    // active tick. Document the contract: m_apiCalls reads
+    // "have I had any valid API calls yet?" — not a counter
+    // that starts at 0.
+    setAvg(
+      "sess-zero",
+      { sumIn: 0, sumOut: 0, sumApi: 0, sumCache: 0 },
+      "D:\\test",
+      {
+        modelDisplayName: null,
+        deltaApiCount: 0,
+        currentIn: 0,
+        currentOut: 0,
+        currentCacheRead: 0,
+        currentApiMs: 0,
+        deltaIn: 0,
+        deltaOut: 0,
+        deltaCache: 0,
+        deltaApiMs: 0,
+      },
+    );
+    const out = renderTemplate(
+      ["m_apiCalls"],
+      ctxFor(fakeSnapshot({ sessionId: "sess-zero" })),
+    );
+    assert.deepEqual(out, []);
+  });
+
+  it("m_apiCalls:nulldrop:false with no slot → 'calls:n/a' (placeholder)", () => {
+    // Inline form forces the placeholder when the data path returns
+    // null. Same shape as m_tokenInTotal:nulldrop:false.
+    const out = renderTemplate(
+      ["m_apiCalls:nulldrop:false"],
+      ctxFor(fakeSnapshot({ cwd: "D:\\no-project-state-yet" })),
+    ).join("\n");
+    assert.equal(strip(out), "calls:n/a");
+    assert.ok(out.includes(STALE), `expected STALE wrap on: ${JSON.stringify(out)}`);
+  });
+
+  it("m_apiCalls:nulldrop:false with no slot yet → 'calls:n/a' (placeholder fires)", () => {
+    // A "zero deltas" tick never created the project-wide slot
+    // (setAvg's gate skipped the write). The placeholder fires
+    // for the inline form because the data path returned null —
+    // there's no real "calls:0" value to render. Document the
+    // contract: nulldrop:false forces the placeholder when the
+    // counter hasn't been initialized, which is the "I have not
+    // made any API calls yet" case.
+    setAvg(
+      "sess-zero",
+      { sumIn: 0, sumOut: 0, sumApi: 0, sumCache: 0 },
+      "D:\\test",
+      {
+        modelDisplayName: null,
+        deltaApiCount: 0,
+        currentIn: 0,
+        currentOut: 0,
+        currentCacheRead: 0,
+        currentApiMs: 0,
+        deltaIn: 0,
+        deltaOut: 0,
+        deltaCache: 0,
+        deltaApiMs: 0,
+      },
+    );
+    const out = renderTemplate(
+      ["m_apiCalls:nulldrop:false"],
+      ctxFor(fakeSnapshot({ sessionId: "sess-zero" })),
+    ).join("\n");
+    assert.equal(strip(out), "calls:n/a");
+  });
+
+  it("m_apiCalls:nulldrop:true with no slot → drop (preserves v0.3.x semantics)", () => {
+    // Explicit nulldrop:true → preserve old drop-on-null behavior.
+    const out = renderTemplate(
+      ["m_apiCalls:nulldrop:true"],
+      ctxFor(fakeSnapshot({ cwd: "D:\\no-project-state-yet" })),
+    );
+    assert.deepEqual(out, []);
+  });
+
+  it("m_apiCalls:color:brightGreen wraps the chunk in brightGreen", () => {
+    setAvg(
+      "sess-colored",
+      { sumIn: 0, sumOut: 0, sumApi: 0, sumCache: 0 },
+      "D:\\test",
+      {
+        modelDisplayName: null,
+        deltaApiCount: 1,
+        currentIn: 38,
+        currentOut: 155,
+        currentCacheRead: 0,
+        currentApiMs: 60_000,
+        deltaIn: 38,
+        deltaOut: 155,
+        deltaCache: 0,
+        deltaApiMs: 60_000,
+      },
+    );
+    const out = renderTemplate(
+      ["m_apiCalls:color:brightGreen"],
+      ctxFor(fakeSnapshot({ sessionId: "sess-colored" })),
+    );
+    const joined = out.join("\n");
+    assert.match(strip(joined), /calls:1/);
+    assert.ok(
+      joined.includes(`\x1b[38;5;41mcalls:1\x1b[0m`),
+      `expected brightGreen wrap on: ${JSON.stringify(joined)}`,
+    );
+  });
+
+  it("m_apiCalls:color:red override applies SGR to placeholder", () => {
+    // Inline :color: on the nulldrop:false form: user color wins,
+    // STALE_COLOR is replaced by red.
+    const RED_SGR = "\x1b[38;5;196m";
+    const out = renderTemplate(
+      ["m_apiCalls:nulldrop:false:color:red"],
+      ctxFor(fakeSnapshot({ cwd: "D:\\no-project-state-yet" })),
+    ).join("\n");
+    assert.equal(strip(out), "calls:n/a");
+    assert.ok(out.includes(RED_SGR), `expected RED in: ${JSON.stringify(out)}`);
+  });
+
+  it("m_apiCalls: bare form drops on null (MODULES path unchanged)", () => {
+    // Bare m_apiCalls (no colon) goes through the MODULES dispatcher
+    // and drops on null — same drop semantics as m_tokenInTotal.
+    const out = renderTemplate(
+      ["m_apiCalls"],
+      ctxFor(fakeSnapshot({ cwd: "D:\\no-project-state-yet" })),
+    );
+    assert.deepEqual(out, []);
+  });
+
+  it("m_apiCalls:inline m_apiCalls: (trailing colon) defaults to placeholder", () => {
+    // Trailing-colon form has empty remainder → nulldrop undefined
+    // → placeholder fires.
+    const out = renderTemplate(
+      ["m_apiCalls:"],
+      ctxFor(fakeSnapshot({ cwd: "D:\\no-project-state-yet" })),
+    ).join("\n");
+    assert.equal(strip(out), "calls:n/a");
+  });
+
+  it("m_apiCalls: count survives a sessionId change (project-wide scope)", () => {
+    // The project-wide tickStatus slot is keyed only by cwd, not
+    // sessionId. Switching the sessionId on the next render does
+    // NOT reset the count. This is the v0.4.x simplification vs
+    // the per-session tickAvg slot.
+    setAvg(
+      "sess-A",
+      { sumIn: 38, sumOut: 155, sumApi: 60_000, sumCache: 163441 },
+      "D:\\test",
+      {
+        modelDisplayName: "claude-opus-4-8",
+        deltaApiCount: 1,
+        currentIn: 38,
+        currentOut: 155,
+        currentCacheRead: 163441,
+        currentApiMs: 60_000,
+        deltaIn: 38,
+        deltaOut: 155,
+        deltaCache: 163441,
+        deltaApiMs: 60_000,
+      },
+    );
+    // Render with a DIFFERENT sessionId — count should still be 1.
+    const out = renderTemplate(
+      ["m_apiCalls"],
+      ctxFor(fakeSnapshot({ sessionId: "sess-B" })),
+    ).join("\n");
+    assert.equal(strip(out), "calls:1");
   });
 
   it("m_contextSize: '200.0k' (compact format of 200000)", () => {
@@ -1355,7 +1604,7 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
     // means separators drop when the BODY would have been null,
     // but here the body is a placeholder — so separators stay).
     const out = renderTemplate(
-      ["m_tokenIn", "s_0", "m_ctx:nulldrop:false", "s_0", "m_tokenOut"],
+      ["m_tokenIn", "s_space", "m_ctx:nulldrop:false", "s_space", "m_tokenOut"],
       ctxFor(null),
     ).join("\n");
     // m_tokenIn/m_tokenOut render their "0" sentinel (per-API-
@@ -1509,7 +1758,7 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
     // m_ctx:nulldrop:true drops; the surrounding s_0 separators
     // remain in the output (no strip pass).
     const out = renderTemplate(
-      ["m_tokenIn", "s_0", "m_ctx:nulldrop:true", "s_0", "m_tokenOut"],
+      ["m_tokenIn", "s_space", "m_ctx:nulldrop:true", "s_space", "m_tokenOut"],
       ctxFor(null),
     ).join("\n");
     // Inline form WITHOUT nulldrop arg WOULD render the
@@ -1697,21 +1946,24 @@ describe("renderTemplate — m_tokenInSpeed / m_tokenOutSpeed cache + scale (v0.
     );
   });
 
-  it("m_tokenInSpeed: cache survives a session change (separate sessionId key)", () => {
-    // Set a cached value for sess-A; then render with sess-B
-    // (no cache). sess-B should see the -- t/s sentinel, not the
-    // sess-A cached value. Sessions are isolated.
+  it("m_tokenInSpeed: cache is project-wide (no session dimension)", () => {
+    // v0.4.x — the lastActive:in slot is now a single project-wide
+    // entry (no sessionId dimension) with a 60s TTL. Session changes
+    // do NOT isolate the cache: sess-B sees sess-A's cached tps.
+    // The test pins that simplified contract.
     setPrevTick("sess-A", { apiMs: 0, in: 0, out: 0, cacheRead: 0 }, "D:\\test");
     renderTemplate(["m_tokenInSpeed"], ctxFor(fakeSnapshot({ sessionId: "sess-A" })));
     // Now switch to sess-B; prime it with a prev at the SAME
-    // totalApiDurationMs (idle tick). Should NOT find sess-A's
-    // cached value.
+    // totalApiDurationMs (idle tick). With the new design,
+    // lastActive:in is still hot from sess-A, so sess-B sees the
+    // cached tps (rendered with STALE_COLOR since the tick is idle).
     setPrevTick("sess-B", { apiMs: 60_000, in: 0, out: 0, cacheRead: 0 }, "D:\\test");
     const out = renderTemplate(
       ["m_tokenInSpeed"],
       ctxFor(fakeSnapshot({ sessionId: "sess-B" })),
     ).join("\n");
-    assert.equal(strip(out), "in:-- t/s");
+    assert.equal(strip(out), "in:0.6 t/s");
+    assert.ok(out.includes(STALE), `expected STALE on idle cross-session tick in: ${JSON.stringify(out)}`);
   });
 
   it("m_tokenInSpeed: idle tick does NOT overwrite the cache", () => {
@@ -1847,5 +2099,134 @@ describe("render — per-project cache isolation", () => {
     // "d--test") is not contaminated.
     __resetPrevTickForTest(sid, tokensA.cwd);
     __resetPrevTickForTest(sid, tokensB.cwd);
+  });
+});
+
+// ----- v0.4.x — named separator aliases (s_space / s_dot / s_newline / s_tab / s_colon) -----
+//
+// Per AskUserQuestion direction, the default `separators` array is
+// empty in v0.4.x — the built-in characters (" ", "·", "\n", "\t",
+// ":") are now reachable via NAMED ALIASES that work independently
+// of the array. Users can still set `separators: ["x", "y"]` and
+// reference them with `s_0` / `s_1`; the two forms don't interfere
+// with each other.
+describe("renderTemplate — named separator aliases (v0.4.x)", () => {
+  beforeEach(() => {
+    // Reset to the v0.4.x defaults: empty `separators` array, the
+    // default template, no version injection.
+    __resetForTest();
+  });
+
+  // ----- Bare form, default empty array -----
+
+  it('s_space renders the literal " " even when `separators` is empty', () => {
+    // DEFAULT_SEPARATORS is now []; the alias MUST resolve from
+    // NAMED_SEPARATORS, not from seps[0]. The template
+    // ["m_modeLabel", "s_space", "m_modeLabel"] concatenates to
+    // a single line "Usage: Usage:" (the alias fills the slot).
+    const out = renderTemplate(["m_modeLabel", "s_space", "m_modeLabel"], ctxFor(null));
+    // m_modeLabel renders "Usage:" for the plan mode default.
+    // Output lines are joined with no internal separator here —
+    // renderTemplate returns the post-newline-split line array.
+    assert.deepEqual(out.map(strip), ["Usage: Usage:"]);
+  });
+
+  it('s_dot renders "·" (middot U+00B7) even when `separators` is empty', () => {
+    const out = renderTemplate(["s_dot"], ctxFor(null));
+    assert.deepEqual(out.map(strip), ["·"]);
+  });
+
+  it("s_newline renders the literal newline char (default array is empty)", () => {
+    // The bare-form path must split the template on the "\n"
+    // alias just like a `separators[2] === "\n"` would. We use
+    // a trivial template so we only assert the split behavior,
+    // not any module rendering.
+    const out = renderTemplate(["s_newline"], ctxFor(null));
+    // A single bare "\n" should produce zero output lines
+    // (trailing newline is trimmed, same as the array path's
+    // behavior tested in the "newline separator" suite above).
+    assert.deepEqual(out, []);
+  });
+
+  it("s_tab renders the literal TAB char", () => {
+    const out = renderTemplate(["s_tab"], ctxFor(null));
+    assert.deepEqual(out.map(strip), ["\t"]);
+  });
+
+  it('s_colon renders the literal ":"', () => {
+    const out = renderTemplate(["s_colon"], ctxFor(null));
+    assert.deepEqual(out.map(strip), [":"]);
+  });
+
+  // ----- Inline-args form (`:color:<c>` / `:nulldrop:<b>`) -----
+
+  it("s_space:color:brightGreen wraps the space in the brightGreen SGR", () => {
+    const out = renderTemplate(["s_space:color:brightGreen"], ctxFor(null));
+    assert.equal(out.length, 1);
+    assert.equal(strip(out[0]), " ");
+    assert.ok(out[0].includes(GREEN), `expected GREEN in: ${JSON.stringify(out[0])}`);
+  });
+
+  it("s_dot:color:red wraps the dot in the red SGR", () => {
+    const out = renderTemplate(["s_dot:color:red"], ctxFor(null));
+    assert.equal(out.length, 1);
+    assert.equal(strip(out[0]), "·");
+    assert.ok(out[0].includes(RED), `expected RED in: ${JSON.stringify(out[0])}`);
+  });
+
+  // ----- Independence from `separators` array -----
+
+  it("s_space ignores `separators: ['x','y']` — alias always renders ' '", () => {
+    __resetForTest({ separators: ["x", "y"] });
+    const out = renderTemplate(["s_space"], ctxFor(null));
+    assert.deepEqual(out.map(strip), [" "]);
+  });
+
+  it("s_0 still resolves to separators[0] when the array is set", () => {
+    // Backward-compat: a user with `separators: ["x", "y"]` and
+    // a template using `s_0` / `s_1` sees no change. The named
+    // aliases do NOT hijack numeric suffixes. Adjacent tokens
+    // concatenate into one line.
+    __resetForTest({ separators: ["x", "y"] });
+    const out = renderTemplate(["s_0", "s_1", "s_0"], ctxFor(null));
+    assert.deepEqual(out.map(strip), ["xyx"]);
+  });
+
+  it("s_0 with the default empty array warns + drops (out-of-range)", () => {
+    // The legacy out-of-range behavior must still fire when the
+    // user references an index that doesn't exist. With the new
+    // empty default array, even s_0 is out-of-range — a user who
+    // upgrades from v0.3.x without setting `separators` will see
+    // their templates drop s_<n> tokens. They should migrate to
+    // the named aliases (s_space, s_dot) which keep working.
+    __resetForTest();
+    __resetUnknownModuleWarnForTest();
+    const out = renderTemplate(["s_0"], ctxFor(null));
+    assert.deepEqual(out, []);
+  });
+
+  // ----- Unknown alias warns + drops -----
+
+  it("s_xyz (unknown alias name) warns + drops", () => {
+    // Matches the existing s_<out-of-range> behavior: warn once
+    // (fired by warnUnknownModuleOnce), then drop the chunk.
+    __resetUnknownModuleWarnForTest();
+    const out = renderTemplate(["s_xyz"], ctxFor(null));
+    assert.deepEqual(out, []);
+  });
+
+  it("s_dot:color:bogus_color (bad inline arg) warns + drops", () => {
+    // Inline-args form: the resolver succeeds (s_dot IS a known
+    // alias), but the `:color:bogus_color` arg fails the color
+    // validator → badarg → warn + drop. The whole s_dot chunk
+    // is gone; s_space (no args) in the same template survives.
+    // The three pieces concatenate into one line "  " (two
+    // spaces, the dot chunk dropped).
+    __resetUnknownModuleWarnForTest();
+    const out = renderTemplate(
+      ["s_space", "s_dot:color:bogus_color", "s_space"],
+      ctxFor(null),
+    );
+    assert.deepEqual(out.map(strip), ["  "]);
   });
 });

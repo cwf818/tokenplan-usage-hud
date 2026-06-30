@@ -97,8 +97,12 @@ describe("lineTemplate — custom separators", () => {
 describe("lineTemplate — unknown module token", () => {
   it("expands unknown m_ tokens to '' and warns once on stderr", () => {
     __resetUnknownModuleWarnForTest();
+    // v0.4.x — uses named aliases (s_space) so the only unknown
+    // token is m_foo, producing exactly one warn. Numeric s_0
+    // would also warn now (empty default array), polluting the
+    // captured stderr.
     __resetForTest({
-      statuslineTemplate:["m_modeLabel", "s_0", "m_window5h", "s_0", "m_foo"],
+      statuslineTemplate:["m_modeLabel", "s_space", "m_window5h", "s_space", "m_foo"],
     });
     // Capture stderr.
     const err = process.stderr as unknown as { write: (c: string) => boolean };

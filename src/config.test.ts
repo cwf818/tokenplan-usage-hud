@@ -404,11 +404,14 @@ describe("loadConfig — timeFormat (top-level)", () => {
 });
 
 describe("loadConfig — separators (top-level)", () => {
-  it("defaults: s_0=' ', s_1='·'", () => {
+  it("defaults: separators is empty (named aliases carry the built-in chars)", () => {
+    // v0.4.x — the array is now empty by default. The v0.4.0
+    // built-in characters (" ", "·") are available as the
+    // named aliases s_space / s_dot in the template grammar,
+    // so a default-config user does not need to set
+    // separators: [...] to use them.
     const cfg = __testing.DEFAULT_CONFIG;
-    assert.equal(cfg.separators.length, 2);
-    assert.equal(cfg.separators[0], " ");
-    assert.equal(cfg.separators[1], "·");
+    assert.deepEqual(cfg.separators, []);
   });
 
   it("accepts a custom array of single-line strings", async () => {
@@ -475,31 +478,40 @@ describe("loadConfig — separators (top-level)", () => {
     assert.match(capturedStderr, /separators.*dropped.*invalid entries/);
   });
 
-  it("falls back to defaults when array is empty", async () => {
+  it("keeps an explicit empty array", async () => {
+    // v0.4.x — empty separators is a valid user choice (the named
+    // aliases carry the built-in characters). The loader accepts
+    // it; no implicit fill with the legacy 2-entry default.
     writeFileSync(join(tmpDir, "config.json"), JSON.stringify({ separators: [] }));
     const cfg = await loadConfig();
-    assert.equal(cfg.separators.length, 2);
-    assert.match(capturedStderr, /separators/);
+    assert.deepEqual(cfg.separators, []);
   });
 
-  it("rejects non-array separators and falls back to defaults", async () => {
+  it("rejects non-array separators and falls back to the empty default", async () => {
+    // v0.4.x — non-array separators is still invalid (a string
+    // is not a string[]), so the loader falls back to the
+    // empty default array and warns.
     writeFileSync(join(tmpDir, "config.json"), JSON.stringify({ separators: " · " }));
     const cfg = await loadConfig();
-    assert.equal(cfg.separators.length, 2);
+    assert.deepEqual(cfg.separators, []);
     assert.match(capturedStderr, /separators/);
   });
 });
 
 describe("loadConfig — lineTemplates + statuslineTemplate (v0.4.0+)", () => {
   it("defaults: lineTemplates has {plan, balance}; statuslineTemplate is the '1line' preset name", () => {
+    // v0.4.x — the default template uses NAMED ALIASES (s_space,
+    // s_dot) so it works with the empty default separators
+    // array. Visual output is byte-for-byte identical to the
+    // v0.4.0 release's `s_0` + `s_1` + `s_0` composition.
     const cfg = __testing.DEFAULT_CONFIG;
     assert.deepEqual(cfg.lineTemplates.plan, [
-      "m_modeLabel", "s_0",
-      "m_window5h", "s_0", "m_countdown5h",
-      "s_0", "s_1", "s_0",
-      "m_window7d", "s_0", "m_countdown7d",
+      "m_modeLabel", "s_space",
+      "m_window5h", "s_space", "m_countdown5h",
+      "s_space", "s_dot", "s_space",
+      "m_window7d", "s_space", "m_countdown7d",
     ]);
-    assert.deepEqual(cfg.lineTemplates.balance, ["m_modeLabel", "s_0", "m_balance"]);
+    assert.deepEqual(cfg.lineTemplates.balance, ["m_modeLabel", "s_space", "m_balance"]);
     assert.equal(cfg.statuslineTemplate, "1line");
   });
 

@@ -20,13 +20,16 @@ import * as diagnostics from "./diagnostics.ts";
 // ----- Defaults — must match today's hardcoded values exactly -----
 
 // Default separator strings referenced from lineTemplate as s_0, s_1, ….
-// s_0 is the within-group separator (default: " "); s_1 is the
-// between-group separator (default: "·" — just the symbol, no
-// surrounding spaces). The default plan template composes
-// s_0 + s_1 + s_0 around the inter-window boundary to produce
-// the visual " · " (a space, the middot, a space). Users may
-// override either or add more (s_2, s_3, …) by extending the array.
-const DEFAULT_SEPARATORS: string[] = [" ", "·"];
+// Empty by default in v0.4.x — the v0.4.0-release style built-in
+// characters (" ", "·") are now also available as NAMED ALIASES
+// (`s_space`, `s_dot`) in the template grammar, which is the
+// user-facing way to reference them without touching this array.
+// The array is now reserved for CUSTOM separators (e.g. " | ",
+// " / ", "::"…) that have no built-in alias. The default plan
+// template below is kept self-consistent by composing s_space +
+// s_dot + s_space around the inter-window boundary to produce
+// the visual " · " (a space, the middot, a space).
+const DEFAULT_SEPARATORS: string[] = [];
 
 // Default line layout. A template is an ordered list of tokens; each
 // token is either a display module ("m_<name>") or a separator
@@ -49,13 +52,18 @@ const DEFAULT_LINE_TEMPLATE: {
   plan: string[];
   balance: string[];
 } = {
+  // v0.4.x — the default template uses the NAMED ALIASES (s_space,
+  // s_dot) so it works with the new empty default `separators`
+  // array. The visual output is byte-for-byte identical to the
+  // v0.4.0 release: the `s_0 + s_1 + s_0` composition is replaced
+  // with `s_space + s_dot + s_space`, both producing " · ".
   plan: [
-    "m_modeLabel", "s_0",
-    "m_window5h", "s_0", "m_countdown5h",
-    "s_0", "s_1", "s_0",
-    "m_window7d", "s_0", "m_countdown7d",
+    "m_modeLabel", "s_space",
+    "m_window5h", "s_space", "m_countdown5h",
+    "s_space", "s_dot", "s_space",
+    "m_window7d", "s_space", "m_countdown7d",
   ],
-  balance: ["m_modeLabel", "s_0", "m_balance"],
+  balance: ["m_modeLabel", "s_space", "m_balance"],
 };
 
 // v0.4.0+ — registry of reusable template fragments. Each value is a
@@ -120,127 +128,127 @@ export const DEFAULT_STATUSLINE_TEMPLATE: StatuslineTemplate = "1line";
 export const PLAN_PRESETS: Record<string, string[]> = {
   // tokenplan only, single line, no label (assumes upstream chain)
   "1line": [
-    "m_modeLabel", "s_0",
-    "m_window5h", "s_0", "m_countdown5h",
-    "s_0", "s_1", "s_0",
-    "m_window7d", "s_0", "m_countdown7d",
+    "m_modeLabel", "s_space",
+    "m_window5h", "s_space", "m_countdown5h",
+    "s_space", "s_dot", "s_space",
+    "m_window7d", "s_space", "m_countdown7d",
   ],
   // alias of "1line" — same shape, more discoverable name
   simple: [
-    "m_modeLabel", "s_0",
-    "m_window5h", "s_0", "m_countdown5h",
-    "s_0", "s_1", "s_0",
-    "m_window7d", "s_0", "m_countdown7d",
+    "m_modeLabel", "s_space",
+    "m_window5h", "s_space", "m_countdown5h",
+    "s_space", "s_dot", "s_space",
+    "m_window7d", "s_space", "m_countdown7d",
   ],
   // tokenplan only, single line, with m_label so the user sees
   // "Usage: <5h> ..." explicitly when running solo (no upstream chain)
   "simple-alone": [
-    "m_label:Usage:color:yellow", "s_2",
-    "m_window5h:nulldrop:false", "s_0",
+    "m_label:Usage:color:yellow", "s_newline",
+    "m_window5h:nulldrop:false", "s_space",
     "m_countdown5h:nulldrop:false",
-    "s_0", "s_1:color:red", "s_0",
-    "m_window7d:nulldrop:false", "s_0",
+    "s_space", "s_dot:color:red", "s_space",
+    "m_window7d:nulldrop:false", "s_space",
     "m_countdown7d:nulldrop:false",
   ],
   // line 1 = tokenplan, line 2 = context & token. No session line.
   // The "alone" variant assumes upstream chaining for session info.
   standard: [
-    "m_modeLabel", "s_0",
-    "m_window5h", "s_0", "m_countdown5h",
-    "s_0", "s_1", "s_0",
-    "m_window7d", "s_0", "m_countdown7d",
-    "s_2",
-    "m_sessionApiDuration:nulldrop:false", "s_0",
-    "m_tokenIn:nulldrop:false", "s_0",
-    "m_tokenInSpeed:nulldrop:false", "s_0",
-    "m_tokenOut:nulldrop:false", "s_0",
-    "m_tokenOutSpeed:nulldrop:false", "s_0",
-    "m_ctx:nulldrop:false", "s_0",
+    "m_modeLabel", "s_space",
+    "m_window5h", "s_space", "m_countdown5h",
+    "s_space", "s_dot", "s_space",
+    "m_window7d", "s_space", "m_countdown7d",
+    "s_newline",
+    "m_sessionApiDuration:nulldrop:false", "s_space",
+    "m_tokenIn:nulldrop:false", "s_space",
+    "m_tokenInSpeed:nulldrop:false", "s_space",
+    "m_tokenOut:nulldrop:false", "s_space",
+    "m_tokenOutSpeed:nulldrop:false", "s_space",
+    "m_ctx:nulldrop:false", "s_space",
     "m_cacheHitRate:nulldrop:false",
   ],
   // line 0 = session info, line 1 = tokenplan, line 2 = context & token.
   // For the user running this plugin as the SOLE statusline (no
   // upstream chain to fill the session slot).
   "standard-alone": [
-    "m_label:Session:color:yellow", "s_0",
-    "m_session:nulldrop:false", "s_0",
-    "m_model:nulldrop:false", "s_0",
+    "m_label:Session:color:yellow", "s_space",
+    "m_session:nulldrop:false", "s_space",
+    "m_model:nulldrop:false", "s_space",
     "m_ccVersion:nulldrop:false",
-    "s_2",
-    "m_label:Usage:color:yellow", "s_2",
-    "m_window5h:nulldrop:false", "s_0",
+    "s_newline",
+    "m_label:Usage:color:yellow", "s_newline",
+    "m_window5h:nulldrop:false", "s_space",
     "m_countdown5h:nulldrop:false",
-    "s_0", "s_1:color:red", "s_0",
-    "m_window7d:nulldrop:false", "s_0",
+    "s_space", "s_dot:color:red", "s_space",
+    "m_window7d:nulldrop:false", "s_space",
     "m_countdown7d:nulldrop:false",
-    "s_2",
-    "m_label:Context:color:yellow", "s_2",
-    "m_sessionApiDuration:nulldrop:false", "s_0",
-    "m_tokenIn:nulldrop:false", "s_0",
-    "m_tokenInSpeed:nulldrop:false", "s_0",
-    "m_tokenOut:nulldrop:false", "s_0",
-    "m_tokenOutSpeed:nulldrop:false", "s_0",
-    "m_ctx:nulldrop:false", "s_0",
+    "s_newline",
+    "m_label:Context:color:yellow", "s_newline",
+    "m_sessionApiDuration:nulldrop:false", "s_space",
+    "m_tokenIn:nulldrop:false", "s_space",
+    "m_tokenInSpeed:nulldrop:false", "s_space",
+    "m_tokenOut:nulldrop:false", "s_space",
+    "m_tokenOutSpeed:nulldrop:false", "s_space",
+    "m_ctx:nulldrop:false", "s_space",
     "m_cacheHitRate:nulldrop:false",
   ],
   // line 0 = session + git, line 1 = tokenplan, line 2 = context & token.
   // For users with a deeper-git-workflow statusline.
   abundant: [
-    "m_label:Session:color:yellow", "s_0",
-    "m_session:nulldrop:false", "s_0",
-    "m_model:nulldrop:false", "s_0",
-    "m_branch:nulldrop:false", "s_0",
-    "m_gitStatus:nulldrop:false", "s_0",
+    "m_label:Session:color:yellow", "s_space",
+    "m_session:nulldrop:false", "s_space",
+    "m_model:nulldrop:false", "s_space",
+    "m_branch:nulldrop:false", "s_space",
+    "m_gitStatus:nulldrop:false", "s_space",
     "m_ccVersion:nulldrop:false",
-    "s_2",
-    "m_label:Usage:color:yellow", "s_2",
-    "m_window5h:nulldrop:false", "s_0",
+    "s_newline",
+    "m_label:Usage:color:yellow", "s_newline",
+    "m_window5h:nulldrop:false", "s_space",
     "m_countdown5h:nulldrop:false",
-    "s_0", "s_1:color:red", "s_0",
-    "m_window7d:nulldrop:false", "s_0",
+    "s_space", "s_dot:color:red", "s_space",
+    "m_window7d:nulldrop:false", "s_space",
     "m_countdown7d:nulldrop:false",
-    "s_2",
-    "m_label:Context:color:yellow", "s_2",
-    "m_sessionApiDuration:nulldrop:false", "s_0",
-    "m_tokenIn:nulldrop:false", "s_0",
-    "m_tokenInSpeed:nulldrop:false", "s_0",
-    "m_tokenOut:nulldrop:false", "s_0",
-    "m_tokenOutSpeed:nulldrop:false", "s_0",
-    "m_ctx:nulldrop:false", "s_0",
+    "s_newline",
+    "m_label:Context:color:yellow", "s_newline",
+    "m_sessionApiDuration:nulldrop:false", "s_space",
+    "m_tokenIn:nulldrop:false", "s_space",
+    "m_tokenInSpeed:nulldrop:false", "s_space",
+    "m_tokenOut:nulldrop:false", "s_space",
+    "m_tokenOutSpeed:nulldrop:false", "s_space",
+    "m_ctx:nulldrop:false", "s_space",
     "m_cacheHitRate:nulldrop:false",
   ],
   // 4 lines: adds line counts (m_linesAdded / m_linesRemoved) and
   // totals (m_totalToken*) on a 4th line. NOT recommended — verbose;
   // included for completeness.
   complete: [
-    "m_label:Session:color:yellow", "s_0",
-    "m_session:nulldrop:false", "s_0",
-    "m_model:nulldrop:false", "s_0",
-    "m_branch:nulldrop:false", "s_0",
-    "m_gitStatus:nulldrop:false", "s_0",
+    "m_label:Session:color:yellow", "s_space",
+    "m_session:nulldrop:false", "s_space",
+    "m_model:nulldrop:false", "s_space",
+    "m_branch:nulldrop:false", "s_space",
+    "m_gitStatus:nulldrop:false", "s_space",
     "m_ccVersion:nulldrop:false",
-    "s_2",
-    "m_label:Usage:color:yellow", "s_2",
-    "m_window5h:nulldrop:false", "s_0",
+    "s_newline",
+    "m_label:Usage:color:yellow", "s_newline",
+    "m_window5h:nulldrop:false", "s_space",
     "m_countdown5h:nulldrop:false",
-    "s_0", "s_1:color:red", "s_0",
-    "m_window7d:nulldrop:false", "s_0",
+    "s_space", "s_dot:color:red", "s_space",
+    "m_window7d:nulldrop:false", "s_space",
     "m_countdown7d:nulldrop:false",
-    "s_2",
-    "m_label:Context:color:yellow", "s_2",
-    "m_sessionApiDuration:nulldrop:false", "s_0",
-    "m_tokenIn:nulldrop:false", "s_0",
-    "m_tokenInSpeed:nulldrop:false", "s_0",
-    "m_tokenOut:nulldrop:false", "s_0",
-    "m_tokenOutSpeed:nulldrop:false", "s_0",
-    "m_ctx:nulldrop:false", "s_0",
+    "s_newline",
+    "m_label:Context:color:yellow", "s_newline",
+    "m_sessionApiDuration:nulldrop:false", "s_space",
+    "m_tokenIn:nulldrop:false", "s_space",
+    "m_tokenInSpeed:nulldrop:false", "s_space",
+    "m_tokenOut:nulldrop:false", "s_space",
+    "m_tokenOutSpeed:nulldrop:false", "s_space",
+    "m_ctx:nulldrop:false", "s_space",
     "m_cacheHitRate:nulldrop:false",
-    "s_2",
-    "m_label:Total:color:yellow", "s_2",
-    "m_totalTokenIn:nulldrop:false", "s_0",
-    "m_totalTokenOut:nulldrop:false", "s_0",
-    "m_totalTokenWithCacheIn:nulldrop:false", "s_0",
-    "m_linesAdded:nulldrop:false", "s_0",
+    "s_newline",
+    "m_label:Total:color:yellow", "s_newline",
+    "m_totalTokenIn:nulldrop:false", "s_space",
+    "m_totalTokenOut:nulldrop:false", "s_space",
+    "m_totalTokenWithCacheIn:nulldrop:false", "s_space",
+    "m_linesAdded:nulldrop:false", "s_space",
     "m_linesRemoved:nulldrop:false",
   ],
 };
@@ -249,12 +257,12 @@ export const PLAN_PRESETS: Record<string, string[]> = {
 // Same string-or-array shape as plan. The balance path is much
 // simpler (one number, no windows), so only two presets.
 export const BALANCE_PRESETS: Record<string, string[]> = {
-  // Default — same as today's hardcoded `["m_modeLabel", "s_0", "m_balance"]`
-  simple: ["m_modeLabel", "s_0", "m_balance"],
+  // Default — same as today's hardcoded `["m_modeLabel", "s_space", "m_balance"]`
+  simple: ["m_modeLabel", "s_space", "m_balance"],
   // For users running this plugin as the sole statusline: prepend
   // a "Balance:" label so the line reads as a labeled statusline.
   "simple-alone": [
-    "m_label:Balance:color:yellow", "s_0",
+    "m_label:Balance:color:yellow", "s_space",
     "m_balance:nulldrop:false",
   ],
 };

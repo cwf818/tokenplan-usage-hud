@@ -27,9 +27,8 @@ import {
   type QuoteFreq,
 } from "./quotes.ts";
 import { readSamples } from "./token-store.ts";
-import { projectHash } from "./token-store.ts";
 import { readGitInfo } from "./git-info.ts";
-import * as cacheStore from "./cache.ts";
+import * as statusStore from "./status-store.ts";
 
 export type Window = {
   // Percentage USED in [0, 100]. May be fractional; we'll round.
@@ -620,34 +619,50 @@ type RenderContext = {
 
 type Module = (ctx: RenderContext) => string | null;
 
-// v0.4.0+ — per-session "previous tick" cache, used by the
-// m_tokenInSpeed / m_tokenOutSpeed renderers to compute real
-// per-API-call throughput instead of the session-cumulative
-// average. The statusline fires a fresh child process on every
-// tick, so this MUST persist across processes — it lives in the
-// shared cacheStore (which already disk-shadows to
-// ~/.claude/plugins/tokenplan-usage-hud/state/cache.json).
+// v0.4.x — per-tick state lives in `state/<projectHash>/status.json`
+// (managed by src/status-store.ts). Three flavors of `tickStatus`
+// records: a project-wide aggregate (no suffix), per-session
+// (`tickStatus:<sessionId>`), and per-provider
+// (`tickStatus:<modelDisplayName>`).
 //
-// Stored shape (one entry per sessionId):
-//   { apiMs, in, out, at }   — snapshot of the previous tick's
-//                              cost.total_api_duration_ms and
-//                              current_usage.{input,output}.
+// `tickStatus:<sessionId>` doubles as BOTH the prev-tick baseline
+// (the `sumApiMs` field carries the running API-duration total,
+// but the `in`/`out`/`cacheRead` fields hold the LAST tick's
+// per-turn values) AND the running accumulator (sumIn/sumOut/
+// sumCache/sumApiMs/sumApiCount). One slot replaces the old
+// `tickSpeed:<sid>` + `tickAvg:<sid>` pair — same per-render
+// semantics, simpler schema, project-isolated.
 //
-// TTL: very long (1 hour). The cache only needs to survive the
-// gap between two statusline ticks (typically < 5s); a longer TTL
-// just protects against pathological pause/resume cases where the
-// user closes the terminal and reopens it. Cache is automatically
-// invalidated by the sessionId prefix in the key — switching
-// sessions means the new sessionId misses the lookup, the new
-// tick writes its baseline, and the next tick computes against it.
+// Stored shape (one entry per sessionId, under status.json):
+//   {
+//     "in":         2468,   // last tick's input tokens (this turn's delta)
+//     "out":         248,   // last tick's output tokens
+//     "cacheRead": 33403,   // last tick's cache-read tokens
+//     "sumIn":       3093,  // accumulated in  across API calls
+//     "sumOut":       475,  // accumulated out
+//     "sumCache":   66182,  // accumulated cache_read
+//     "sumApiMs":  132311,  // accumulated total_api_duration_ms
+//     "sumApiCount":   17,  // accumulated API-call count
+//   }
+//
+// sumApiCount contract (revised per user direction):
+//   On a tick where deltaApiMs > 0 AND input_tokens > 0 (a real
+//   API call that produced input tokens), sumApiCount += 1. The
+//   gate is AND, not OR — a tick with deltaApiMs > 0 but
+//   input_tokens == 0 (e.g. a thinking-only turn that produced no
+//   input) does NOT count. This matches the user's intent of
+//   "count the actual user-visible API calls".
+//
+// Lifecycle: status-store.ts reads/writes the file lazily and
+// persists across per-tick child-process invocations, so a fresh
+// process can read the prior tick's `sumApiMs` to compute
+// deltaApiMs without any in-memory warm-up.
 //
 // Exported for tests (so unit tests can pre-seed the cache).
-// v0.4.0+: cacheRead field added so the per-session running total
-// m_totalTokenWithCacheIn can derive its delta from the same
-// per-tick baseline that m_tokenInSpeed / m_tokenInAvg use. The
-// field is populated automatically by every MODULES /
-// INLINE_RENDERERS caller — call sites that construct literals
-// just supply 0 for tests where cache is irrelevant.
+// The `apiMs` field is kept on this projection type because the
+// per-render delta math (computeAndCacheTickDelta) reads it as a
+// baseline and test fixtures pre-seed it directly. The canonical
+// on-disk field is `sumApiMs` — peekPrevTick maps between them.
 export type PrevTickSnapshot = {
   apiMs: number;
   in: number;
@@ -655,150 +670,122 @@ export type PrevTickSnapshot = {
   cacheRead: number;
 };
 
-// v0.4.x+ — per-project cache key prefix.
-//
-// The cache module (`src/cache.ts`) is intentionally cwd-unaware: a
-// single Map, a single on-disk file, public API takes `(key, ttlMs)`.
-// To keep concurrent Claude Code instances running on different
-// projects from sharing a single write stream (the race that produced
-// the v0.4.x per-project redesign), every key this module feeds into
-// the cache is prefixed with `projectHash(cwd):`. Within a project,
-// keys continue to vary by sessionId / direction as before — this
-// prefix is the only thing that changes.
-//
-// Fallback to a literal "_" when cwd is empty/null so we never write
-// an unprefixed key (which would silently put two different projects'
-// cache entries in the same slot).
-function projectCacheKey(
-  cwd: string | null | undefined,
-  key: string,
-): string {
-  const hash = cwd ? projectHash(cwd) : "_";
-  return `${hash}:${key}`;
-}
-
-// Public: looks up the previous tick for a given session. Returns
-// null on miss (no prior tick, or session changed, or cache
-// expired). The caller is responsible for the post-call
-// `setPrevTick(sessionId, snapshot)` to keep the cache fresh —
-// this function does NOT auto-write.
+// Public: looks up the previous tick for a given session. Reads
+// the unified `tickStatus:<sid>` slot from status.json and
+// returns the prev-tick-shaped projection (apiMs = sumApiMs).
+// Returns null on miss (no prior tick). The caller is responsible
+// for the post-call `setPrevTick` to keep the cache fresh.
 export function peekPrevTick(
   sessionId: string,
   cwd?: string | null,
 ): PrevTickSnapshot | null {
   if (!sessionId) return null;
-  // 1h TTL is well past any plausible inter-tick gap but well
-  // before the user is likely to be back the next day. The
-  // sessionId prefix already handles the "back tomorrow" case
-  // (new sessionId → new key → miss → fresh baseline).
-  // v0.4.x+: the `projectCacheKey` prefix further isolates entries
-  // by cwd so concurrent instances on different projects don't
-  // collide on the shared cache.json.
-  return cacheStore.peek<PrevTickSnapshot>(projectCacheKey(cwd, `tickSpeed:${sessionId}`));
+  const v = statusStore.readTickStatus(cwd, `tickStatus:${sessionId}`);
+  if (!v) return null;
+  return {
+    apiMs: v.sumApiMs,
+    in: v.in,
+    out: v.out,
+    cacheRead: v.cacheRead,
+  };
 }
 
 // Public: writes the current tick's snapshot for the next call to
-// read. Fire-and-forget; the cache is non-critical (worst case on
-// a cache write failure is "next tick drops the speed module",
-// which is the same as a first tick).
+// read. The unified tickStatus shape on disk holds both the
+// per-tick snapshot AND the running totals; this helper updates
+// only the per-tick fields and preserves the accumulator fields
+// that already exist on disk.
+//
+// Implementation note: the canonical "full" write path is
+// `setTickStatusSnapshot` (called from computeAndCacheTickDelta),
+// which writes all fields atomically. This helper is kept for
+// test fixtures that only want to seed the prev-tick baseline.
 export function setPrevTick(
   sessionId: string,
   snap: PrevTickSnapshot,
   cwd?: string | null,
 ): void {
   if (!sessionId) return;
-  const k = projectCacheKey(cwd, `tickSpeed:${sessionId}`);
-  cacheStore.set(k, snap);
+  const existing = statusStore.readTickStatus(cwd, `tickStatus:${sessionId}`);
+  const next: statusStore.TickStatusValue = existing ?? statusStore.emptyTickStatus();
+  next.in = snap.in;
+  next.out = snap.out;
+  next.cacheRead = snap.cacheRead;
+  next.sumApiMs = snap.apiMs;
+  statusStore.writeTickStatus(cwd, `tickStatus:${sessionId}`, next);
 }
 
-// ----- v0.4.0+ — last-rendered speed cache -----
+// ----- lastActive (v0.4.x) --------------------------------------------
 //
-// m_tokenInSpeed / m_tokenOutSpeed store the LAST active-tick
-// tps per session, so an idle tick (deltaApi == 0) that would
-// otherwise render "-- t/s" can fall back to the cached value.
-// This stops the speed module from "blinking" through ticks
-// when Claude Code's statusline fires faster than the user
-// reads it (e.g. multi-second thinking bursts produce a flurry
-// of statusline ticks; only one or two carry a real API call).
+// Stores the LAST active-tick tps per direction (in / out), so an
+// idle tick (deltaApi == 0) that would otherwise render "-- t/s"
+// can fall back to the cached value. Stored in status.json under
+// the `lastActive:in` / `lastActive:out` keys (no sessionId in the
+// key — project-wide singleton per direction). 60s TTL is enforced
+// inside status-store.ts; writes happen ONLY on active ticks so the
+// cached value is always "the last thing I measured".
 //
-// Writes happen ONLY on active ticks (hasDelta === true). The
-// "inactive" state in the cache only ever holds a measurement
-// taken during a real API call. Idle ticks do NOT overwrite —
-// the cached value is "the last thing I measured" until the
-// next active tick replaces it.
-//
-// 1h TTL matches tickSpeed: — long enough to span a
-// thinking burst, short enough to clear by tomorrow's session.
-// Different key prefix (`tickSpeedDisplay:`) from
-// `tickSpeed:<sessionId>` so the prev-tick baseline and the
-// last-rendered display value don't collide.
+// Reads ignore the per-session dimension: caller passes the
+// session-agnostic tps and reads a project-wide value. Different
+// from the old tickSpeedDisplay:<direction>:<sessionId> model
+// which partitioned by session — the user explicitly asked for
+// the session dimension to be dropped (the last-active signal is
+// a "what was the overall rate we last saw" reading, useful
+// across sessions). The sessionId argument is kept in the
+// signature for back-compat with existing test fixtures.
 export type LastSpeedSnapshot = {
   direction: "in" | "out";
   tps: number;
 };
 export function peekLastSpeed(
-  sessionId: string,
+  _sessionId: string,
   direction: "in" | "out",
   cwd?: string | null,
 ): number | null {
-  if (!sessionId) return null;
-  const snap = cacheStore.peek<LastSpeedSnapshot>(
-    projectCacheKey(cwd, `tickSpeedDisplay:${direction}:${sessionId}`),
-  );
-  return snap?.tps ?? null;
+  void _sessionId;
+  return statusStore.readLastActive(cwd, direction);
 }
 export function setLastSpeed(
-  sessionId: string,
+  _sessionId: string,
   direction: "in" | "out",
   tps: number,
   cwd?: string | null,
 ): void {
-  if (!sessionId) return;
-  cacheStore.set(
-    projectCacheKey(cwd, `tickSpeedDisplay:${direction}:${sessionId}`),
-    { direction, tps },
-  );
+  void _sessionId;
+  statusStore.writeLastActive(cwd, direction, tps);
 }
-// Test-only: clear the last-speed entry for a session.
+// Test-only: clear the last-active entry for a direction. v0.4.x:
+// the entry lives in status.json under the project dir; tests
+// that need a clean slot should use a tmp-dir path resolver.
+// Kept as a no-op stub so existing test imports compile.
 export function __resetLastSpeedForTest(
-  sessionId: string,
-  direction: "in" | "out",
-  cwd?: string | null,
+  _sessionId: string,
+  _direction: "in" | "out",
+  _cwd?: string | null,
 ): void {
-  if (!sessionId) return;
-  cacheStore.clear(
-    projectCacheKey(cwd, `tickSpeedDisplay:${direction}:${sessionId}`),
-  );
+  // No explicit clear API on status-store for lastActive (TTL is
+  // 60s anyway); tests rely on the path resolver + tmp dir.
 }
 
-// Test-only: clear the in-memory + disk cache entry for a
-// session. Production code never calls this.
+// Test-only: clear the in-memory + disk tickStatus:<sid> entry.
+// Production code never calls this. No-op stub: same rationale as
+// __resetLastSpeedForTest above.
 export function __resetPrevTickForTest(
-  sessionId: string,
-  cwd?: string | null,
+  _sessionId: string,
+  _cwd?: string | null,
 ): void {
-  if (!sessionId) return;
-  cacheStore.clear(projectCacheKey(cwd, `tickSpeed:${sessionId}`));
+  // Tests that need a clean slot pre-seed with empty values via
+  // setPrevTick(..., {apiMs:0, in:0, out:0, cacheRead:0}).
 }
 
-// v0.4.0+ — per-session accumulator for the m_tokenInAvg /
-// m_tokenOutAvg modules. Each tick where the delta math
-// produces valid numbers (deltaApi > 0 and deltaIn / deltaOut >=
-// 0 — guarding against regressions), the running totals grow.
-// The render is sum_in / sum_api * 1000 (and same for out). The
-// cache is separate from the prevTick snapshot above because
-// the lifetime is different: prevTick is "what was the last
-// tick's stdin state" (1-tick memory), avg is "running totals
-// across the session's lifetime" (whole-session memory).
+// Back-compat alias — the old tickAvg:<sessionId> slot is now part
+// of tickStatus:<sessionId>. Existing tests that read via
+// peekAvg(<sid>, <cwd>) keep working: returns the accumulator
+// subset of the tickStatus entry.
 export type AvgSnapshot = {
   sumIn: number;
   sumOut: number;
   sumApi: number;
-  // v0.4.0+: running total of delta(cache_read_input_tokens)
-  // across valid-API-call ticks. Single source of truth for
-  // m_totalTokenWithCacheIn (and the avg module pair's cache slot
-  // doubles as the totals slot — we deliberately reuse this
-  // rather than introduce a parallel tickTotal: cache key).
   sumCache: number;
 };
 
@@ -807,24 +794,135 @@ export function peekAvg(
   cwd?: string | null,
 ): AvgSnapshot | null {
   if (!sessionId) return null;
-  return cacheStore.peek<AvgSnapshot>(projectCacheKey(cwd, `tickAvg:${sessionId}`));
+  const v = statusStore.readTickStatus(cwd, `tickStatus:${sessionId}`);
+  if (!v) return null;
+  return {
+    sumIn: v.sumIn,
+    sumOut: v.sumOut,
+    sumApi: v.sumApiMs,
+    sumCache: v.sumCache,
+  };
 }
 
+// Canonical write path for the running accumulator. Reads the
+// current tickStatus:<sid> entry (or starts from zero), adds the
+// per-tick deltas, and writes the unified shape back — including
+// the new `sumApiCount` field (see sumApiCount contract above).
+// Also bumps the project-wide `tickStatus` and (when available)
+// `tickStatus:<modelDisplayName>` entries with the SAME delta so
+// every scoping level reflects this tick.
+//
+// v0.4.x — replaces the old "setPrevTick + setAvg" pair. The
+// prev-tick baseline is updated together with the accumulator
+// fields so the next tick can read a consistent snapshot in one
+// disk read instead of stitching two slots together.
+//
+// Caller passes the delta math (computeAndCacheTickDelta already
+// produced it). Per-tick `in`/`out`/`cacheRead` fields are also
+// stamped with the latest values so peekPrevTick's projection
+// returns current state immediately (no extra write needed).
+//
+// IMPORTANT: the per-session slot stores ABSOLUTE cumulative
+// values for that session (`sumIn = session_prev_sumIn + delta`).
+// The project-wide and per-provider slots store DELTAS ACCUMULATED
+// across ticks (`sumIn += deltaIn`), so multiple sessions tick
+// into the same aggregate without overwriting each other. Per-tick
+// fields on the aggregates always hold the latest tick's value.
 export function setAvg(
   sessionId: string,
   snap: AvgSnapshot,
   cwd?: string | null,
+  extras?: {
+    modelDisplayName?: string | null;
+    deltaApiCount?: number;
+    currentIn?: number;
+    currentOut?: number;
+    currentCacheRead?: number;
+    currentApiMs?: number;
+    // Per-tick deltas to ADD into the project-wide and per-provider
+    // aggregate accumulators. When omitted (legacy callers), the
+    // aggregate slots are not bumped — backward compatible with the
+    // v0.3.x setAvg signature.
+    deltaIn?: number;
+    deltaOut?: number;
+    deltaCache?: number;
+    deltaApiMs?: number;
+  },
 ): void {
   if (!sessionId) return;
-  cacheStore.set(projectCacheKey(cwd, `tickAvg:${sessionId}`), snap);
+  // Increment sumApiCount only on a valid API call that produced
+  // input tokens (per the user's revised contract: AND gate).
+  // extras.deltaApiCount is pre-computed by the caller (1 or 0)
+  // to keep the gate logic colocated with the delta math.
+  const incrementCount = extras?.deltaApiCount ?? 0;
+  // Per-session slot — ABSOLUTE cumulative values.
+  const existing = statusStore.readTickStatus(cwd, `tickStatus:${sessionId}`);
+  const next: statusStore.TickStatusValue = existing ?? statusStore.emptyTickStatus();
+  next.sumIn = snap.sumIn;
+  next.sumOut = snap.sumOut;
+  next.sumApiMs = snap.sumApi;
+  next.sumCache = snap.sumCache;
+  if (incrementCount > 0) next.sumApiCount += incrementCount;
+  // Also stamp the per-tick fields so peekPrevTick reads a
+  // consistent baseline without needing a separate setPrevTick
+  // call. Caller passes current values; fall back to whatever
+  // was already there when not provided (preserves the
+  // existing partial-write semantics).
+  if (extras?.currentIn != null) next.in = extras.currentIn;
+  if (extras?.currentOut != null) next.out = extras.currentOut;
+  if (extras?.currentCacheRead != null) next.cacheRead = extras.currentCacheRead;
+  if (extras?.currentApiMs != null) next.sumApiMs = extras.currentApiMs;
+  statusStore.writeTickStatus(cwd, `tickStatus:${sessionId}`, next);
+
+  // Project-wide aggregate — ACCUMULATE per-tick deltas so two
+  // concurrent sessions both contribute without overwriting each
+  // other. Per-tick fields hold the latest value (most-recent-wins).
+  if (
+    incrementCount > 0 ||
+    extras?.deltaIn ||
+    extras?.deltaOut ||
+    extras?.deltaCache ||
+    extras?.deltaApiMs
+  ) {
+    const agg = statusStore.readTickStatus(cwd, "tickStatus") ??
+      statusStore.emptyTickStatus();
+    if (extras?.deltaIn) agg.sumIn += extras.deltaIn;
+    if (extras?.deltaOut) agg.sumOut += extras.deltaOut;
+    if (extras?.deltaCache) agg.sumCache += extras.deltaCache;
+    if (extras?.deltaApiMs) agg.sumApiMs += extras.deltaApiMs;
+    if (incrementCount > 0) agg.sumApiCount += incrementCount;
+    if (extras?.currentIn != null) agg.in = extras.currentIn;
+    if (extras?.currentOut != null) agg.out = extras.currentOut;
+    if (extras?.currentCacheRead != null) agg.cacheRead = extras.currentCacheRead;
+    statusStore.writeTickStatus(cwd, "tickStatus", agg);
+  }
+
+  // Per-provider slot (model display name). Optional — only
+  // exists when the caller supplied a modelDisplayName. Same
+  // ACCUMULATE semantics as the project-wide aggregate: each
+  // session tick that lands on this model adds to the running
+  // total without overwriting siblings.
+  const model = extras?.modelDisplayName;
+  if (model && model.length > 0) {
+    const prov = statusStore.readTickStatus(cwd, `tickStatus:${model}`) ??
+      statusStore.emptyTickStatus();
+    if (extras?.deltaIn) prov.sumIn += extras.deltaIn;
+    if (extras?.deltaOut) prov.sumOut += extras.deltaOut;
+    if (extras?.deltaCache) prov.sumCache += extras.deltaCache;
+    if (extras?.deltaApiMs) prov.sumApiMs += extras.deltaApiMs;
+    if (incrementCount > 0) prov.sumApiCount += incrementCount;
+    if (extras?.currentIn != null) prov.in = extras.currentIn;
+    if (extras?.currentOut != null) prov.out = extras.currentOut;
+    if (extras?.currentCacheRead != null) prov.cacheRead = extras.currentCacheRead;
+    statusStore.writeTickStatus(cwd, `tickStatus:${model}`, prov);
+  }
 }
 
 export function __resetAvgForTest(
-  sessionId: string,
-  cwd?: string | null,
+  _sessionId: string,
+  _cwd?: string | null,
 ): void {
-  if (!sessionId) return;
-  cacheStore.clear(projectCacheKey(cwd, `tickAvg:${sessionId}`));
+  // No-op: see __resetPrevTickForTest above.
 }
 
 // Per-render memo: keyed by the RenderContext object itself, so
@@ -1131,7 +1229,22 @@ function computeTickAvg(
       // a template still maintains the cache.
       sumCache: (prev?.sumCache ?? 0) + r.deltaCacheRead,
     };
-    setAvg(t.sessionId, next, t.cwd);
+    // v0.4.x — sumApiCount contract: increment by 1 on a tick
+    // where deltaApiMs > 0 AND input_tokens > 0.
+    const deltaApiCount =
+      r.deltaApi > 0 && t.current.input != null && t.current.input > 0 ? 1 : 0;
+    setAvg(t.sessionId, next, t.cwd, {
+      modelDisplayName: t.modelDisplayName ?? null,
+      deltaApiCount,
+      currentIn: t.current.input ?? undefined,
+      currentOut: t.current.output ?? undefined,
+      currentCacheRead: t.current.cacheRead ?? undefined,
+      currentApiMs: t.cost.totalApiDurationMs ?? undefined,
+      deltaIn: r.deltaIn,
+      deltaOut: r.deltaOut,
+      deltaCache: r.deltaCacheRead,
+      deltaApiMs: r.deltaApi,
+    });
   }
   const avg = peekAvg(t.sessionId, t.cwd);
   if (!avg || avg.sumApi <= 0) {
@@ -1205,7 +1318,21 @@ function computeTickTotals(
       sumApi: (prev?.sumApi ?? 0) + r.deltaApi,
       sumCache: (prev?.sumCache ?? 0) + r.deltaCacheRead,
     };
-    setAvg(t.sessionId, next, t.cwd);
+    // v0.4.x — see sumApiCount contract in computeTickAvg above.
+    const deltaApiCount =
+      r.deltaApi > 0 && t.current.input != null && t.current.input > 0 ? 1 : 0;
+    setAvg(t.sessionId, next, t.cwd, {
+      modelDisplayName: t.modelDisplayName ?? null,
+      deltaApiCount,
+      currentIn: t.current.input ?? undefined,
+      currentOut: t.current.output ?? undefined,
+      currentCacheRead: t.current.cacheRead ?? undefined,
+      currentApiMs: t.cost.totalApiDurationMs ?? undefined,
+      deltaIn: r.deltaIn,
+      deltaOut: r.deltaOut,
+      deltaCache: r.deltaCacheRead,
+      deltaApiMs: r.deltaApi,
+    });
   }
   const avg = peekAvg(t.sessionId, t.cwd);
   if (!avg) return { value: `${prefix}:0` };
@@ -1341,7 +1468,26 @@ const MODULES: Record<string, Module> = {
         sumApi: (prev?.sumApi ?? 0) + r.deltaApi,
         sumCache: (prev?.sumCache ?? 0) + r.deltaCacheRead,
       };
-      setAvg(sid, next, c.tokens?.cwd);
+      // v0.4.x — see sumApiCount contract in computeTickAvg.
+      const tcache = c.tokens;
+      const deltaApiCount =
+        r.deltaApi > 0 &&
+        tcache?.current.input != null &&
+        tcache.current.input > 0
+          ? 1
+          : 0;
+      setAvg(sid, next, c.tokens?.cwd, {
+        modelDisplayName: tcache?.modelDisplayName ?? null,
+        deltaApiCount,
+        currentIn: tcache?.current.input ?? undefined,
+        currentOut: tcache?.current.output ?? undefined,
+        currentCacheRead: tcache?.current.cacheRead ?? undefined,
+        currentApiMs: tcache?.cost.totalApiDurationMs ?? undefined,
+        deltaIn: r.deltaIn,
+        deltaOut: r.deltaOut,
+        deltaCache: r.deltaCacheRead,
+        deltaApiMs: r.deltaApi,
+      });
     }
     const avg = peekAvg(sid, c.tokens?.cwd);
     if (!avg) return null;
@@ -1541,6 +1687,25 @@ const MODULES: Record<string, Module> = {
     c.tokens?.totals.output != null
       ? `out:${formatCompactToken(c.tokens.totals.output)}`
       : null,
+  // Project-wide count of valid API calls since first tick
+  // (sumApiCount in the per-project tickStatus slot, written by
+  // setAvg). Bumped only on ticks where deltaApiMs > 0 AND
+  // input_tokens > 0 — the same AND gate the accumulator uses
+  // (see sumApiCount contract above). Survives session changes
+  // and the user sees the running count for the project, not
+  // just the current session. Renders "calls:N"; null when the
+  // counter has not been initialized yet (no valid tick landed
+  // for this project — e.g. fresh cache after a `:clean
+  // --purge-runtime`). Uses the project-wide slot
+  // (tickStatus, no sessionId suffix) so the value reflects
+  // ALL sessions that have ticked in this cwd.
+  m_apiCalls: (c) => {
+    const cwd = c.tokens?.cwd;
+    if (!cwd) return null;
+    const v = statusStore.readTickStatus(cwd, "tickStatus");
+    if (!v) return null;
+    return `calls:${v.sumApiCount}`;
+  },
   // Context window size (stdin.context_window.context_window_size).
   // Compact format (e.g. 200000 → "200.0k").
   m_contextSize: (c) => {
@@ -2039,6 +2204,7 @@ const PLACEHOLDERS: Record<string, PlaceholderBody> = {
   // pure-number — placeholder shape is "<prefix>n/a"
   m_tokenInTotal: placeholderNA("in:"),
   m_tokenOutTotal: placeholderNA("out:"),
+  m_apiCalls: placeholderNA("calls:"),
   m_totalTokenIn: placeholderNA("in:"),
   m_totalTokenOut: placeholderNA("out:"),
   m_totalTokenWithCacheIn: placeholderNA("cache:"),
@@ -2166,15 +2332,78 @@ const QUOTE_FREQ_PARAM = {
   },
 } as const;
 
+// v0.4.x — named separator aliases. Each `s_<name>` token is a
+// built-in alias for a specific character; it renders the literal
+// value regardless of `cfg().separators` contents. This lets users
+// write self-documenting templates (e.g. `["m_window5h", "s_space",
+// "m_countdown5h"]`) without having to remember the array's
+// default order. Users who want CUSTOM separators still set
+// `separators: [...]` and reference them via `s_<n>`. The two
+// forms are independent: `s_space` always renders " " even if the
+// user explicitly puts "x" at array index 0; `s_0` always
+// resolves to whatever is at array index 0, even if that happens
+// to be " ".
+//
+// Encoding note: ResolvedValue is a `string | number` union, so
+// we can't pass a { kind, ... } object through the inline-schema
+// machinery. Named forms are encoded as a tagged string
+// ("alias:space", "alias:dot", …) and numeric forms stay as a
+// plain number. The s_ renderer and the bare-form fast path
+// both decode this.
+const NAMED_SEPARATORS: ReadonlyMap<string, string> = new Map([
+  ["space",   " "],
+  ["dot",     "·"],
+  ["newline", "\n"],
+  ["tab",     "\t"],
+  ["colon",   ":"],
+]);
+
+const SEP_ALIAS_PREFIX = "alias:";
+
+function resolveSepRef(raw: string): string | number | null {
+  // Named alias wins (checked first) so users who happen to have
+  // `separators: ["space", ...]` and write `s_space` get the
+  // built-in literal, not array[0]. This is the only consistent
+  // rule: the named form ALWAYS renders the built-in character.
+  const alias = NAMED_SEPARATORS.get(raw);
+  if (alias !== undefined) return SEP_ALIAS_PREFIX + raw;
+  // Numeric form: only match all-digit suffixes (rejects "0a",
+  // "1.0", "12 ", etc.). Out-of-range check happens at the
+  // renderer / bare-form site, not here, because the resolver
+  // doesn't know the array length.
+  if (/^[0-9]+$/.test(raw)) {
+    const n = Number(raw);
+    if (Number.isInteger(n) && n >= 0) return n;
+  }
+  return null;
+}
+
+// Decode the value of `params.index` (set by resolveSepRef) into
+// the literal separator body. Returns INLINE_BADARG for an
+// out-of-range numeric index (the dispatcher warns + drops).
+function resolveSepBody(index: string | number): string | typeof INLINE_BADARG {
+  if (typeof index === "string" && index.startsWith(SEP_ALIAS_PREFIX)) {
+    const name = index.slice(SEP_ALIAS_PREFIX.length);
+    return NAMED_SEPARATORS.get(name) ?? INLINE_BADARG;
+  }
+  const seps = cfg().separators;
+  const sep = seps[index as number];
+  if (sep === undefined) return INLINE_BADARG;
+  return sep;
+}
+
 const INLINE_SCHEMAS: Record<string, InlineSchema> = {
   s_: {
+    // v0.4.x — the implicit param of an `s_…` token accepts BOTH
+    // a numeric index (`s_0`, `s_1`, …, looked up in
+    // cfg().separators[i]) and a named alias (`s_space`, `s_dot`,
+    // `s_newline`, `s_tab`, `s_colon`, resolved to a built-in
+    // literal character independent of the array). Unknown
+    // numeric or non-numeric suffixes return null → the caller
+    // warns + drops the token.
     implicit: {
       name: "index",
-      resolver: (raw) => {
-        const n = Number(raw);
-        if (!Number.isInteger(n) || n < 0) return null;
-        return n;
-      },
+      resolver: resolveSepRef,
     },
     named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named },
   },
@@ -2243,6 +2472,7 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
   m_linesRemoved: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_tokenInTotal: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_tokenOutTotal: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
+  m_apiCalls: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_contextSize: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_contextUsed: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_windowContext: { named: { ...COLOR_PARAM.named, ...DISPLAY_PARAM.named, ...NULDROP_PARAM.named } },
@@ -2280,9 +2510,14 @@ function wrapPlain(body: string, color: string | undefined): string {
 // Per-prefix renderer. Returns the chunk text (or null to drop).
 const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   s_: (params, _ctx) => {
-    const sep = cfg().separators[params.index as number];
-    if (sep === undefined) return INLINE_BADARG; // out-of-range index
-    return wrapPlain(sep, params.color as string | undefined);
+    // params.index is the output of resolveSepRef: a plain
+    // number for the index form, or a "alias:<name>" string
+    // for the named form. resolveSepBody decodes both and
+    // returns either the literal body or INLINE_BADARG
+    // (out-of-range). Inline-args path through here.
+    const body = resolveSepBody(params.index);
+    if (body === INLINE_BADARG) return INLINE_BADARG;
+    return wrapPlain(body, params.color as string | undefined);
   },
   m_label: (params, _ctx) => {
     const s = params.string as string;
@@ -2396,7 +2631,26 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
         sumApi: (prev?.sumApi ?? 0) + r.deltaApi,
         sumCache: (prev?.sumCache ?? 0) + r.deltaCacheRead,
       };
-      setAvg(sid, next, ctx.tokens?.cwd);
+      // v0.4.x — see sumApiCount contract in computeTickAvg.
+      const tcache = ctx.tokens;
+      const deltaApiCount =
+        r.deltaApi > 0 &&
+        tcache?.current.input != null &&
+        tcache.current.input > 0
+          ? 1
+          : 0;
+      setAvg(sid, next, ctx.tokens?.cwd, {
+        modelDisplayName: tcache?.modelDisplayName ?? null,
+        deltaApiCount,
+        currentIn: tcache?.current.input ?? undefined,
+        currentOut: tcache?.current.output ?? undefined,
+        currentCacheRead: tcache?.current.cacheRead ?? undefined,
+        currentApiMs: tcache?.cost.totalApiDurationMs ?? undefined,
+        deltaIn: r.deltaIn,
+        deltaOut: r.deltaOut,
+        deltaCache: r.deltaCacheRead,
+        deltaApiMs: r.deltaApi,
+      });
     }
     const avg = peekAvg(sid, ctx.tokens?.cwd);
     if (!avg) return placeholderWithColor("m_cacheHitRate", params, ctx);
@@ -2581,6 +2835,17 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
       `out:${formatCompactToken(t.totals.output)}`,
       params.color as string | undefined,
     );
+  },
+  // v0.4.x — project-wide count of valid API calls (sumApiCount
+  // in tickStatus). Reads the same project-wide slot the
+  // accumulator writes to. Null when the slot has never been
+  // initialized — placeholder fires for the inline form.
+  m_apiCalls: (params, ctx) => {
+    const cwd = ctx.tokens?.cwd;
+    if (!cwd) return placeholderWithColor("m_apiCalls", params, ctx);
+    const v = statusStore.readTickStatus(cwd, "tickStatus");
+    if (!v) return placeholderWithColor("m_apiCalls", params, ctx);
+    return wrapPlain(`calls:${v.sumApiCount}`, params.color as string | undefined);
   },
   m_contextSize: (params, ctx) => {
     const sz = ctx.tokens?.contextWindow?.size;
@@ -2786,6 +3051,10 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
         inline = expandInlineToken(tok, "m_tokenInTotal", 15, ctx);
       } else if (tok.startsWith("m_tokenOutTotal:")) {
         inline = expandInlineToken(tok, "m_tokenOutTotal", 16, ctx);
+      } else if (tok.startsWith("m_apiCalls:")) {
+        // m_apiCalls:color:<c> / :nulldrop:… → skip "m_apiCalls:"
+        // (length 11).
+        inline = expandInlineToken(tok, "m_apiCalls", 11, ctx);
       } else if (tok.startsWith("m_tokenTotal:")) {
         inline = expandInlineToken(tok, "m_tokenTotal", 13, ctx);
       } else if (tok.startsWith("m_tokenSession:")) {
@@ -2887,19 +3156,26 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
       }
       piece = inline?.kind === "ok" ? inline.value : null;
     } else if (tok.startsWith("s_")) {
-      // Bare s_<n>: legacy fast path. Inline-args (with optional
-      // color:) handles the `s_<n>` token via the new path above; the
-      // branch below only fires for the no-colon shorthand.
-      const n = Number(tok.slice(2));
-      if (!Number.isInteger(n) || n < 0) {
-        warnUnknownModuleOnce(tok);
-        continue;
+      // Bare s_<…>: legacy fast path. Two forms accepted:
+      //   s_<digit>+ → array index (out-of-range = warn + drop)
+      //   s_<name>   → built-in alias (s_space, s_dot, s_newline,
+      //                 s_tab, s_colon), renders the literal value
+      //                 independent of cfg().separators.
+      // Inline-args (with optional color:) handles the
+      // `s_<…>:color:<c>` form via the new path above; this branch
+      // only fires for the no-colon shorthand.
+      const suffix = tok.slice(2);
+      const alias = NAMED_SEPARATORS.get(suffix);
+      if (alias !== undefined) {
+        piece = alias;
+      } else {
+        const n = Number(suffix);
+        if (!Number.isInteger(n) || n < 0 || n >= seps.length) {
+          warnUnknownModuleOnce(tok);
+          continue;
+        }
+        piece = seps[n];
       }
-      if (n >= seps.length) {
-        warnUnknownModuleOnce(tok);
-        continue;
-      }
-      piece = seps[n];
     } else if (tok.startsWith("m_")) {
       const mod = MODULES[tok];
       if (!mod) {
