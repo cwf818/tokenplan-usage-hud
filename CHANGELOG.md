@@ -178,6 +178,49 @@
   / `m_token7d`) accept `:nulldrop:` for schema uniformity but
   the parameter has no effect on their output.
 
+### Changed (BREAKING)
+
+- **`lineTemplate` config field is REMOVED in v0.4.0** — replaced
+  by two new top-level fields:
+  - **`lineTemplates`** — a registry of reusable template fragments.
+    Values are token arrays. Allowed tokens: any `m_*` module
+    **EXCEPT `m_template`**, plus `s_*` separators. Keys are
+    user-chosen. Default-merged with the legacy `{ plan, balance }`
+    shape so existing internal lookups keep working.
+  - **`statuslineTemplate`** — the actual template the renderer
+    walks. Accepts **a fixed preset name** (e.g. `"1line"`,
+    `"simple"`, `"standard"`, `"abundant"`, `"complete"`,
+    `"simple-alone"`, `"simple-alone"` for balance) **OR a raw
+    token array**. Array form may include `m_template:` tokens
+    and any other `m_*` / `s_*`. String form does NOT accept
+    arbitrary `lineTemplates` keys — only the fixed preset names.
+  - **Migration is a HARD BREAK** — the loader emits one
+    `tokenplan-usage-hud: config lineTemplate is removed in v0.4.0`
+    warning per config load and ignores the legacy field
+    entirely. There is no auto-promotion of `lineTemplate.plan`
+    → `lineTemplates.plan`. v0.3.x users who customized the
+    `lineTemplate` block must rename it to `statuslineTemplate`
+    (string preset or raw array) and move reusable fragments to
+    `lineTemplates`. v0.4.0's default config produces the same
+    rendering as v0.3.6's default — only customized configs
+    require manual migration.
+
+### Added (v0.4.0+)
+
+- New `m_template:<key>[:mode:<plan|balance>][:nulldrop:<bool>]`
+  inline-args module — expands the registered
+  `lineTemplates[key]` fragment into the current render. Mode
+  filter (`mode:<plan|balance>`, default `plan`) hides the
+  chunk on the wrong provider type, so a single
+  `lineTemplates` key can render differently for plan vs
+  balance providers (e.g. share the `Usage:` / `Balance:`
+  label, customize the body). Nesting is impossible: the
+  loader strips `m_template:` tokens from any `lineTemplates`
+  entry at load time. Missing key → warns + drops. Mode
+  mismatch → silent drop (no warn). `:color:` is silently
+  ignored on `m_template`; put `:color:` on the inner
+  modules if needed.
+
 ## v0.3.6
 
 - `m_quote` module: numeric time format for `:freq` inline-args.

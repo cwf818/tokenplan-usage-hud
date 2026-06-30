@@ -38,6 +38,13 @@ const DEFAULT_SEPARATORS: string[] = [" ", "·"];
 //   plan:    "Usage: <5h> <countdown5h> · <7d> <countdown7d>"
 //   balance: "Balance: <balance>"
 // with separators=[" ", "·"] expanding s_0→" " and s_1→"·".
+//
+// v0.4.0+ — kept around as the SOURCE OF TRUTH for the `plan` / `balance`
+// entries inside `DEFAULT_LINE_TEMPLATES`. The legacy top-level
+// `lineTemplate: { plan, balance }` config field is REMOVED in v0.4.0+
+// (loader warns + ignores); the `m_template` module reads from
+// `lineTemplates[key]` instead. Tests still reference this constant via
+// __testing, so don't remove.
 const DEFAULT_LINE_TEMPLATE: {
   plan: string[];
   balance: string[];
@@ -50,6 +57,45 @@ const DEFAULT_LINE_TEMPLATE: {
   ],
   balance: ["m_modeLabel", "s_0", "m_balance"],
 };
+
+// v0.4.0+ — registry of reusable template fragments. Each value is a
+// token array (the same shape as the v0.3.x `lineTemplate.{plan,balance}`
+// entries). Allowed tokens: `m_*` modules EXCEPT `m_template`, plus
+// `s_*` separators. The loader strips `m_template:` tokens at load
+// time so nesting is impossible.
+//
+// Keys are user-chosen (e.g. `foo`, `myWorkload`). The renderer reads
+// from this registry when it encounters an `m_template:<key>` token
+// inside `statuslineTemplate`. `statuslineTemplate` (string form) does
+// NOT accept arbitrary `lineTemplates` keys — it accepts only the
+// fixed PLAN_PRESETS / BALANCE_PRESETS names. This split is intentional:
+// `statuslineTemplate` is "the rendered template", which the plugin
+// ships a curated set of presets for; `lineTemplates` is "the user's
+// personal reusable-fragment registry".
+//
+// Default entries point at the same arrays DEFAULT_LINE_TEMPLATE uses,
+// so the legacy "plan" / "balance" key names continue to resolve for
+// backward-compatible lookups. Plugin presets are NOT auto-registered
+// here (the preset table lookups happen directly against PLAN_PRESETS
+// / BALANCE_PRESETS at statuslineTemplate-resolution time).
+type LineTemplates = Record<string, string[]>;
+
+export const DEFAULT_LINE_TEMPLATES: LineTemplates = {
+  plan: DEFAULT_LINE_TEMPLATE.plan,
+  balance: DEFAULT_LINE_TEMPLATE.balance,
+};
+
+// v0.4.0+ — the template actually rendered by the plugin. String form
+// is resolved against the FIXED PLAN_PRESETS / BALANCE_PRESETS tables
+// (NOT against lineTemplates). Array form is a raw token list, which
+// may include the new `m_template` module that pulls chunks from
+// lineTemplates.
+type StatuslineTemplate = string | string[];
+
+// Default = the existing minimal plan preset. New users who do nothing
+// get the same byte-for-byte v0.2.16 default render that v0.3.x users
+// saw.
+export const DEFAULT_STATUSLINE_TEMPLATE: StatuslineTemplate = "1line";
 
 // v0.4.0+ — named presets for `lineTemplate.plan` / `lineTemplate.balance`.
 // Users can write `lineTemplate.plan: "standard"` instead of the full
@@ -71,7 +117,7 @@ const DEFAULT_LINE_TEMPLATE: {
 //   - "abundant": 3 lines; adds git info on line 0
 //   - "complete": 4 lines; everything including line counts (not
 //     recommended — verbose)
-const PLAN_PRESETS: Record<string, string[]> = {
+export const PLAN_PRESETS: Record<string, string[]> = {
   // tokenplan only, single line, no label (assumes upstream chain)
   "1line": [
     "m_modeLabel", "s_0",
@@ -202,7 +248,7 @@ const PLAN_PRESETS: Record<string, string[]> = {
 // v0.4.0+ — named presets for `lineTemplate.balance` (DeepSeek path).
 // Same string-or-array shape as plan. The balance path is much
 // simpler (one number, no windows), so only two presets.
-const BALANCE_PRESETS: Record<string, string[]> = {
+export const BALANCE_PRESETS: Record<string, string[]> = {
   // Default — same as today's hardcoded `["m_modeLabel", "s_0", "m_balance"]`
   simple: ["m_modeLabel", "s_0", "m_balance"],
   // For users running this plugin as the sole statusline: prepend
@@ -441,7 +487,16 @@ const DEFAULT_CONFIG: {
   countdown: Countdown;
   timeFormat: TimeFormat;
   separators: string[];
-  lineTemplate: typeof DEFAULT_LINE_TEMPLATE;
+  // v0.4.0+ — registry of reusable template fragments consumed by
+  // the m_template module's first argument.
+  lineTemplates: typeof DEFAULT_LINE_TEMPLATES;
+  // v0.4.0+ — the template actually rendered. String form = a fixed
+  // preset name from PLAN_PRESETS / BALANCE_PRESETS; array form = a
+  // raw token list (may include m_template). Widened to a union here
+  // because typeof on the default literal narrows too aggressively
+  // (the default is just "1line", so typeof becomes "1line" — too
+  // narrow to accept the array-form assignment in applyOverrides).
+  statuslineTemplate: string | string[];
   tokenFormat: typeof DEFAULT_TOKEN_FORMAT;
   // Plugin version, populated at startup by index.ts from
   // .claude-plugin/plugin.json. The m_version display module reads
@@ -467,7 +522,8 @@ const DEFAULT_CONFIG: {
   countdown: DEFAULT_COUNTDOWN,
   timeFormat: DEFAULT_TIME_FORMAT,
   separators: DEFAULT_SEPARATORS,
-  lineTemplate: DEFAULT_LINE_TEMPLATE,
+  lineTemplates: DEFAULT_LINE_TEMPLATES,
+  statuslineTemplate: DEFAULT_STATUSLINE_TEMPLATE,
   tokenFormat: DEFAULT_TOKEN_FORMAT,
   version: "",
   providers: DEFAULT_PROVIDERS,
@@ -582,7 +638,11 @@ export function applyProviderOverrides(raw: Record<string, unknown>): void {
   _current = applyOverrides(base, raw);
 }
 
-function warn(msg: string): void {
+// v0.4.0+ — exported so renderer modules (src/render.ts) can warn
+// about runtime issues like `m_template:missingkey` without
+// duplicating the stderr + diagnostics JSONL wiring. Config-side
+// callers (this file) keep using the bare name.
+export function warn(msg: string): void {
   process.stderr.write(`tokenplan-usage-hud: config ${msg}\n`);
   // v0.4.0+ — also append to the diagnostics JSONL log so the
   // m_warning module can surface the latest signal and the user can
@@ -1070,59 +1130,99 @@ function applyOverrides(base: Config, raw: Record<string, unknown>): Config {
     }
   }
 
-  // lineTemplate — { plan: string[] | preset-name, balance: … }.
-  // v0.4.0+ — accepts a string value as a named preset reference
-  // (resolved against PLAN_PRESETS / BALANCE_PRESETS at load time).
-  // Token values are NOT validated against the module-name enum
-  // here; that happens at render time so a typo produces a
-  // "unknown module 'm_foo'" warning in the rendered line (not a
-  // silent reject at config load).
+  // v0.4.0+ — legacy `lineTemplate` is REMOVED. The loader still
+  // detects the key (so a v0.3.x user gets a clear, actionable
+  // warning) but does not migrate or honor the field. Users must
+  // move to `statuslineTemplate` (top-level rendered template) +
+  // `lineTemplates` (reusable template fragments consumed by
+  // `m_template`). The fields are intentionally NOT auto-promoted
+  // because the mapping (which preset name to pick) is
+  // best-effort and would surprise users with non-default
+  // templates — better to make them explicitly migrate.
   if ("lineTemplate" in raw) {
-    const lt = raw.lineTemplate;
-    if (lt && typeof lt === "object" && !Array.isArray(lt)) {
+    warn(
+      "lineTemplate is removed in v0.4.0; use lineTemplates + " +
+      "statuslineTemplate instead. See CHANGELOG.md for the upgrade " +
+      "path. Ignoring the legacy field.",
+    );
+  }
+
+  // v0.4.0+ — `lineTemplates` is a Record<string, string[]> of
+  // reusable template fragments. The m_template module's first
+  // argument is a key into this record. Nesting protection: any
+  // entry containing `m_template` (bare or with colon args) is
+  // stripped with a warning — recursion would be invisible to the
+  // loader and infinite at render time.
+  if ("lineTemplates" in raw) {
+    const lt = raw.lineTemplates;
+    if (!lt || typeof lt !== "object" || Array.isArray(lt)) {
+      warn("lineTemplates must be an object of string arrays; using defaults");
+    } else {
       const ltm = lt as Record<string, unknown>;
-      const validate = (
-        key: "plan" | "balance",
-        presets: Record<string, string[]>,
-      ): string[] | null => {
-        if (!(key in ltm)) return null;
-        const v = ltm[key];
-        // String form: named preset lookup. Resolves to the preset's
-        // token array so the renderer still iterates a string[].
-        if (typeof v === "string") {
-          const preset = presets[v];
-          if (preset) return preset.slice();
-          // Unknown preset name — fall back to the hardcoded
-          // default and warn once so the user notices the typo.
-          const defaults = key === "plan"
-            ? DEFAULT_LINE_TEMPLATE.plan
-            : DEFAULT_LINE_TEMPLATE.balance;
-          warn(
-            `lineTemplate.${key} preset "${v}" is unknown; ` +
-            `use one of [${Object.keys(presets).join(", ")}]; using default`,
-          );
-          return defaults.slice();
-        }
-        if (!Array.isArray(v)) {
-          warn(`lineTemplate.${key} must be an array of strings or a preset name; using default`);
-          return null;
+      const merged: LineTemplates = { ...out.lineTemplates };
+      for (const [name, value] of Object.entries(ltm)) {
+        if (!Array.isArray(value)) {
+          warn(`lineTemplates.${name} must be an array of strings; skipping`);
+          continue;
         }
         const cleaned: string[] = [];
-        for (const item of v) {
-          if (typeof item === "string") cleaned.push(item);
+        for (const item of value) {
+          if (typeof item !== "string") continue;
+          if (item === "m_template" || item.startsWith("m_template:")) {
+            warn(
+              `lineTemplates.${name}: m_template is only allowed inside ` +
+              `statuslineTemplate; dropping "${item}"`,
+            );
+            continue;
+          }
+          cleaned.push(item);
         }
         if (cleaned.length === 0) {
-          warn(`lineTemplate.${key} must contain at least one string; using default`);
-          return null;
+          warn(`lineTemplates.${name} is empty after cleaning; skipping`);
+          continue;
         }
-        return cleaned;
-      };
-      const plan = validate("plan", PLAN_PRESETS);
-      if (plan) out.lineTemplate.plan = plan;
-      const balance = validate("balance", BALANCE_PRESETS);
-      if (balance) out.lineTemplate.balance = balance;
+        merged[name] = cleaned;
+      }
+      out.lineTemplates = merged;
+    }
+  }
+
+  // v0.4.0+ — `statuslineTemplate` is the template the renderer
+  // actually walks. String form resolves to a fixed PLAN_PRESETS /
+  // BALANCE_PRESETS name (NOT to lineTemplates keys — those are
+  // reserved for the m_template module's first argument). Array
+  // form is a raw token list and may include m_template. Anything
+  // else warns and falls back to the default ("1line").
+  if ("statuslineTemplate" in raw) {
+    const st = raw.statuslineTemplate;
+    if (typeof st === "string") {
+      const isPlanPreset = Object.prototype.hasOwnProperty.call(
+        PLAN_PRESETS,
+        st,
+      );
+      const isBalancePreset = Object.prototype.hasOwnProperty.call(
+        BALANCE_PRESETS,
+        st,
+      );
+      if (isPlanPreset || isBalancePreset) {
+        out.statuslineTemplate = st;
+      } else {
+        warn(
+          `statuslineTemplate "${st}" is not a known preset ` +
+          `(plan: ${Object.keys(PLAN_PRESETS).join(", ")}; ` +
+          `balance: ${Object.keys(BALANCE_PRESETS).join(", ")}); using default`,
+        );
+      }
+    } else if (Array.isArray(st)) {
+      const cleaned: string[] = [];
+      for (const item of st) {
+        if (typeof item === "string") cleaned.push(item);
+      }
+      out.statuslineTemplate = cleaned.length > 0 ? cleaned : "1line";
     } else {
-      warn("lineTemplate must be an object; using default");
+      warn(
+        "statuslineTemplate must be a preset string or string[]; using default",
+      );
     }
   }
 
