@@ -10,6 +10,16 @@
 // a within-TTL hit on tick N+1 actually short-circuits the network
 // fetch on tick N+1.
 //
+// Per-Project Isolation (v0.4.x+): the cache module itself is
+// cwd-unaware — all public APIs (get/set/peek/clear/...) take
+// `(key, ttlMs)` and write to a single on-disk file. Isolation
+// between concurrent Claude Code instances running on different
+// projects is achieved by `src/render.ts`, which prefixes every
+// key with `projectHash(cwd):` before calling into this module.
+// That keeps the cache module's API stable and its test hooks
+// (setCachePathResolver / __resetForTest) unchanged. See
+// `src/render.ts` `projectCacheKey` for the prefix helper.
+//
 // Stale-on-error: callers should fall back to `peek(key)` if a fetch
 // throws. peek ignores TTL — it returns whatever the disk has.
 
@@ -20,6 +30,11 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+
+// Note: homedir() is still imported above for the rare case where
+// both HOME and USERPROFILE are unset (some sandboxed environments
+// strip both). defaultCachePath() prefers the explicit env vars first
+// and only falls back to homedir() as a last resort.
 
 type Entry<T> = { at: number; value: T };
 
@@ -39,9 +54,16 @@ export const store = new Map<string, Entry<unknown>>;
 // the cache file with no extra code.
 
 function defaultCachePath(): string {
+  // v0.4.x+: prefer CLAUDE_CONFIG_DIR (matches the rest of the plugin,
+  // including diagnostics.ts and token-store.ts). Fall back to
+  // $HOME/.claude on platforms / setups where CLAUDE_CONFIG_DIR is
+  // not set. Note: this is the top-level `state/cache.json`; per-project
+  // isolation is handled in `src/render.ts` via key prefixing, not by
+  // writing a different file per project — see module header.
+  const home = process.env.HOME ?? process.env.USERPROFILE ?? homedir();
+  const claudeRoot = process.env.CLAUDE_CONFIG_DIR ?? join(home, ".claude");
   return join(
-    homedir(),
-    ".claude",
+    claudeRoot,
     "plugins",
     "tokenplan-usage-hud",
     "state",

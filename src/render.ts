@@ -27,6 +27,7 @@ import {
   type QuoteFreq,
 } from "./quotes.ts";
 import { readSamples } from "./token-store.ts";
+import { projectHash } from "./token-store.ts";
 import { readGitInfo } from "./git-info.ts";
 import * as cacheStore from "./cache.ts";
 
@@ -654,6 +655,28 @@ export type PrevTickSnapshot = {
   cacheRead: number;
 };
 
+// v0.4.x+ — per-project cache key prefix.
+//
+// The cache module (`src/cache.ts`) is intentionally cwd-unaware: a
+// single Map, a single on-disk file, public API takes `(key, ttlMs)`.
+// To keep concurrent Claude Code instances running on different
+// projects from sharing a single write stream (the race that produced
+// the v0.4.x per-project redesign), every key this module feeds into
+// the cache is prefixed with `projectHash(cwd):`. Within a project,
+// keys continue to vary by sessionId / direction as before — this
+// prefix is the only thing that changes.
+//
+// Fallback to a literal "_" when cwd is empty/null so we never write
+// an unprefixed key (which would silently put two different projects'
+// cache entries in the same slot).
+function projectCacheKey(
+  cwd: string | null | undefined,
+  key: string,
+): string {
+  const hash = cwd ? projectHash(cwd) : "_";
+  return `${hash}:${key}`;
+}
+
 // Public: looks up the previous tick for a given session. Returns
 // null on miss (no prior tick, or session changed, or cache
 // expired). The caller is responsible for the post-call
@@ -661,13 +684,17 @@ export type PrevTickSnapshot = {
 // this function does NOT auto-write.
 export function peekPrevTick(
   sessionId: string,
+  cwd?: string | null,
 ): PrevTickSnapshot | null {
   if (!sessionId) return null;
   // 1h TTL is well past any plausible inter-tick gap but well
   // before the user is likely to be back the next day. The
   // sessionId prefix already handles the "back tomorrow" case
   // (new sessionId → new key → miss → fresh baseline).
-  return cacheStore.peek<PrevTickSnapshot>(`tickSpeed:${sessionId}`);
+  // v0.4.x+: the `projectCacheKey` prefix further isolates entries
+  // by cwd so concurrent instances on different projects don't
+  // collide on the shared cache.json.
+  return cacheStore.peek<PrevTickSnapshot>(projectCacheKey(cwd, `tickSpeed:${sessionId}`));
 }
 
 // Public: writes the current tick's snapshot for the next call to
@@ -677,9 +704,11 @@ export function peekPrevTick(
 export function setPrevTick(
   sessionId: string,
   snap: PrevTickSnapshot,
+  cwd?: string | null,
 ): void {
   if (!sessionId) return;
-  cacheStore.set(`tickSpeed:${sessionId}`, snap);
+  const k = projectCacheKey(cwd, `tickSpeed:${sessionId}`);
+  cacheStore.set(k, snap);
 }
 
 // ----- v0.4.0+ — last-rendered speed cache -----
@@ -710,10 +739,11 @@ export type LastSpeedSnapshot = {
 export function peekLastSpeed(
   sessionId: string,
   direction: "in" | "out",
+  cwd?: string | null,
 ): number | null {
   if (!sessionId) return null;
   const snap = cacheStore.peek<LastSpeedSnapshot>(
-    `tickSpeedDisplay:${direction}:${sessionId}`,
+    projectCacheKey(cwd, `tickSpeedDisplay:${direction}:${sessionId}`),
   );
   return snap?.tps ?? null;
 }
@@ -721,27 +751,34 @@ export function setLastSpeed(
   sessionId: string,
   direction: "in" | "out",
   tps: number,
+  cwd?: string | null,
 ): void {
   if (!sessionId) return;
-  cacheStore.set(`tickSpeedDisplay:${direction}:${sessionId}`, {
-    direction,
-    tps,
-  });
+  cacheStore.set(
+    projectCacheKey(cwd, `tickSpeedDisplay:${direction}:${sessionId}`),
+    { direction, tps },
+  );
 }
 // Test-only: clear the last-speed entry for a session.
 export function __resetLastSpeedForTest(
   sessionId: string,
   direction: "in" | "out",
+  cwd?: string | null,
 ): void {
   if (!sessionId) return;
-  cacheStore.clear(`tickSpeedDisplay:${direction}:${sessionId}`);
+  cacheStore.clear(
+    projectCacheKey(cwd, `tickSpeedDisplay:${direction}:${sessionId}`),
+  );
 }
 
 // Test-only: clear the in-memory + disk cache entry for a
 // session. Production code never calls this.
-export function __resetPrevTickForTest(sessionId: string): void {
+export function __resetPrevTickForTest(
+  sessionId: string,
+  cwd?: string | null,
+): void {
   if (!sessionId) return;
-  cacheStore.clear(`tickSpeed:${sessionId}`);
+  cacheStore.clear(projectCacheKey(cwd, `tickSpeed:${sessionId}`));
 }
 
 // v0.4.0+ — per-session accumulator for the m_tokenInAvg /
@@ -765,19 +802,29 @@ export type AvgSnapshot = {
   sumCache: number;
 };
 
-export function peekAvg(sessionId: string): AvgSnapshot | null {
+export function peekAvg(
+  sessionId: string,
+  cwd?: string | null,
+): AvgSnapshot | null {
   if (!sessionId) return null;
-  return cacheStore.peek<AvgSnapshot>(`tickAvg:${sessionId}`);
+  return cacheStore.peek<AvgSnapshot>(projectCacheKey(cwd, `tickAvg:${sessionId}`));
 }
 
-export function setAvg(sessionId: string, snap: AvgSnapshot): void {
+export function setAvg(
+  sessionId: string,
+  snap: AvgSnapshot,
+  cwd?: string | null,
+): void {
   if (!sessionId) return;
-  cacheStore.set(`tickAvg:${sessionId}`, snap);
+  cacheStore.set(projectCacheKey(cwd, `tickAvg:${sessionId}`), snap);
 }
 
-export function __resetAvgForTest(sessionId: string): void {
+export function __resetAvgForTest(
+  sessionId: string,
+  cwd?: string | null,
+): void {
   if (!sessionId) return;
-  cacheStore.clear(`tickAvg:${sessionId}`);
+  cacheStore.clear(projectCacheKey(cwd, `tickAvg:${sessionId}`));
 }
 
 // Per-render memo: keyed by the RenderContext object itself, so
@@ -876,7 +923,7 @@ function computeAndCacheTickDelta(ctx: RenderContext): TickDeltaResult {
     _tickDeltaMemo.set(ctx, result);
     return result;
   }
-  const prev = peekPrevTick(t.sessionId);
+  const prev = peekPrevTick(t.sessionId, t.cwd);
   // Always write the current snapshot so the next tick has a
   // baseline for the `deltaApi` math, even when we render "--" /
   // skip the cache accumulator update. The `in` / `out` /
@@ -989,7 +1036,7 @@ function computeTickSpeed(
     // we have one, otherwise render the -- t/s sentinel.
     const sid = ctx.tokens?.sessionId;
     if (sid) {
-      const cached = peekLastSpeed(sid, direction);
+      const cached = peekLastSpeed(sid, direction, ctx.tokens?.cwd);
       if (cached != null) {
         return {
           value: `${STALE_COLOR}${direction}:${formatSpeed(cached)}${RESET}`,
@@ -1011,7 +1058,7 @@ function computeTickSpeed(
   // Write the active measurement to the cache so subsequent
   // idle ticks can display it.
   const sid = ctx.tokens?.sessionId;
-  if (sid) setLastSpeed(sid, direction, tps);
+  if (sid) setLastSpeed(sid, direction, tps, ctx.tokens?.cwd);
   return {
     value: `${color}${direction}:${formatSpeed(tps)}${RESET}`,
     writeBack: r.writeBack,
@@ -1073,7 +1120,7 @@ function computeTickAvg(
   const r = computeAndCacheTickDelta(ctx);
   if (r.hasDelta && !_tickAvgWriteMemo.get(ctx)) {
     _tickAvgWriteMemo.set(ctx, true);
-    const prev = peekAvg(t.sessionId);
+    const prev = peekAvg(t.sessionId, t.cwd);
     const next: AvgSnapshot = {
       sumIn: (prev?.sumIn ?? 0) + r.deltaIn,
       sumOut: (prev?.sumOut ?? 0) + r.deltaOut,
@@ -1084,9 +1131,9 @@ function computeTickAvg(
       // a template still maintains the cache.
       sumCache: (prev?.sumCache ?? 0) + r.deltaCacheRead,
     };
-    setAvg(t.sessionId, next);
+    setAvg(t.sessionId, next, t.cwd);
   }
-  const avg = peekAvg(t.sessionId);
+  const avg = peekAvg(t.sessionId, t.cwd);
   if (!avg || avg.sumApi <= 0) {
     return { value: `${color}${direction}:--${RESET}`, writeBack: r.writeBack };
   }
@@ -1147,20 +1194,20 @@ function computeTickTotals(
   // accumulates once.
   const r = computeAndCacheTickDelta(ctx);
   if (r.writeBack && t.sessionId) {
-    setPrevTick(t.sessionId, r.writeBack);
+    setPrevTick(t.sessionId, r.writeBack, t.cwd);
   }
   if (r.hasDelta && !_tickAvgWriteMemo.get(ctx)) {
     _tickAvgWriteMemo.set(ctx, true);
-    const prev = peekAvg(t.sessionId);
+    const prev = peekAvg(t.sessionId, t.cwd);
     const next: AvgSnapshot = {
       sumIn: (prev?.sumIn ?? 0) + r.deltaIn,
       sumOut: (prev?.sumOut ?? 0) + r.deltaOut,
       sumApi: (prev?.sumApi ?? 0) + r.deltaApi,
       sumCache: (prev?.sumCache ?? 0) + r.deltaCacheRead,
     };
-    setAvg(t.sessionId, next);
+    setAvg(t.sessionId, next, t.cwd);
   }
-  const avg = peekAvg(t.sessionId);
+  const avg = peekAvg(t.sessionId, t.cwd);
   if (!avg) return { value: `${prefix}:0` };
   const n = kind === "in" ? avg.sumIn : kind === "out" ? avg.sumOut : avg.sumCache;
   return { value: `${prefix}:${formatCompactToken(n)}` };
@@ -1221,7 +1268,7 @@ const MODULES: Record<string, Module> = {
   // / m_tokenSession.
   m_tokenIn: (c) => {
     const r = computeTickDelta(c, "in");
-    if (r.writeBack && c.tokens?.sessionId) setPrevTick(c.tokens.sessionId, r.writeBack);
+    if (r.writeBack && c.tokens?.sessionId) setPrevTick(c.tokens.sessionId, r.writeBack, c.tokens.cwd);
     return r.value;
   },
   // Per-API-call output tokens (see m_tokenIn for the gate
@@ -1229,7 +1276,7 @@ const MODULES: Record<string, Module> = {
   // turns all produce different "out:--" / "out:N" signals).
   m_tokenOut: (c) => {
     const r = computeTickDelta(c, "out");
-    if (r.writeBack && c.tokens?.sessionId) setPrevTick(c.tokens.sessionId, r.writeBack);
+    if (r.writeBack && c.tokens?.sessionId) setPrevTick(c.tokens.sessionId, r.writeBack, c.tokens.cwd);
     return r.value;
   },
   // Session cumulative in + out + cache (cache = ctx_creation + ctx_read
@@ -1284,19 +1331,19 @@ const MODULES: Record<string, Module> = {
     // setAvg is idempotent via _tickAvgWriteMemo so coexisting
     // totals/avg modules in the same render don't double-count.
     const r = computeAndCacheTickDelta(c);
-    if (r.writeBack && sid) setPrevTick(sid, r.writeBack);
+    if (r.writeBack && sid) setPrevTick(sid, r.writeBack, c.tokens?.cwd);
     if (r.hasDelta && !_tickAvgWriteMemo.get(c)) {
       _tickAvgWriteMemo.set(c, true);
-      const prev = peekAvg(sid);
+      const prev = peekAvg(sid, c.tokens?.cwd);
       const next: AvgSnapshot = {
         sumIn: (prev?.sumIn ?? 0) + r.deltaIn,
         sumOut: (prev?.sumOut ?? 0) + r.deltaOut,
         sumApi: (prev?.sumApi ?? 0) + r.deltaApi,
         sumCache: (prev?.sumCache ?? 0) + r.deltaCacheRead,
       };
-      setAvg(sid, next);
+      setAvg(sid, next, c.tokens?.cwd);
     }
-    const avg = peekAvg(sid);
+    const avg = peekAvg(sid, c.tokens?.cwd);
     if (!avg) return null;
     const denom = avg.sumCache + avg.sumIn;
     if (denom === 0) return null;
@@ -1351,7 +1398,7 @@ const MODULES: Record<string, Module> = {
       ? speedScaleColor("in", probe.tps ?? 0)
       : STALE_COLOR; // unused — computeTickSpeed forces STALE
     const r = computeTickSpeed(c, "in", color);
-    if (r.writeBack && c.tokens?.sessionId) setPrevTick(c.tokens.sessionId, r.writeBack);
+    if (r.writeBack && c.tokens?.sessionId) setPrevTick(c.tokens.sessionId, r.writeBack, c.tokens.cwd);
     return r.value;
   },
   // v0.4.0+ — per-API-call output speed (see m_tokenInSpeed for
@@ -1362,7 +1409,7 @@ const MODULES: Record<string, Module> = {
       ? speedScaleColor("out", probe.tps ?? 0)
       : STALE_COLOR;
     const r = computeTickSpeed(c, "out", color);
-    if (r.writeBack && c.tokens?.sessionId) setPrevTick(c.tokens.sessionId, r.writeBack);
+    if (r.writeBack && c.tokens?.sessionId) setPrevTick(c.tokens.sessionId, r.writeBack, c.tokens.cwd);
     return r.value;
   },
   // v0.4.0+ — per-session running-average input speed
@@ -1372,13 +1419,13 @@ const MODULES: Record<string, Module> = {
   // accumulator semantics.
   m_tokenInAvg: (c) => {
     const r = computeTickAvg(c, "in", STALE_COLOR);
-    if (r.writeBack && c.tokens?.sessionId) setPrevTick(c.tokens.sessionId, r.writeBack);
+    if (r.writeBack && c.tokens?.sessionId) setPrevTick(c.tokens.sessionId, r.writeBack, c.tokens.cwd);
     return r.value;
   },
   // v0.4.0+ — per-session running-average output speed.
   m_tokenOutAvg: (c) => {
     const r = computeTickAvg(c, "out", STALE_COLOR);
-    if (r.writeBack && c.tokens?.sessionId) setPrevTick(c.tokens.sessionId, r.writeBack);
+    if (r.writeBack && c.tokens?.sessionId) setPrevTick(c.tokens.sessionId, r.writeBack, c.tokens.cwd);
     return r.value;
   },
   // v0.4.0+ — per-session running total of input tokens across
@@ -2302,12 +2349,12 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   },
   m_tokenIn: (params, ctx) => {
     const r = computeTickDelta(ctx, "in");
-    if (r.writeBack && ctx.tokens?.sessionId) setPrevTick(ctx.tokens.sessionId, r.writeBack);
+    if (r.writeBack && ctx.tokens?.sessionId) setPrevTick(ctx.tokens.sessionId, r.writeBack, ctx.tokens.cwd);
     return wrapPlain(r.value, params.color as string | undefined);
   },
   m_tokenOut: (params, ctx) => {
     const r = computeTickDelta(ctx, "out");
-    if (r.writeBack && ctx.tokens?.sessionId) setPrevTick(ctx.tokens.sessionId, r.writeBack);
+    if (r.writeBack && ctx.tokens?.sessionId) setPrevTick(ctx.tokens.sessionId, r.writeBack, ctx.tokens.cwd);
     return wrapPlain(r.value, params.color as string | undefined);
   },
   m_tokenTotal: (params, ctx) => {
@@ -2339,19 +2386,19 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     // tick's delta so peekAvg reflects this turn even when cacheHitRate
     // is the only per-API-call module in the template.
     const r = computeAndCacheTickDelta(ctx);
-    if (r.writeBack && sid) setPrevTick(sid, r.writeBack);
+    if (r.writeBack && sid) setPrevTick(sid, r.writeBack, ctx.tokens?.cwd);
     if (r.hasDelta && !_tickAvgWriteMemo.get(ctx)) {
       _tickAvgWriteMemo.set(ctx, true);
-      const prev = peekAvg(sid);
+      const prev = peekAvg(sid, ctx.tokens?.cwd);
       const next: AvgSnapshot = {
         sumIn: (prev?.sumIn ?? 0) + r.deltaIn,
         sumOut: (prev?.sumOut ?? 0) + r.deltaOut,
         sumApi: (prev?.sumApi ?? 0) + r.deltaApi,
         sumCache: (prev?.sumCache ?? 0) + r.deltaCacheRead,
       };
-      setAvg(sid, next);
+      setAvg(sid, next, ctx.tokens?.cwd);
     }
-    const avg = peekAvg(sid);
+    const avg = peekAvg(sid, ctx.tokens?.cwd);
     if (!avg) return placeholderWithColor("m_cacheHitRate", params, ctx);
     const denom = avg.sumCache + avg.sumIn;
     if (denom === 0) return placeholderWithColor("m_cacheHitRate", params, ctx);
@@ -2396,7 +2443,7 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
         ? speedScaleColor("in", probe.tps ?? 0)
         : (userColor ?? STALE_COLOR);
     const r = computeTickSpeed(ctx, "in", activeColor);
-    if (r.writeBack && ctx.tokens?.sessionId) setPrevTick(ctx.tokens.sessionId, r.writeBack);
+    if (r.writeBack && ctx.tokens?.sessionId) setPrevTick(ctx.tokens.sessionId, r.writeBack, ctx.tokens.cwd);
     return r.value;
   },
   m_tokenOutSpeed: (params, ctx) => {
@@ -2407,19 +2454,19 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
         ? speedScaleColor("out", probe.tps ?? 0)
         : (userColor ?? STALE_COLOR);
     const r = computeTickSpeed(ctx, "out", activeColor);
-    if (r.writeBack && ctx.tokens?.sessionId) setPrevTick(ctx.tokens.sessionId, r.writeBack);
+    if (r.writeBack && ctx.tokens?.sessionId) setPrevTick(ctx.tokens.sessionId, r.writeBack, ctx.tokens.cwd);
     return r.value;
   },
   m_tokenInAvg: (params, ctx) => {
     const color = (params.color as string | undefined) ?? STALE_COLOR;
     const r = computeTickAvg(ctx, "in", color);
-    if (r.writeBack && ctx.tokens?.sessionId) setPrevTick(ctx.tokens.sessionId, r.writeBack);
+    if (r.writeBack && ctx.tokens?.sessionId) setPrevTick(ctx.tokens.sessionId, r.writeBack, ctx.tokens.cwd);
     return r.value;
   },
   m_tokenOutAvg: (params, ctx) => {
     const color = (params.color as string | undefined) ?? STALE_COLOR;
     const r = computeTickAvg(ctx, "out", color);
-    if (r.writeBack && ctx.tokens?.sessionId) setPrevTick(ctx.tokens.sessionId, r.writeBack);
+    if (r.writeBack && ctx.tokens?.sessionId) setPrevTick(ctx.tokens.sessionId, r.writeBack, ctx.tokens.cwd);
     return r.value;
   },
   m_totalTokenIn: (params, ctx) => {

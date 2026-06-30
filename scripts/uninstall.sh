@@ -41,6 +41,18 @@
 #                                                     stale upstream-cmd.txt
 #                                                     pointing at a now-foreign
 #                                                     command)
+#                                                     v0.4.x+ Per-Project
+#                                                     Layout: this includes
+#                                                     state/<projectHash>/{cache.json,
+#                                                     diagnostics.jsonl,
+#                                                     <sessionId>.jsonl}.
+#                                                     To PRESERVE token-sample
+#                                                     history across uninstall
+#                                                     (rare; samples decay over
+#                                                     time anyway), run
+#                                                     `scripts/migrate-state.sh`
+#                                                     first, then re-install
+#                                                     without uninstalling.
 #   5. Strips the plugin row from installed_plugins.json and
 #      known_marketplaces.json (with timestamped .bak.<TS> backups),
 #      preserving CRLF.

@@ -14,9 +14,22 @@
 # User-named backups (e.g. `settings.json.bak-pre-v0.1.8`) are NOT touched —
 # only the script-generated `.bak.YYYYMMDDTHHMMSS` pattern.
 #
-# Optionally purges the diagnostics log and token-samples cache
-# (`--purge-runtime`). These are not backups, but they accumulate over
-# weeks of use and benefit from the same "housekeeping" command.
+# Optionally purges the diagnostics log, per-project cache.json, and
+# per-project token-samples (`--purge-runtime`). These are not backups,
+# but they accumulate over weeks of use and benefit from the same
+# "housekeeping" command.
+#
+# Per-Project Layout (v0.4.x+): with `--purge-runtime`, this script
+# walks every `<projectHash>/` subdirectory under state/ and removes
+# the cache.json, diagnostics.jsonl, and `<sessionId>.jsonl` files
+# inside each. It ALSO cleans the legacy top-level `state/cache.json`,
+# `state/diagnostics.jsonl`, and the old `state/token-samples/` tree
+# for users upgrading from v0.4.0–v0.4.<n-1> — those entries may
+# still exist on disk and would otherwise be orphaned.
+#
+# `state/upstream-cmd.{sh,txt}` are NEVER purged here — they're
+# managed by install/uninstall, not by per-tick IO, and wiping them
+# would break future uninstalls.
 #
 # Idempotent: if there is 0 or 1 backup per file, nothing happens.
 # Local-only. Never reads ANTHROPIC_AUTH_TOKEN. No network access.
@@ -25,7 +38,9 @@
 #   clean.sh                  # user-level (default)
 #   clean.sh --project        # project-level (cwd's .claude/settings.json)
 #   clean.sh --dry-run        # print what would be removed, change nothing
-#   clean.sh --purge-runtime  # also wipe state/diagnostics.jsonl + token-samples cache
+#   clean.sh --purge-runtime  # also wipe state/<projectHash>/{cache.json,
+#                             # diagnostics.jsonl, <sessionId>.jsonl} +
+#                             # legacy top-level files + token-samples/
 #   clean.sh -h | --help
 #
 # Portable: Linux, macOS, Git Bash on Windows.
@@ -109,15 +124,88 @@ for base in "${BASE_FILES[@]}"; do
   done
 done
 
+if [ "${#REMOVE_LIST[@]}" -ne 0 ]; then
+  echo "clean.sh: plan (keeping the most recent backup per file)"
+  for f in "${REMOVE_LIST[@]}"; do
+    echo "  rm $f"
+  done
+fi
+
+# Optional runtime-state purge. Off by default — most users never
+# look at the diagnostics log or token-samples cache, and we don't
+# want to nuke them silently. `--purge-runtime` is the explicit
+# "yes, wipe it" toggle. Lives at the plugin's state dir (sibling
+# of upstream-cmd.sh; survives cache wipes, dies on uninstall).
+
+# We must run the purge BEFORE the early `exit 0` on no-backups,
+# otherwise users without any stale .bak files but who DID pass
+# --purge-runtime would silently get a no-op. Per-Project Layout
+# (v0.4.x+) and the legacy top-level / token-samples/ cleanup
+# run in this same block.
+if [ "$PURGE_RUNTIME" = 1 ]; then
+  if [ "$PROJECT_LEVEL" = 1 ]; then
+    echo "clean.sh: --purge-runtime ignored under --project (state is user-level)" >&2
+  else
+    STATE_DIR="${PLUGINS_DIR}/tokenplan-usage-hud/state"
+
+    # Legacy top-level + old token-samples tree (v0.4.0–v0.4.<n-1>).
+    # Kept here so upgrading users get a one-shot cleanup; new installs
+    # never create these.
+    LEGACY_TARGETS=(
+      "${STATE_DIR}/diagnostics.jsonl"
+      "${STATE_DIR}/cache.json"
+      "${STATE_DIR}/token-samples"
+    )
+    for f in "${LEGACY_TARGETS[@]}"; do
+      if [ -e "$f" ]; then
+        echo "  rm $f"
+        if [ "$DRY_RUN" = 0 ]; then
+          rm -rf "$f"
+        fi
+      fi
+    done
+
+    # Per-project layout: walk every <projectHash>/ subdir of state/ and
+    # remove cache.json, diagnostics.jsonl, and any <sessionId>.jsonl
+    # file inside. shopt -s nullglob so a non-matching glob expands to
+    # nothing (rather than the literal pattern, which would rm it). We
+    # deliberately do NOT recurse — files at the state/ top level
+    # (upstream-cmd.sh, upstream-cmd.txt, config.json) and unknown
+    # per-project files are left alone.
+    if [ -d "$STATE_DIR" ]; then
+      shopt -s nullglob
+      for proj_dir in "${STATE_DIR}"/*/; do
+        # Skip if the glob matched a non-directory (e.g. a stray file
+        # that *happens* to be named with a trailing slash by accident).
+        [ -d "$proj_dir" ] || continue
+        for f in \
+          "${proj_dir}cache.json" \
+          "${proj_dir}diagnostics.jsonl" \
+          "${proj_dir}"*.jsonl; do
+          if [ -e "$f" ]; then
+            echo "  rm $f"
+            if [ "$DRY_RUN" = 0 ]; then
+              rm -f "$f"
+            fi
+          fi
+        done
+        # If the project dir is now empty, drop it too — keeps state/
+        # tidy for users who want to see the layout at a glance.
+        if [ "$DRY_RUN" = 0 ] && [ -z "$(ls -A "$proj_dir" 2>/dev/null)" ]; then
+          rmdir "$proj_dir" 2>/dev/null || true
+        fi
+      done
+      shopt -u nullglob
+    fi
+  fi
+fi
+
+# Backup-trim early-exit (now AFTER --purge-runtime so that flag still
+# works on a clean .bak tree).
 if [ "${#REMOVE_LIST[@]}" -eq 0 ]; then
   echo "clean.sh: nothing to clean — at most one backup per file"
   exit 0
 fi
-
-echo "clean.sh: plan (keeping the most recent backup per file)"
-for f in "${REMOVE_LIST[@]}"; do
-  echo "  rm $f"
-done
 
 if [ "$DRY_RUN" = 1 ]; then
   echo "clean.sh: --dry-run, no changes made"
@@ -129,31 +217,3 @@ for f in "${REMOVE_LIST[@]}"; do
 done
 
 echo "clean.sh: removed ${#REMOVE_LIST[@]} old backup(s)"
-
-# Optional runtime-state purge. Off by default — most users never
-# look at the diagnostics log or token-samples cache, and we don't
-# want to nuke them silently. `--purge-runtime` is the explicit
-# "yes, wipe it" toggle. Lives at the plugin's state dir (sibling
-# of upstream-cmd.sh; survives cache wipes, dies on uninstall).
-#
-# Only available at user-level scope: the state dir is a user-level
-# concept (no project-level state dir exists).
-if [ "$PURGE_RUNTIME" = 1 ]; then
-  if [ "$PROJECT_LEVEL" = 1 ]; then
-    echo "clean.sh: --purge-runtime ignored under --project (state is user-level)" >&2
-  else
-    RUNTIME_TARGETS=(
-      "${PLUGINS_DIR}/tokenplan-usage-hud/state/diagnostics.jsonl"
-      "${PLUGINS_DIR}/tokenplan-usage-hud/state/token-samples"
-      "${PLUGINS_DIR}/tokenplan-usage-hud/state/cache.json"
-    )
-    for f in "${RUNTIME_TARGETS[@]}"; do
-      if [ -e "$f" ]; then
-        echo "  rm $f"
-        if [ "$DRY_RUN" = 0 ]; then
-          rm -rf "$f"
-        fi
-      fi
-    done
-  fi
-fi

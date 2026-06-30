@@ -167,14 +167,23 @@ async function main(): Promise<void> {
   // used to also consume the raw for schema discovery; it was removed
   // in v0.4.0 once the schema was confirmed.
   const stdinRaw = await readStdin().catch(() => "");
+  // v0.4.x+: parse FIRST so the per-project cwd is available to the
+  // diagnostics append (Per-Project Layout — see src/diagnostics.ts).
+  // TokenSnapshot parsing is cheap (regex + small object walk) and
+  // does not depend on anything in this function.
+  const tokens = parseTokenSnapshot(stdinRaw);
   // Record the raw stdin frame for postmortem. Gated by the same
   // TOKENPLAN_DIAGNOSTICS_ENABLE switch as the rest of diagnostics.jsonl
   // (no-op when off). Source "stdin" so it doesn't collide with the
   // existing "config" warning source. Always append — even when empty —
   // so a postmortem reader can distinguish "plugin never reached this
   // line" from "Claude Code sent an empty stdin this tick".
-  diagnostics.append("info", "stdin", stdinRaw);
-  const tokens = parseTokenSnapshot(stdinRaw);
+  //
+  // cwd is passed so the line lands in
+  // `state/<projectHash>/diagnostics.jsonl` rather than the legacy
+  // top-level file — keeping concurrent Claude Code instances on
+  // different projects from racing on the same write stream.
+  diagnostics.append("info", "stdin", stdinRaw, Date.now(), tokens?.cwd ?? null);
 
   // Persist one sample row per tick so m_token5h/m_token7d can read
   // across-tick history. Only do this when the parsed snapshot has

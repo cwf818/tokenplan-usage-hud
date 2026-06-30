@@ -1,6 +1,8 @@
 // Tests for src/token-store.ts — append-only JSONL state file under
-// state/token-samples/<projectHash>/<sessionId>.jsonl. Pure path-shape
-// logic — the I/O paths are covered by integration (dev smoke test).
+// state/<projectHash>/<sessionId>.jsonl (v0.4.x+ Per-Project Layout;
+// was state/token-samples/<projectHash>/<sessionId>.jsonl in
+// v0.4.0–v0.4.<n-1>). Pure path-shape logic — the I/O paths are
+// covered by integration (dev smoke test).
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -41,11 +43,22 @@ describe("token-store — path helpers", () => {
     assert.equal(projectHash(`D:${cr}bar`), "d--bar");
   });
 
-  it("sampleFilePath: builds under state/token-samples/<hash>/<session>.jsonl", () => {
+  it("sampleFilePath: builds under state/<hash>/<session>.jsonl (Per-Project Layout, v0.4.x+)", () => {
     const p = sampleFilePath("D:\\WorkSpace\\foo", "sess-1");
-    assert.ok(p.includes("token-samples"));
+    // v0.4.x+: no `token-samples/` intermediate dir — the file is
+    // directly under `state/<projectHash>/`.
+    assert.ok(!p.includes("token-samples"));
     assert.ok(p.includes("d--workspace-foo"));
     assert.ok(p.endsWith("sess-1.jsonl"));
+    // Path shape: .../state/<hash>/<sid>.jsonl (two levels under state/).
+    // The fixture below uses platform-appropriate path separators.
+    const parts = p.split(/[\\/]/);
+    const sidIdx = parts.lastIndexOf("sess-1.jsonl");
+    const hashIdx = sidIdx - 1;
+    const stateIdx = hashIdx - 1;
+    assert.ok(stateIdx >= 0, "expected state/ in path");
+    assert.equal(parts[stateIdx], "state");
+    assert.equal(parts[hashIdx], "d--workspace-foo");
   });
 });
 
