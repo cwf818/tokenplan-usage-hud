@@ -486,10 +486,38 @@ if [ -n "$EKM_PLAN" ]; then
 fi
 
 # --- Apply: wipe dirs --------------------------------------------------------
+# On Windows, rm -rf can transiently fail with EPERM if an antivirus scanner,
+# OneDrive/Dropbox sync client, or another Claude Code session holds a handle
+# on the directory tree (this is also the failure mode that hits the loader's
+# own `marketplace add` rename). Retry a few times before giving up — the
+# handle is almost always released within a second. After rm, verify the
+# directory is actually gone and warn loudly if not, so the user knows to
+# quit any other Claude session and retry before running /plugin install.
+rm_with_retry() {
+  local d="$1"
+  local i
+  for i in 1 2 3; do
+    if rm -rf "$d" 2>/dev/null; then
+      if [ ! -d "$d" ]; then
+        echo "uninstall.sh: removed ${d}"
+        return 0
+      fi
+    fi
+    if [ "$i" -lt 3 ]; then sleep 1; fi
+  done
+  if [ -d "$d" ]; then
+    echo "uninstall.sh: WARNING — ${d} still exists after 3 attempts (EPERM?)" >&2
+    echo "uninstall.sh: another Claude Code session, antivirus, or a sync client" >&2
+    echo "uninstall.sh: is likely holding a handle on it. Quit all Claude Code" >&2
+    echo "uninstall.sh: sessions and re-run uninstall.sh before /plugin install." >&2
+    return 1
+  fi
+  echo "uninstall.sh: removed ${d}"
+  return 0
+}
 for d in "$CACHE_DIR" "$MARKETPLACE_DIR" "$TMP_MARKETPLACE_DIR" "$STATE_DIR"; do
   if [ -d "$d" ]; then
-    rm -rf "$d"
-    echo "uninstall.sh: removed ${d}"
+    rm_with_retry "$d"
   fi
 done
 
